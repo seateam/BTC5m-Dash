@@ -1,0 +1,3296 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="author" content="岳来岳会赚 @188888_x">
+<title>BTC 5m 涨跌盘口</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117;
+  color: #e0e0e0;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.up   { color: #3fb950; }
+.down { color: #f85149; }
+.gray { color: #666; }
+.yellow { color: #f0a500; }
+
+/* ── 顶部 ── */
+#header {
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  padding: 10px 20px;
+  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+}
+#header .window-info { font-size: 14px; font-weight: 600; }
+#header .window-info span { color: #f0a500; }
+#remaining { min-width: 48px; }
+#remaining.ending { color: #f85149 !important; animation: pulse 0.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+#recent-results {
+  display: flex; align-items: center; gap: 5px;
+  margin-left: auto;
+}
+.result-dot {
+  position: relative;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #21262d; cursor: default;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700;
+}
+.result-dot.up   { background: #2ea043; color: #fff; }
+.result-dot.down { background: #d73a3a; color: #fff; }
+.result-dot .dot-tip {
+  display: none; position: absolute;
+  top: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  background: #1c2128; border: 1px solid #30363d;
+  border-radius: 5px; padding: 4px 8px;
+  font-size: 11px; color: #ccc; white-space: nowrap; z-index: 100;
+}
+.result-dot:hover .dot-tip { display: block; }
+#conn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #3fb950; box-shadow: 0 0 6px #3fb950;
+  transition: background 0.3s;
+}
+#conn-dot.disconnected { background: #f85149; box-shadow: 0 0 6px #f85149; }
+#ws-status {
+  display: flex; gap: 6px; align-items: center;
+}
+.mode-toggle {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-left: 8px;
+  padding: 4px 8px;
+  border: 1px solid #21262d;
+  border-radius: 999px;
+  background: #0d1117;
+}
+.mode-toggle-label {
+  font-size: 11px; color: #888; white-space: nowrap;
+}
+.mode-toggle-btn {
+  width: 42px; height: 22px;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  background: #21262d;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.mode-toggle-btn::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #e0e0e0;
+  transition: transform 0.2s ease;
+}
+.mode-toggle-btn.on {
+  background: #0d3b22;
+  border-color: #2ea043;
+}
+.mode-toggle-btn.on::after {
+  transform: translateX(20px);
+  background: #3fb950;
+}
+.ws-light {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 10px; color: #666;
+}
+.ws-light .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #f85149; box-shadow: 0 0 4px #f85149;
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.ws-light.on .dot { background: #3fb950; box-shadow: 0 0 4px #3fb950; }
+
+/* ── BTC 价格 ── */
+#price-bar {
+  background: #0d1117;
+  padding: 8px 20px;
+  display: flex; align-items: center; gap: 32px;
+  border-bottom: 1px solid #21262d;
+}
+#compact-overview {
+  display: none;
+  padding: 12px 20px 0;
+}
+.compact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+.compact-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.compact-label {
+  font-size: 10px;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.compact-main {
+  font-size: 17px;
+  font-weight: 700;
+  color: #e0e0e0;
+}
+.compact-sub {
+  font-size: 11px;
+  color: #888;
+  line-height: 1.5;
+}
+.price-item { display: flex; flex-direction: column; gap: 2px; }
+.price-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 0.5px; }
+.price-val { font-size: 22px; font-weight: 700; }
+#btc-diff { font-size: 20px; font-weight: 700; }
+
+/* ── 账户（在下单面板内） ── */
+#account-block {
+  background: #161b22;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.acct-item { display: flex; justify-content: space-between; align-items: center; }
+.acct-label { font-size: 12px; color: #888; }
+.acct-val { font-size: 15px; font-weight: 600; }
+.acct-sub { font-size: 11px; color: #666; }
+#sync-time { font-size: 11px; color: #666; text-align: right; }
+#calib-countdown { margin-left: 8px; color: #f0a500; font-weight: 600; }
+.verified-tag { font-size: 11px; padding: 2px 5px; border-radius: 3px; background: #2a1f00; color: #888; }
+.verified-tag.ok { background: #1a3a1f; color: #3fb950; }
+.allowance-wrap { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.allowance-status { font-size: 12px; font-weight: 600; cursor: default; }
+.allowance-wrap:hover .allowance-tooltip { display: flex; flex-direction: column; gap: 4px; }
+.allowance-tooltip {
+  display: none; position: absolute;
+  top: calc(100% + 6px); right: 0;
+  background: #1c2128; border: 1px solid #30363d;
+  border-radius: 6px; padding: 8px 10px;
+  white-space: nowrap; z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.allowance-tooltip div { font-size: 11px; color: #aaa; }
+
+/* ── 主体（盘口 + 下单） ── */
+#main-wrap {
+  display: flex;
+  gap: 0;
+  flex: 1;
+}
+/* ── 低数据模式 ── */
+body.low-data-mode { background: #0a0e13; }
+body.low-data-mode #vol-box,
+body.low-data-mode #main-wrap,
+body.low-data-mode #compact-overview {
+  display: none !important;
+}
+
+/* 低数据模式：observe-bar 保留展示策略观察值 */
+body.low-data-mode #observe-bar {
+  width: min(920px, calc(100% - 24px));
+  margin: 8px auto 0;
+  background: #11151b;
+  border: 1px solid #1a1f28;
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-size: 11px;
+}
+
+body.low-data-mode #header,
+body.low-data-mode #price-bar,
+body.low-data-mode #strat-bar,
+body.low-data-mode #signal-history {
+  width: min(920px, calc(100% - 24px));
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ── header ── */
+body.low-data-mode #header {
+  background: transparent;
+  border: none;
+  padding: 14px 4px 4px;
+  gap: 14px;
+}
+body.low-data-mode #header .window-info { font-size: 13px; color: #6a7380; }
+body.low-data-mode #header .window-info span { color: #8a9bb0; }
+body.low-data-mode .result-dot { width: 22px; height: 22px; font-size: 10px; }
+
+/* ── price-bar：两行布局 ── */
+body.low-data-mode #price-bar {
+  background: #11151b;
+  border: 1px solid #1a1f28;
+  border-radius: 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+/* 第一行：概率 + 倒计时（大字焦点） */
+body.low-data-mode #price-bar .price-item:nth-child(1),
+body.low-data-mode #price-bar .price-item:nth-child(2) {
+  display: none;
+}
+body.low-data-mode #price-bar .price-item:nth-child(3) { display: none; }
+body.low-data-mode #price-bar .price-item:nth-child(4) { display: none; }
+
+/* 剩余时间独占顶部 */
+body.low-data-mode #price-bar .price-item:last-of-type {
+  display: none;
+}
+
+/* 用 ::before 伪元素无法动态显示，改用新增的焦点区域 */
+body.low-data-mode #price-bar {
+  display: block;
+  padding: 0;
+}
+body.low-data-mode #price-bar .price-item {
+  display: none;
+}
+body.low-data-mode #low-data-hero {
+  display: flex !important;
+}
+body.low-data-mode #low-data-detail {
+  display: flex !important;
+}
+
+/* ── 策略控制栏 ── */
+body.low-data-mode #strat-bar {
+  margin-top: 8px;
+  background: #11151b;
+  border: 1px solid #1a1f28;
+  border-radius: 14px;
+  padding: 12px 16px;
+  gap: 8px 14px;
+}
+body.low-data-mode #strat-bar #strat-state-text { font-size: 13px; }
+body.low-data-mode #strat-bar #strat-scan-info { font-size: 12px; color: #6a7380; }
+body.low-data-mode #strat-bar .strat-right {
+  width: 100%;
+  margin-left: 0;
+  align-items: stretch !important;
+  padding-top: 8px;
+  border-top: 1px solid #1a1f28;
+  gap: 8px !important;
+}
+body.low-data-mode #strat-bar .strat-right > div {
+  flex-wrap: wrap;
+  justify-content: flex-start !important;
+}
+body.low-data-mode #strat-bar .strat-divider { display: none; }
+body.low-data-mode #claim-bar { align-items: flex-start !important; }
+body.low-data-mode #claim-status { max-width: none !important; text-align: left !important; }
+
+/* 低数据模式下策略分类行：标签 + 开关 紧凑 */
+body.low-data-mode .strat-row {
+  padding: 2px 0;
+  border-bottom: 1px solid #1a1f28;
+}
+body.low-data-mode .strat-row:last-child { border-bottom: none; }
+
+/* ── 交易记录 ── */
+body.low-data-mode #signal-history {
+  margin-top: 8px;
+  margin-bottom: 14px;
+  background: #11151b;
+  border: 1px solid #1a1f28;
+  border-radius: 14px;
+  padding: 10px 14px 14px;
+}
+body.low-data-mode #signal-history-list { height: 300px; }
+body.low-data-mode .hist-item { padding: 5px 0; border-bottom-color: #1a1f28; }
+
+/* ── 响应式 ── */
+@media (max-width: 680px) {
+  body.low-data-mode #header,
+  body.low-data-mode #price-bar,
+  body.low-data-mode #strat-bar,
+  body.low-data-mode #signal-history {
+    width: calc(100% - 16px);
+  }
+  body.low-data-mode #low-data-hero {
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 16px 12px 8px;
+  }
+  body.low-data-mode #low-data-hero .ldh-timer {
+    font-size: 20px;
+  }
+  body.low-data-mode #low-data-detail {
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding: 8px 12px 12px;
+  }
+  body.low-data-mode #strat-bar .strat-right {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  body.low-data-mode #recent-results { margin-left: 0; order: 4; }
+  body.low-data-mode #ws-status { flex-wrap: wrap; }
+  body.low-data-mode .mode-toggle { margin-left: 0; }
+}
+
+/* ── 盘口 ── */
+#book {
+  flex: 1;
+  display: flex; flex-direction: column;
+  min-width: 0;
+  padding: 12px 20px;
+}
+.book-header {
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  padding: 4px 8px;
+  font-size: 10px; color: #666;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.book-header .col-r { text-align: right; }
+.book-header .col-c { text-align: center; }
+.order-row {
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  padding: 3px 8px; border-radius: 3px;
+  position: relative; overflow: hidden;
+}
+.order-row .depth-bar {
+  position: absolute; top: 0; bottom: 0;
+  opacity: 0.12; pointer-events: none;
+}
+.order-row.ask .depth-bar { background: #f85149; right: 0; }
+.order-row.bid .depth-bar { background: #3fb950; left: 0; }
+.order-row .up-price { font-weight: 600; }
+.order-row .qty { text-align: center; color: #888; }
+.order-row .dn-price { text-align: right; font-weight: 600; }
+#spread-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 8px;
+  border-top: 1px solid #21262d; border-bottom: 1px solid #21262d;
+  margin: 2px 0; font-size: 11px; color: #777;
+}
+#spread-val { color: #888; font-weight: 600; }
+#momentum-bar {
+  display: flex; gap: 6px; padding: 4px 8px;
+  border-bottom: 1px solid #21262d;
+  font-size: 11px; color: #777;
+}
+.mom-group { display: flex; align-items: center; gap: 4px; flex: 1; }
+.mom-label { color: #555; white-space: nowrap; }
+.mom-item { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+.mom-name { color: #555; }
+.mom-val { font-weight: 600; min-width: 48px; text-align: right; }
+.mom-val.up { color: #3fb950; }
+.mom-val.down { color: #f85149; }
+.mom-val.flat { color: #555; }
+#prob-bar {
+  padding: 8px 0; display: flex; align-items: center;
+  gap: 20px; font-size: 12px; margin-top: 8px;
+}
+.prob-item { display: flex; align-items: center; gap: 8px; }
+.prob-label { color: #777; }
+.prob-val { font-size: 20px; font-weight: 700; }
+#prob-track {
+  flex: 1; height: 6px; background: #21262d;
+  border-radius: 3px; overflow: hidden;
+}
+#prob-fill-up {
+  height: 100%;
+  background: linear-gradient(90deg, #3fb950, #f0a500);
+  border-radius: 3px; transition: width 0.3s ease;
+}
+
+/* ── 买卖记录栏 ── */
+#signal-history {
+  background: #0d1117;
+  border-top: 1px solid #21262d;
+  padding: 8px 16px 10px;
+}
+#signal-history .hist-title {
+  font-size: 11px; color: #555; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 6px;
+}
+#signal-history-list {
+  display: flex; flex-direction: column; gap: 3px;
+  height: 420px; overflow-y: auto;
+  padding-right: 2px;
+}
+.hist-item {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; color: #888;
+  padding: 3px 7px; border-radius: 4px;
+  background: #161b22;
+}
+.hist-item .hist-time { color: #555; min-width: 84px; font-size: 10px; }
+.hist-item .hist-type { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+.hist-item .hist-type.manual { background: #2a1200; color: #ffb347; }
+.hist-item .hist-type.strategy { background: #0d1f33; color: #7cc8ff; }
+.hist-item .hist-side { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 700; }
+.hist-item .hist-side.buy { background: #10261a; color: #3fb950; }
+.hist-item .hist-side.sell { background: #2a1712; color: #f85149; }
+.hist-item .hist-desc {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-item .hist-pnl { font-weight: 700; }
+
+/* ── Polymarket 真实盈亏 ── */
+#pm-pnl {
+  background: #0d1117;
+  border-top: 1px solid #21262d;
+  padding: 8px 16px 10px;
+}
+#pm-pnl .hist-title {
+  font-size: 11px; color: #555; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 6px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+#pm-pnl .pm-total {
+  font-size: 11px; color: #888; font-weight: normal; text-transform: none; letter-spacing: normal;
+}
+#pm-pnl .pm-total .val-pos { color: #3fb950; font-weight: 700; }
+#pm-pnl .pm-total .val-neg { color: #f85149; font-weight: 700; }
+#pm-pnl-tabs {
+  display: flex; gap: 4px; margin-bottom: 6px;
+}
+.pm-tab {
+  background: #161b22; color: #8b949e;
+  border: 1px solid #21262d; border-radius: 4px;
+  padding: 3px 10px; font-size: 11px; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.pm-tab:hover { background: #21262d; color: #c9d1d9; }
+.pm-tab.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+#pm-pnl-list {
+  display: flex; flex-direction: column; gap: 3px;
+  height: 420px; overflow-y: auto;
+  padding-right: 2px;
+}
+.pm-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: #888;
+  padding: 4px 8px; border-radius: 4px;
+  background: #161b22;
+}
+/* 表头：共用 pm-item 列宽，但样式不同（无背景、小字、大写字母间距） */
+.pm-header {
+  background: transparent !important;
+  color: #6e7681;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  padding: 3px 8px 4px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid #21262d;
+  border-radius: 0;
+}
+.pm-header > span {
+  color: #6e7681 !important;
+  background: transparent !important;
+  font-weight: 600 !important;
+  font-size: 10px !important;
+  padding: 0 !important;
+  min-width: auto;
+}
+/* 表头列宽对齐行，所有列统一居中（便于阅读） */
+.pm-header .pm-time { width: 78px; flex-shrink: 0; text-align: center !important; }
+.pm-header .pm-kind { width: 36px; flex-shrink: 0; text-align: center !important; }
+.pm-header .pm-outcome { width: 32px; flex-shrink: 0; text-align: center !important; }
+.pm-header .pm-source { width: 28px; flex-shrink: 0; text-align: center !important; }
+.pm-header .pm-detail { width: 105px; flex-shrink: 0; text-align: center !important; }
+.pm-header .pm-fee { width: 48px; flex-shrink: 0; text-align: center !important; }
+.pm-header .pm-title { flex: 1; min-width: 0; text-align: center !important; }
+.pm-header .pm-amount { width: 110px; flex-shrink: 0; text-align: center !important; }
+.pm-header .pm-pos-pnl { width: 96px; flex-shrink: 0; text-align: center !important; }
+.pm-item .pm-time { color: #555; width: 78px; flex-shrink: 0; font-size: 10px; }
+.pm-item .pm-kind { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 700; width: 36px; flex-shrink: 0; text-align: center; box-sizing: border-box; }
+.pm-item .pm-kind.buy { background: #10261a; color: #3fb950; }
+.pm-item .pm-kind.sell { background: #2a1712; color: #f85149; }
+.pm-item .pm-kind.claim { background: #1f2a0d; color: #f0a500; }
+.pm-item .pm-kind.lost { background: #2a1712; color: #8b949e; }
+.pm-item .pm-outcome { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 700; width: 32px; flex-shrink: 0; text-align: center; box-sizing: border-box; }
+.pm-item .pm-outcome.up { background: #10261a; color: #3fb950; }
+.pm-item .pm-outcome.down { background: #2a1712; color: #f85149; }
+.pm-item .pm-source { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #0d1f33; color: #7cc8ff; width: 28px; flex-shrink: 0; text-align: center; box-sizing: border-box; }
+.pm-item .pm-source.manual { background: #2a1200; color: #ffb347; }
+/* 细节：size × price */
+.pm-item .pm-detail {
+  color: #6e7681; font-size: 10px;
+  width: 105px; flex-shrink: 0;
+}
+/* 手续费独立列 */
+.pm-item .pm-fee {
+  color: #f0a500; font-size: 10px;
+  width: 48px; flex-shrink: 0; text-align: right;
+}
+.pm-item .pm-fee .dim { color: #444; }
+/* 市场标题 - 弹性占空间 */
+.pm-item .pm-title {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #8b949e; font-size: 10px;
+}
+/* 现金流（支出/收入/领取） */
+.pm-item .pm-amount {
+  width: 110px; flex-shrink: 0; text-align: right;
+  font-size: 11px;
+}
+.pm-item .pm-amount .pm-amount-label { color: #6e7681; font-size: 10px; margin-right: 4px; }
+.pm-item .pm-amount .pm-amount-val { font-weight: 700; }
+.pm-item .pm-amount .pm-amount-val.pos { color: #3fb950; }
+.pm-item .pm-amount .pm-amount-val.neg { color: #f85149; }
+/* 仓位盈亏 */
+.pm-item .pm-pos-pnl {
+  width: 96px; flex-shrink: 0; text-align: right;
+  font-size: 11px;
+}
+.pm-item .pm-pos-pnl .pm-pos-pnl-label { color: #6e7681; font-size: 10px; margin-right: 4px; }
+.pm-item .pm-pos-pnl .pm-pos-pnl-val { font-weight: 700; }
+.pm-item .pm-pos-pnl .pm-pos-pnl-val.pos { color: #3fb950; }
+.pm-item .pm-pos-pnl .pm-pos-pnl-val.neg { color: #f85149; }
+.pm-item .pm-pos-pnl .pm-pos-pnl-val.dim { color: #444; font-weight: 400; }
+
+/* ── 价格曲线 ── */
+#price-chart {
+  background: #0d1117;
+  border-bottom: 1px solid #21262d;
+  margin-bottom: 8px;
+}
+#price-chart canvas {
+  width: 100%; height: 480px; display: block;
+}
+
+#chart-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; cursor: pointer;
+  border-bottom: 1px solid #21262d;
+  margin-bottom: 4px;
+  user-select: none;
+}
+#chart-toggle:hover { background: #161b22; border-radius: 4px; }
+#chart-toggle .toggle-label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; flex: 1; }
+#chart-toggle .toggle-arrow { font-size: 10px; color: #555; transition: transform 0.2s; }
+#chart-toggle.collapsed .toggle-arrow { transform: rotate(-90deg); }
+#chart-collapsible { overflow: hidden; transition: max-height 0.25s ease; max-height: 520px; }
+#chart-collapsible.collapsed { max-height: 0; }
+
+/* ── 盘口折叠 ── */
+#book-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; cursor: pointer;
+  border-bottom: 1px solid #21262d;
+  margin-bottom: 4px;
+  user-select: none;
+}
+#book-toggle:hover { background: #161b22; border-radius: 4px; }
+#book-toggle .toggle-label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; flex: 1; }
+#book-toggle .toggle-arrow { font-size: 10px; color: #555; transition: transform 0.2s; }
+#book-toggle.collapsed .toggle-arrow { transform: rotate(-90deg); }
+#book-collapsible { overflow: hidden; transition: max-height 0.25s ease; max-height: 600px; }
+#book-collapsible.collapsed { max-height: 0; }
+
+/* ── 下单面板 ── */
+#order-panel {
+  width: 320px;
+  border-left: 1px solid #21262d;
+  padding: 18px 20px;
+  display: flex; flex-direction: column; gap: 16px;
+  background: #0d1117;
+}
+#order-panel .panel-title {
+  font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+/* 方向/操作按钮组 */
+.btn-group { display: flex; gap: 8px; }
+.tog-btn {
+  flex: 1; padding: 11px 0;
+  border: 1px solid #30363d; border-radius: 7px;
+  background: #161b22; color: #666;
+  cursor: pointer; font-size: 15px; font-weight: 600;
+  transition: all 0.15s;
+}
+.tog-btn:hover { border-color: #555; color: #aaa; }
+.dir-pct { font-size: 15px; font-weight: 700; }
+.tog-btn.active-up   { border-color: #3fb950; background: #1a3a1f; color: #3fb950; }
+.tog-btn.active-down { border-color: #f85149; background: #3a1a1f; color: #f85149; }
+
+/* 买入/卖出按钮：填充色块风格 */
+.side-btn {
+  flex: 1; padding: 11px 0;
+  border: none; border-radius: 7px;
+  background: #21262d; color: #999;
+  cursor: pointer; font-size: 15px; font-weight: 700;
+  transition: all 0.15s;
+}
+.side-btn:hover { background: #2d333b; color: #ccc; }
+.side-btn.active-buy  { background: #1a4a7a; color: #7cc8ff; }
+.side-btn.active-sell { background: #5a2800; color: #ffb347; }
+
+/* 输入区 */
+.input-row {
+  display: flex; align-items: stretch; gap: 0;
+  border: 1px solid #30363d; border-radius: 7px; overflow: hidden;
+}
+.input-row:focus-within { border-color: #4e9eff; }
+.input-row input {
+  flex: 1; background: #161b22; border: none;
+  color: #e0e0e0; padding: 7px 8px 5px;
+  font-size: 16px; font-family: inherit; font-weight: 600;
+  outline: none; text-align: center; min-width: 0;
+}
+/* 隐藏原生 number 箭头 */
+.input-row input::-webkit-outer-spin-button,
+.input-row input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.input-row input[type=number] { -moz-appearance: textfield; }
+.step-btn {
+  background: #1c2128; border: none;
+  color: #666; width: 38px;
+  font-size: 18px; font-weight: 300;
+  cursor: pointer; transition: all 0.12s;
+  display: flex; align-items: center; justify-content: center;
+}
+.step-btn:hover { background: #21262d; color: #e0e0e0; }
+.step-btn:active { background: #30363d; }
+.input-unit { font-size: 12px; color: #555; min-width: 32px; }
+.max-btn {
+  background: #21262d; border: none; border-left: 1px solid #30363d;
+  color: #888; padding: 0 10px;
+  cursor: pointer; font-size: 11px; white-space: nowrap;
+}
+.max-btn:hover { color: #f0a500; }
+
+/* 预估 */
+#est-row {
+  font-size: 12px; color: #888;
+  padding: 6px 10px; background: #161b22;
+  border-radius: 7px; line-height: 1.6;
+}
+#est-row span { color: #bbb; }
+
+/* 确认按钮 */
+#confirm-btn {
+  padding: 14px; border-radius: 8px;
+  border: none; font-size: 16px; font-weight: 700;
+  cursor: pointer; transition: all 0.15s;
+  background: #21262d; color: #888;
+}
+#confirm-btn.ready-buy  { background: #1a4a7a; color: #7cc8ff; }
+#confirm-btn.ready-sell { background: #5a2800; color: #ffb347; }
+#confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 结果提示 */
+#order-result {
+  font-size: 13px; padding: 8px 10px; border-radius: 6px;
+  display: none;
+}
+#order-result.ok   { background: #1a3a1f; color: #3fb950; display: block; }
+#order-result.fail { background: #3a1a1f; color: #f85149; display: block; }
+
+/* ── 策略栏 ── */
+#strat-bar {
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  padding: 8px 20px;
+  display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap;
+  font-size: 12px;
+}
+.strat-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+.strat-divider { width: 1px; height: 20px; background: #30363d; }
+.strat-group { display: flex; align-items: center; gap: 6px; }
+.strat-group label { display: flex; align-items: center; gap: 6px; color: #888; cursor: pointer; white-space: nowrap; }
+.strat-group input[type=checkbox] { display: none; }
+.strat-group input[type=checkbox] + .strat-tip::before {
+  content: '○';
+  font-size: 13px; color: #444; margin-right: 4px;
+  transition: color 0.2s;
+}
+.strat-group input[type=checkbox]:checked + .strat-tip::before {
+  content: '◉';
+  color: #f0a500;
+}
+.strat-group label:has(input:checked) { color: #f0a500; }
+.strat-amt {
+  width: 40px; background: #0d1117; border: 1px solid #333;
+  color: #ccc; font-size: 11px; padding: 1px 3px; border-radius: 3px; text-align: center;
+}
+/* 隐藏策略栏相关数字输入框的上下箭头 */
+.strat-amt::-webkit-inner-spin-button,
+.strat-amt::-webkit-outer-spin-button,
+#max-round-entries::-webkit-inner-spin-button,
+#max-round-entries::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.strat-amt, #max-round-entries { -moz-appearance: textfield; }
+#strat-status { display: flex; align-items: center; gap: 8px; }
+#strat-state-text { font-size: 12px; font-weight: 600; color: #f0a500; }
+#strat-state-text.idle   { color: #555; }
+#strat-state-text.scan   { color: #888; }
+#strat-state-text.active { color: #f0a500; }
+#strat-state-text.hold   { color: #3fb950; }
+#strat-state-text.done   { color: #58a6ff; }
+#strat-state-text.fail   { color: #f85149; }
+.strat-tip {
+  position: relative; display: inline-flex; align-items: center;
+}
+.strat-tip .tip-box {
+  display: none; position: absolute; top: 100%; left: 0; margin-top: 6px;
+  background: #1c2128; border: 1px solid #30363d; border-radius: 6px;
+  padding: 8px 10px; font-size: 11px; color: #ccc; line-height: 1.6;
+  white-space: nowrap; z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  user-select: text; cursor: text;
+}
+/* 桥接区域：消除标签和 tip-box 之间的 6px 间隙，防止鼠标穿过时触发隐藏 */
+.strat-tip .tip-box::before {
+  content: ""; position: absolute; top: -6px; left: 0; right: 0; height: 6px;
+}
+.strat-tip:hover .tip-box,
+.strat-tip .tip-box:hover { display: block; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="window-info">BTC 5分钟涨跌 <span id="window-range">—</span></div>
+  <a href="https://x.com/188888_x" target="_blank" rel="noopener" style="font-size:11px;color:#f0a500;text-decoration:none;white-space:nowrap;font-weight:600">by 岳来岳会赚 <span style="color:#58a6ff">@188888_x</span></a>
+  <div id="recent-results">
+    <div class="result-dot" id="rd-0"><span class="dot-tip">—</span></div>
+    <div class="result-dot" id="rd-1"><span class="dot-tip">—</span></div>
+    <div class="result-dot" id="rd-2"><span class="dot-tip">—</span></div>
+    <div class="result-dot" id="rd-3"><span class="dot-tip">—</span></div>
+  </div>
+  <div id="conn-dot" class="disconnected"></div>
+  <div id="ws-status">
+    <div class="ws-light" id="ws-market"><div class="dot"></div>盘口</div>
+    <div class="ws-light" id="ws-chainlink"><div class="dot"></div>价格</div>
+    <div class="ws-light" id="ws-user"><div class="dot"></div>账户</div>
+    <div class="ws-light" id="ws-binance"><div class="dot"></div>币安</div>
+    <div id="kline-status" style="font-size:10px;color:#666;margin-left:4px" title="Binance K 线缓存数量（1分钟/5分钟）">K线 1m:<span id="kline-1m-count">—</span> 5m:<span id="kline-5m-count">—</span></div>
+  </div>
+  <div class="mode-toggle" title="低数据模式下只保留简版信息，并改为服务端节流推送" style="margin-left:auto">
+    <span class="mode-toggle-label">低数据</span>
+    <button id="low-data-toggle" class="mode-toggle-btn" type="button" onclick="toggleLowDataMode()" aria-pressed="false"></button>
+  </div>
+</div>
+
+<!-- 观察面板：独立行，展示动量因子 / 概率追赶因子 -->
+<div id="observe-bar" style="padding:6px 16px;background:#0d1117;border-bottom:1px solid #1a1f28;font-size:11px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+  <div id="fair-prob-panel" style="color:#888;white-space:nowrap" title="s5 概率追赶策略：当前 Polymarket 概率 vs 历史合理概率 的偏差，偏差≥10% 触发入场">
+    <span style="color:#f0a500;font-weight:600">概率追赶</span>
+    <span style="color:#444;margin:0 6px">|</span>
+    <span id="fp-input">—</span>
+    <span style="color:#444;margin:0 6px">|</span>
+    <span id="fp-compare">—</span>
+    <span style="color:#444;margin:0 6px">|</span>
+    <span id="fp-bias">偏差 —</span>
+  </div>
+</div>
+
+<div id="price-bar">
+  <div class="price-item">
+    <div class="price-label">Price to Beat</div>
+    <div class="price-val gray" id="price-to-beat">—</div>
+  </div>
+  <div class="price-item">
+    <div class="price-label">BTC 当前价</div>
+    <div class="price-val gray" id="btc-current">—</div>
+  </div>
+  <div class="price-item">
+    <div class="price-label">差价(CL)</div>
+    <div id="btc-diff" class="gray">—</div>
+  </div>
+  <div class="price-item">
+    <div class="price-label">差价(BN)</div>
+    <div id="btc-diff-bn" class="gray">—</div>
+  </div>
+  <div class="price-item" id="vol-box">
+    <div class="price-label">波动率(30s) 高&gt;<input id="vol-threshold" type="number" value="0.15" step="0.01" min="0"
+      style="width:44px;background:#0d1117;border:1px solid #333;color:#ccc;font-size:11px;padding:1px 3px;border-radius:3px;text-align:center">%</div>
+    <div id="btc-vol" class="gray">—</div>
+  </div>
+  <div class="price-item">
+    <div class="price-label">剩余</div>
+    <div id="remaining" class="price-val yellow">--:--</div>
+  </div>
+
+  <!-- 低数据模式：焦点区域 -->
+  <div id="low-data-hero" style="display:none;align-items:baseline;justify-content:space-between;padding:20px 24px 6px">
+    <div class="ldh-prob" style="font-size:34px;font-weight:800;letter-spacing:-1px">
+      <span id="ldh-up" style="color:#e0e0e0">涨 —</span>
+      <span style="color:#2a2a2a;margin:0 10px">/</span>
+      <span id="ldh-dn" style="color:#e0e0e0">跌 —</span>
+    </div>
+    <div class="ldh-timer" style="font-size:28px;font-weight:800;letter-spacing:-0.5px;color:#e0e0e0" id="ldh-timer">--:--</div>
+  </div>
+  <div id="low-data-detail" style="display:none;align-items:center;gap:8px 24px;padding:6px 24px 16px;font-size:13px;color:#6a7380;border-top:1px solid #1a1f28;flex-wrap:wrap">
+    <span>PTB <b id="ldh-ptb" style="color:#888">—</b></span>
+    <span>BTC <b id="ldh-btc" style="color:#888">—</b></span>
+    <span>CL <b id="ldh-diff-cl" style="color:#888">—</b></span>
+    <span>BN <b id="ldh-diff-bn" style="color:#f0a500">—</b></span>
+    <span style="margin-left:auto">USDC <b id="ldh-usdc" style="color:#e0e0e0">—</b></span>
+    <span>涨 <b id="ldh-pos-up" style="color:#444">0.00</b></span>
+    <span>跌 <b id="ldh-pos-dn" style="color:#444">0.00</b></span>
+    <span id="ldh-strat" style="font-weight:600;color:#555">—</span>
+  </div>
+
+</div>
+
+<div id="compact-overview">
+  <div class="compact-grid">
+    <div class="compact-card compact-card-prob">
+      <div class="compact-label">概率</div>
+      <div class="compact-main" id="compact-prob-main">等待盘口</div>
+      <div class="compact-sub" id="compact-prob-sub">—</div>
+    </div>
+    <div class="compact-card compact-card-book">
+      <div class="compact-label">盘口摘要</div>
+      <div class="compact-main" id="compact-book-main">等待盘口</div>
+      <div class="compact-sub" id="compact-book-sub">—</div>
+    </div>
+    <div class="compact-card compact-card-account">
+      <div class="compact-label">账户</div>
+      <div class="compact-main" id="compact-account-main">USDC —</div>
+      <div class="compact-sub" id="compact-account-sub">涨 — / 跌 —</div>
+    </div>
+    <div class="compact-card compact-card-strategy">
+      <div class="compact-label">策略</div>
+      <div class="compact-main" id="compact-strategy-main">—</div>
+      <div class="compact-sub" id="compact-strategy-sub">—</div>
+    </div>
+  </div>
+</div>
+
+<!-- 策略栏 -->
+<div id="strat-bar">
+  <div id="strat-groups" style="display:flex;flex-direction:column;gap:6px;flex:1"></div>
+  <div class="strat-right" style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+    <!-- 第 1 行：状态 + 运行配置 -->
+    <div style="display:flex;align-items:center;gap:10px">
+      <div id="strat-status">
+        <span id="strat-scan-info" style="font-size:11px;color:#555">—</span>
+        <span id="strat-state-text" class="idle">未启用</span>
+      </div>
+      <div class="strat-divider"></div>
+      <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:#888" title="单局最大入场次数">
+        <span>单局</span>
+        <input type="number" id="max-round-entries" value="1" min="1" max="10" step="1" style="width:36px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e0e0e0;text-align:center;font-size:11px;padding:2px">
+        <span>次</span>
+      </div>
+      <span id="strat-config-note" style="font-size:11px;color:#555" title="策略配置只在本次运行中生效，重启后恢复 .env 默认值">ⓘ</span>
+    </div>
+    <!-- Claim 提示：引导用户到 Polymarket 官网开启自动 Claim -->
+    <div id="claim-tip" style="display:flex;align-items:center;gap:6px;font-size:11px;color:#666">
+      <span style="color:#f0a500">ⓘ</span>
+      <span>自动 Claim 请在 <a href="https://polymarket.com/settings" target="_blank" style="color:#f0a500;text-decoration:none">Polymarket 官网 Settings</a> 中开启（Auto Redeem），无需本地配置</span>
+    </div>
+    <div class="strat-divider"></div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span id="backtest-label" style="font-size:11px;color:#666">回测数据</span>
+      <button id="backtest-btn" onclick="toggleBacktest()" style="font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid #30363d;background:#21262d;color:#888;cursor:pointer">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="main-wrap">
+
+  <!-- 盘口 + 曲线 -->
+  <div id="book">
+    <div id="chart-toggle" onclick="toggleChart()">
+      <span class="toggle-label">曲线</span>
+      <span class="toggle-arrow">▼</span>
+    </div>
+    <div id="chart-collapsible">
+      <div id="price-chart">
+        <canvas id="chart-canvas"></canvas>
+      </div>
+    </div>
+
+    <div id="book-toggle" class="collapsed" onclick="toggleBook()">
+      <span class="toggle-label">盘口</span>
+      <span class="toggle-arrow">▼</span>
+    </div>
+    <div id="book-collapsible" class="collapsed">
+      <div id="momentum-bar">
+        <div class="mom-group">
+          <span class="mom-label">3s:</span>
+          <div class="mom-item"><span class="mom-name">Poly</span><span class="mom-val flat" id="mom5-poly">—</span></div>
+          <div class="mom-item"><span class="mom-name">币安</span><span class="mom-val flat" id="mom5-bnb">—</span></div>
+          <div class="mom-item"><span class="mom-name">概率</span><span class="mom-val flat" id="mom5-prob">—</span></div>
+        </div>
+        <div class="mom-group">
+          <span class="mom-label">5s:</span>
+          <div class="mom-item"><span class="mom-name">Poly</span><span class="mom-val flat" id="mom10-poly">—</span></div>
+          <div class="mom-item"><span class="mom-name">币安</span><span class="mom-val flat" id="mom10-bnb">—</span></div>
+          <div class="mom-item"><span class="mom-name">概率</span><span class="mom-val flat" id="mom10-prob">—</span></div>
+        </div>
+      </div>
+
+      <div class="book-header">
+        <div>涨 价格</div>
+        <div class="col-c">数量</div>
+        <div class="col-r">跌 价格</div>
+      </div>
+      <div id="asks-wrap"></div>
+      <div id="spread-bar">
+        <span>买一: <b id="best-bid" class="up">—</b></span>
+        <span>卖一: <b id="best-ask" class="down">—</b></span>
+        <span>价差: <span id="spread-val">—</span></span>
+      </div>
+      <div id="bids-wrap"></div>
+      <div id="prob-bar">
+        <div class="prob-item">
+          <div class="prob-label">涨</div>
+          <div class="prob-val up" id="prob-up">—</div>
+        </div>
+        <div id="prob-track"><div id="prob-fill-up" style="width:50%"></div></div>
+        <div class="prob-item">
+          <div class="prob-label">跌</div>
+          <div class="prob-val down" id="prob-down">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 下单面板 -->
+  <div id="order-panel">
+    <div class="panel-title">市价下单</div>
+
+    <!-- 账户持仓 -->
+    <div id="account-block">
+      <div class="acct-item">
+        <div class="acct-label">USDC</div>
+        <div class="allowance-wrap">
+          <div class="allowance-status" id="acct-allowance-status">—</div>
+          <div class="allowance-tooltip" id="acct-allowance-tooltip"></div>
+        </div>
+        <div class="acct-val yellow" id="acct-usdc">—</div>
+      </div>
+      <div class="acct-item">
+        <div class="acct-label">涨 持仓</div>
+        <div class="acct-val up" id="acct-up-local">—</div>
+        <span class="verified-tag" id="up-verified-tag">未校准</span>
+        <div class="acct-sub">API: <span id="acct-up-api">—</span></div>
+      </div>
+      <div class="acct-item">
+        <div class="acct-label">跌 持仓</div>
+        <div class="acct-val down" id="acct-dn-local">—</div>
+        <span class="verified-tag" id="dn-verified-tag">未校准</span>
+        <div class="acct-sub">API: <span id="acct-dn-api">—</span></div>
+      </div>
+      <div id="sync-time">API同步: <span id="last-sync">—</span><span id="calib-countdown"></span></div>
+    </div>
+
+    <!-- 操作 -->
+    <div>
+      <div style="font-size:10px;color:#777;margin-bottom:5px">操作</div>
+      <div class="btn-group">
+        <button class="side-btn" id="btn-buy"  onclick="setSide('buy')">买入 <span style="font-size:10px;opacity:0.5">F1</span></button>
+        <button class="side-btn" id="btn-sell" onclick="setSide('sell')">卖出 <span style="font-size:10px;opacity:0.5">F2</span></button>
+      </div>
+    </div>
+
+    <!-- 方向 -->
+    <div>
+      <div style="position:relative;display:flex;align-items:center;font-size:10px;color:#777;margin-bottom:4px">
+        <span>方向</span>
+        <div style="position:absolute;left:50%;transform:translateX(-50%);display:flex;gap:14px;font-size:11px;color:#777;justify-content:center;white-space:nowrap">
+          <span>剩余: <b id="order-remaining" class="yellow">--:--</b></span>
+          <span>差价: <b id="order-diff">—</b></span>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="tog-btn" id="btn-up"   onclick="setDir('up')"><span style="color:#3fb950">涨 ▲</span> <span id="dir-up-pct" class="dir-pct">—</span> <span style="font-size:10px;opacity:0.5">F3</span></button>
+        <button class="tog-btn" id="btn-down" onclick="setDir('down')"><span style="color:#f85149">跌 ▼</span> <span id="dir-dn-pct" class="dir-pct">—</span> <span style="font-size:10px;opacity:0.5">F4</span></button>
+      </div>
+    </div>
+
+    <!-- 数量输入 -->
+    <div>
+      <div style="font-size:12px;color:#777;margin-bottom:5px">
+        <span id="amount-label">金额</span>
+      </div>
+      <div class="input-row">
+        <button class="step-btn" onclick="stepAmount(-1)">−</button>
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
+          <input type="number" id="amount-input" placeholder="0.00" min="0" step="1"
+                 oninput="updateEst()" style="width:100%;text-align:center">
+          <span id="amount-unit" style="font-size:13px;font-weight:700;color:#555;pointer-events:none;line-height:1">USDC</span>
+        </div>
+        <button class="step-btn" onclick="stepAmount(1)">+</button>
+        <button class="max-btn" id="max-btn" onclick="fillMax()" style="visibility:hidden">最大</button>
+      </div>
+    </div>
+
+    <!-- 预估 -->
+    <div id="est-row">
+      当前价: <span id="est-price">—</span>&nbsp;&nbsp;预估: <span id="est-result">—</span>
+    </div>
+
+    <!-- 确认 -->
+    <button id="confirm-btn" onclick="submitOrder()" disabled>选择方向和操作</button>
+
+    <!-- 结果 -->
+    <div id="order-result"></div>
+
+    <!-- 滑点 -->
+    <div>
+      <div style="font-size:12px;color:#777;margin-bottom:5px">滑点保护 <span style="font-size:11px;color:#666">（买+/卖-）</span></div>
+      <div class="input-row">
+        <input type="number" id="slippage-input" value="0.05" min="0" max="0.99" step="0.01" style="max-width:100px">
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 买卖记录栏（已由下方「真实盈亏 · Polymarket」替代，保留 DOM 以兼容现有逻辑，隐藏显示） -->
+<div id="signal-history" style="display:none">
+  <div class="hist-title">买卖记录</div>
+  <div id="signal-history-list"><div style="color:#444;font-size:12px">暂无记录</div></div>
+</div>
+
+<!-- Polymarket 真实盈亏（每笔一行，含手续费和 Claim）-->
+<div id="pm-pnl">
+  <div class="hist-title">
+    <span>真实盈亏 · Polymarket</span>
+    <span class="pm-total" id="pm-pnl-total">加载中...</span>
+  </div>
+  <div id="pm-pnl-tabs">
+    <button class="pm-tab active" data-range="today">今日</button>
+    <button class="pm-tab" data-range="week">本周</button>
+  </div>
+  <div id="pm-pnl-header" class="pm-item pm-header">
+    <span class="pm-time">时间</span>
+    <span class="pm-kind">类型</span>
+    <span class="pm-outcome">方向</span>
+    <span class="pm-source">策略</span>
+    <span class="pm-detail">份额 × 价格</span>
+    <span class="pm-fee">手续费</span>
+    <span class="pm-title">市场</span>
+    <span class="pm-amount">现金流</span>
+    <span class="pm-pos-pnl">仓位盈亏</span>
+  </div>
+  <div id="pm-pnl-list"><div style="color:#444;font-size:12px">加载中...</div></div>
+</div>
+
+<script>
+// ── 盘口折叠 ──────────────────────────────────────────────────
+function toggleChart() {
+  const toggle = document.getElementById('chart-toggle');
+  const panel = document.getElementById('chart-collapsible');
+  const collapsed = panel.classList.toggle('collapsed');
+  toggle.classList.toggle('collapsed', collapsed);
+}
+
+function toggleBook() {
+  const toggle = document.getElementById('book-toggle');
+  const panel  = document.getElementById('book-collapsible');
+  const collapsed = panel.classList.toggle('collapsed');
+  toggle.classList.toggle('collapsed', collapsed);
+}
+
+const LOW_DATA_STORAGE_KEY = 'btc5m.lowDataMode';
+
+function loadLowDataModePreference() {
+  try {
+    return localStorage.getItem(LOW_DATA_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistLowDataModePreference() {
+  try {
+    localStorage.setItem(LOW_DATA_STORAGE_KEY, lowDataMode ? '1' : '0');
+  } catch {}
+}
+
+let lowDataMode = loadLowDataModePreference();
+document.body.classList.toggle('low-data-mode', lowDataMode);
+
+function buildWsUrl() {
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = new URL(`${protocol}://${location.host}`);
+  url.searchParams.set('dataMode', lowDataMode ? 'low' : 'full');
+  return url.toString();
+}
+
+// ── DOM ───────────────────────────────────────────────────────
+const $range      = document.getElementById('window-range');
+const $remaining  = document.getElementById('remaining');
+const $connDot    = document.getElementById('conn-dot');
+const $ptb        = document.getElementById('price-to-beat');
+const $cur        = document.getElementById('btc-current');
+const $diff       = document.getElementById('btc-diff');
+const $orderRemaining = document.getElementById('order-remaining');
+const $orderDiff      = document.getElementById('order-diff');
+const $bestBid    = document.getElementById('best-bid');
+const $bestAsk    = document.getElementById('best-ask');
+const $spreadVal  = document.getElementById('spread-val');
+const $signalHistoryList = document.getElementById('signal-history-list');
+const $lowDataToggle = document.getElementById('low-data-toggle');
+const $compactProbMain = document.getElementById('compact-prob-main');
+const $compactProbSub = document.getElementById('compact-prob-sub');
+const $compactBookMain = document.getElementById('compact-book-main');
+const $compactBookSub = document.getElementById('compact-book-sub');
+const $compactAccountMain = document.getElementById('compact-account-main');
+const $compactAccountSub = document.getElementById('compact-account-sub');
+const $compactStrategyMain = document.getElementById('compact-strategy-main');
+const $compactStrategySub = document.getElementById('compact-strategy-sub');
+let tradeHistory = [];
+
+function updateLowDataToggleUi() {
+  if (!$lowDataToggle) return;
+  $lowDataToggle.classList.toggle('on', lowDataMode);
+  $lowDataToggle.setAttribute('aria-pressed', lowDataMode ? 'true' : 'false');
+}
+
+function updateCompactOverview() {
+  if (!lowDataMode) return;
+  const rem = windowEnd ? Math.max(0, windowEnd - Math.floor(Date.now() / 1000)) : 0;
+  const remStr = `${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`;
+  const remColor = rem <= 30 ? '#f85149' : rem <= 60 ? '#f0a500' : '#e0e0e0';
+
+  // 概率
+  const $ldhUp = document.getElementById('ldh-up');
+  const $ldhDn = document.getElementById('ldh-dn');
+  if ($ldhUp && $ldhDn) {
+    if (isNaN(_signalUpPct)) {
+      $ldhUp.textContent = '涨 —';  $ldhUp.style.color = '#555';
+      $ldhDn.textContent = '跌 —';  $ldhDn.style.color = '#555';
+    } else {
+      $ldhUp.textContent = `涨 ${_signalUpPct}%`;
+      $ldhUp.style.color = _signalUpPct >= 60 ? '#3fb950' : _signalUpPct <= 40 ? '#f85149' : '#e0e0e0';
+      $ldhDn.textContent = `跌 ${_signalDnPct}%`;
+      $ldhDn.style.color = _signalDnPct >= 60 ? '#f85149' : _signalDnPct <= 40 ? '#3fb950' : '#e0e0e0';
+    }
+  }
+
+  // 倒计时
+  const $ldhTimer = document.getElementById('ldh-timer');
+  if ($ldhTimer) {
+    $ldhTimer.textContent = remStr;
+    $ldhTimer.style.color = remColor;
+  }
+
+  // 详情行
+  const $ldhPtb = document.getElementById('ldh-ptb');
+  const $ldhBtc = document.getElementById('ldh-btc');
+  const $ldhDiffCl = document.getElementById('ldh-diff-cl');
+  const $ldhDiffBn = document.getElementById('ldh-diff-bn');
+  const $ldhUsdc = document.getElementById('ldh-usdc');
+  const $ldhPosUp = document.getElementById('ldh-pos-up');
+  const $ldhPosDn = document.getElementById('ldh-pos-dn');
+  const $ldhStrat = document.getElementById('ldh-strat');
+
+  if ($ldhPtb) $ldhPtb.textContent = document.getElementById('price-to-beat')?.textContent || '—';
+  if ($ldhBtc) $ldhBtc.textContent = document.getElementById('btc-current')?.textContent || '—';
+  if ($ldhDiffCl) {
+    if (isNaN(_signalDiff)) {
+      $ldhDiffCl.textContent = '—';
+      $ldhDiffCl.style.color = '#888';
+    } else {
+      $ldhDiffCl.textContent = `${_signalDiff >= 0 ? '+' : ''}$${Math.round(_signalDiff)}`;
+      $ldhDiffCl.style.color = _signalDiff > 0 ? '#3fb950' : _signalDiff < 0 ? '#f85149' : '#888';
+    }
+  }
+  if ($ldhDiffBn) {
+    if (isNaN(serverBinanceDiff)) {
+      $ldhDiffBn.textContent = '—';
+    } else {
+      $ldhDiffBn.textContent = `${serverBinanceDiff >= 0 ? '+' : ''}$${Math.round(serverBinanceDiff)}`;
+    }
+  }
+  if ($ldhUsdc) {
+    $ldhUsdc.textContent = curUsdc != null ? `$${curUsdc.toFixed(2)}` : '—';
+    $ldhUsdc.style.color = curUsdc != null && curUsdc > 0 ? '#58a6ff' : '#555';
+  }
+  if ($ldhPosUp) {
+    $ldhPosUp.textContent = fmtSize(curUpLocal);
+    $ldhPosUp.style.color = curUpLocal > 0.01 ? '#3fb950' : '#444';
+  }
+  if ($ldhPosDn) {
+    $ldhPosDn.textContent = fmtSize(curDnLocal);
+    $ldhPosDn.style.color = curDnLocal > 0.01 ? '#f85149' : '#444';
+  }
+  if ($ldhStrat) {
+    const stateEl = document.getElementById('strat-state-text');
+    $ldhStrat.textContent = stateEl?.textContent || '—';
+    $ldhStrat.style.color =
+      stateEl?.className === 'hold' ? '#f0a500'
+      : stateEl?.className === 'active' ? '#3fb950'
+      : stateEl?.className === 'scan' ? '#7a8a9a'
+      : '#555';
+  }
+}
+
+function setLowDataMode(enabled, options = {}) {
+  const { persist = true, syncServer = true, clearBuffers = true } = options;
+  lowDataMode = !!enabled;
+  document.body.classList.toggle('low-data-mode', lowDataMode);
+  updateLowDataToggleUi();
+  if (persist) persistLowDataModePreference();
+  if (clearBuffers) clearRealtimeBuffers();
+  updateCompactOverview();
+  if (syncServer && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'clientConfig', dataMode: lowDataMode ? 'low' : 'full' }));
+  }
+}
+
+function toggleLowDataMode() {
+  setLowDataMode(!lowDataMode);
+}
+
+function getTradeSourceLabel(source) {
+  if (!source) return { text: '手动', cls: 'manual' };
+  if (source.startsWith('strategy')) {
+    const num = source.replace('strategy', '') || '?';
+    return { text: `策略${num}`, cls: 'strategy' };
+  }
+  return { text: '手动', cls: 'manual' };
+}
+
+function renderTradeHistory() {
+  if (!$signalHistoryList) return;
+  if (!Array.isArray(tradeHistory) || tradeHistory.length === 0) {
+    $signalHistoryList.innerHTML = '<div style="color:#444;font-size:12px">暂无记录</div>';
+    return;
+  }
+  $signalHistoryList.innerHTML = tradeHistory.map((r) => {
+    const source = getTradeSourceLabel(r.source);
+    const sideText = r.side === 'buy' ? '买入' : '卖出';
+    const dirText = r.direction === 'up' ? '涨▲' : '跌▼';
+    const timeText = r.ts ? new Date(r.ts).toLocaleString([], {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }) : '—';
+    const amountText = Number.isFinite(Number(r.amount)) ? Number(r.amount).toFixed(2) : '—';
+    const execPrice = Number.isFinite(Number(r.price)) ? Number(r.price) : NaN;
+    const fallbackPrice = Number.isFinite(Number(r.worstPrice)) ? Number(r.worstPrice) : NaN;
+    const displayPrice = Number.isFinite(execPrice) ? execPrice : fallbackPrice;
+    const priceText = Number.isFinite(displayPrice) ? `${Math.round(displayPrice * 100)}%` : '—';
+    const priceLabel = Number.isFinite(execPrice) ? '成交价' : '保护价';
+    const pnlVal = Number(r.pnl);
+    const pnlText = r.side === 'sell' && Number.isFinite(pnlVal)
+      ? ` | <span class="hist-pnl ${pnlVal > 0 ? 'up' : pnlVal < 0 ? 'down' : 'gray'}">盈亏 ${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>`
+      : '';
+    const reasonText = r.side === 'sell' && r.exitReason
+      ? ` | <span style="color:#f0a500">${r.exitReason.replace(/rem=/g, '剩余').replace(/s /g, '秒 ').replace(/s$/g, '秒').replace(/diff=/g, '差价')}</span>`
+      : '';
+    const roundText = r.roundEntry ? ` <span style="color:#666">[${r.roundEntry}]</span>` : '';
+    return `<div class="hist-item">
+      <span class="hist-time">${timeText}</span>
+      <span class="hist-type ${source.cls}">${source.text}${roundText}</span>
+      <span class="hist-side ${r.side}">${sideText}</span>
+      <span class="hist-desc">${dirText} ${amountText} | ${priceLabel} ${priceText}${pnlText}${reasonText}</span>
+    </div>`;
+  }).join('');
+}
+
+renderTradeHistory();
+updateLowDataToggleUi();
+
+// ── Polymarket 真实盈亏 ──────────────────────────────────────
+const $pmPnlList = document.getElementById('pm-pnl-list');
+const $pmPnlTotal = document.getElementById('pm-pnl-total');
+
+// 本地缓存最近一次拉到的全量 events，切换 range 时重渲染
+let pmEventsAll = [];
+let pmRange = 'today';  // today / week / month / all
+
+function formatPmTime(tsSec) {
+  return new Date(tsSec * 1000).toLocaleString([], {
+    month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/** 返回 range 对应的起始时间戳（秒）*/
+function rangeStartSec(range) {
+  const now = new Date();
+  if (range === 'today') {
+    now.setHours(0, 0, 0, 0);
+  } else if (range === 'week') {
+    // 本周一 00:00（周一为一周开始）
+    const dow = now.getDay() || 7;  // 周日=0 转成 7
+    now.setDate(now.getDate() - (dow - 1));
+    now.setHours(0, 0, 0, 0);
+  } else if (range === 'month') {
+    now.setDate(1);
+    now.setHours(0, 0, 0, 0);
+  } else if (range === '30d') {
+    return Math.floor(Date.now() / 1000) - 30 * 86400;
+  } else {
+    return 0;
+  }
+  return Math.floor(now.getTime() / 1000);
+}
+
+/** 在给定 events 上重算总览（按 cost 和 fee 分类汇总）*/
+function recalcTotal(events) {
+  let buyCost = 0, sellRev = 0, redeemRev = 0, fee = 0;
+  const txSet = new Set();
+  for (const e of events) {
+    if (e.kind === 'BUY') buyCost += e.cost;
+    else if (e.kind === 'SELL') sellRev += e.cost;
+    else if (e.kind === 'REDEEM') redeemRev += e.cost;
+    // LOST 不产生现金流（钱在 BUY 时已扣）和手续费
+    fee += (e.fee || 0);
+    // LOST 是合成事件，不计笔数（BUY 已经算过了）
+    if (e.transactionHash && e.kind !== 'LOST') txSet.add(e.transactionHash + ':' + e.kind);
+  }
+  return {
+    positionCount: txSet.size,
+    totalFee: fee,
+    netPnl: sellRev + redeemRev - buyCost - fee,
+  };
+}
+
+function renderPmPnl(events, total) {
+  if (Array.isArray(events)) pmEventsAll = events;
+  applyPmPnlFilter();
+}
+
+function applyPmPnlFilter() {
+  const start = rangeStartSec(pmRange);
+  const filtered = pmEventsAll.filter(e => e.ts >= start);
+  const localTotal = recalcTotal(filtered);
+
+  if ($pmPnlTotal) {
+    const net = Number(localTotal.netPnl || 0);
+    const cls = net >= 0 ? 'val-pos' : 'val-neg';
+    const sign = net >= 0 ? '+' : '';
+    const feeText = Number(localTotal.totalFee || 0).toFixed(2);
+    const cntText = localTotal.positionCount || 0;
+    $pmPnlTotal.innerHTML = `${cntText}笔 · 费$${feeText} · 净<span class="${cls}">${sign}$${net.toFixed(2)}</span>`;
+  }
+  if (!$pmPnlList) return;
+  if (filtered.length === 0) {
+    $pmPnlList.innerHTML = '<div style="color:#444;font-size:12px">该时段无记录</div>';
+    return;
+  }
+  renderPmPnlList(filtered);
+}
+
+// 绑定 tab 切换
+document.querySelectorAll('.pm-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.pm-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    pmRange = btn.dataset.range;
+    applyPmPnlFilter();
+  });
+});
+
+function renderPmPnlList(events) {
+  $pmPnlList.innerHTML = events.map((e) => {
+    const outcome = (e.outcome || '').toLowerCase();
+    const outcomeText = outcome === 'up' ? '涨▲' : outcome === 'down' ? '跌▼' : e.outcome;
+    const kindLabel = e.kind === 'BUY' ? '买入' : e.kind === 'SELL' ? '卖出' : e.kind === 'REDEEM' ? '领取' : '归零';
+    const kindCls = e.kind === 'BUY' ? 'buy' : e.kind === 'SELL' ? 'sell' : e.kind === 'REDEEM' ? 'claim' : 'lost';
+    const timeText = formatPmTime(e.ts);
+    const titleShort = (e.title || '').replace('Bitcoin Up or Down - ', '');
+
+    // 策略来源徽章（没有则占位以保持列对齐）
+    let sourceBadge;
+    if (e.strategySource) {
+      const isManual = e.strategySource === 'manual';
+      const srcText = isManual ? '手动' : e.strategySource.replace(/^strategy/i, 's').toUpperCase();
+      sourceBadge = `<span class="pm-source ${isManual ? 'manual' : ''}">${srcText}</span>`;
+    } else {
+      sourceBadge = `<span class="pm-source" style="visibility:hidden">—</span>`;
+    }
+
+    // 详细信息（交易参数）
+    let detailHtml = '';
+    if (e.kind === 'REDEEM') {
+      detailHtml = `${(e.size).toFixed(2)}份 × 100%`;
+    } else if (e.kind === 'LOST') {
+      detailHtml = `${(e.size).toFixed(2)}份 × 0%`;
+    } else {
+      detailHtml = `${(e.size).toFixed(2)}份 × ${(e.price * 100).toFixed(1)}%`;
+    }
+    // 手续费独立列
+    const feeVal = Number(e.fee || 0);
+    const feeHtml = feeVal > 0
+      ? `$${feeVal.toFixed(2)}`
+      : `<span class="dim">—</span>`;
+
+    // 右侧现金流（带标签）
+    const net = Number(e.netAmount || 0);
+    const amountLabel = e.kind === 'BUY' ? '支出' : e.kind === 'SELL' ? '收入' : e.kind === 'REDEEM' ? '领取' : '归零';
+    let amountHtml;
+    if (e.kind === 'LOST') {
+      // LOST 不产生现金流（钱在 BUY 时已扣），显示 "归零 $0.00"（灰）
+      amountHtml = `<span class="pm-amount-label">${amountLabel}</span><span class="pm-amount-val" style="color:#555">$0.00</span>`;
+    } else {
+      const amountCls = net >= 0 ? 'pos' : 'neg';
+      const amountSign = net >= 0 ? '+' : '';
+      amountHtml = `<span class="pm-amount-label">${amountLabel}</span><span class="pm-amount-val ${amountCls}">${amountSign}$${net.toFixed(2)}</span>`;
+    }
+
+    // 仓位盈亏（SELL/REDEEM/LOST 显示真实值，BUY 显示占位符保持列对齐）
+    let posPnlHtml;
+    if (e.positionPnl != null && (e.kind === 'SELL' || e.kind === 'REDEEM' || e.kind === 'LOST')) {
+      const p = Number(e.positionPnl);
+      const cls = p >= 0 ? 'pos' : 'neg';
+      const sign = p >= 0 ? '+' : '';
+      posPnlHtml = `<span class="pm-pos-pnl-label">仓位</span><span class="pm-pos-pnl-val ${cls}">${sign}$${p.toFixed(2)}</span>`;
+    } else {
+      posPnlHtml = `<span class="pm-pos-pnl-label">仓位</span><span class="pm-pos-pnl-val dim">—</span>`;
+    }
+
+    return `<div class="pm-item">
+      <span class="pm-time">${timeText}</span>
+      <span class="pm-kind ${kindCls}">${kindLabel}</span>
+      <span class="pm-outcome ${outcome}">${outcomeText}</span>
+      ${sourceBadge}
+      <span class="pm-detail">${detailHtml}</span>
+      <span class="pm-fee">${feeHtml}</span>
+      <span class="pm-title">${titleShort}</span>
+      <span class="pm-amount">${amountHtml}</span>
+      <span class="pm-pos-pnl">${posPnlHtml}</span>
+    </div>`;
+  }).join('');
+}
+
+
+const $mom5Poly   = document.getElementById('mom5-poly');
+const $mom5Bnb    = document.getElementById('mom5-bnb');
+const $mom5Prob   = document.getElementById('mom5-prob');
+const $mom10Poly  = document.getElementById('mom10-poly');
+const $mom10Bnb   = document.getElementById('mom10-bnb');
+const $mom10Prob  = document.getElementById('mom10-prob');
+
+const probHistory = []; // [{t, mid}]
+
+function setMomVal(el, val, isProb) {
+  if (val === null) { el.textContent = '—'; el.className = 'mom-val flat'; return; }
+  const threshold = isProb ? 0.5 : 2;
+  const arrow = val > threshold ? ' ▲' : val < -threshold ? ' ▼' : '';
+  el.textContent = (val >= 0 ? '+' : '') + (isProb ? val.toFixed(1) + '%' : '$' + Math.round(val)) + arrow;
+  el.className = 'mom-val ' + (val > threshold ? 'up' : val < -threshold ? 'down' : 'flat');
+}
+
+function updateVol() {
+  const $vol = document.getElementById('btc-vol');
+  if (!$vol) return;
+  const now = Date.now();
+  const pts = binancePoints.filter(p => p.t >= now - 30000);
+  const elapsed = now - _volStartTime;
+  if (pts.length < 2 || elapsed < 30000) {
+    const remain = Math.ceil((30000 - elapsed) / 1000);
+    $vol.textContent = remain + 's';
+    $vol.className = 'gray';
+    return;
+  }
+  // 用30秒窗口内最高价和最低价计算振幅
+  const prices = pts.map(p => p.price);
+  const hi = Math.max(...prices), lo = Math.min(...prices);
+  const rangePct = (hi - lo) / lo * 100;
+  const hiThreshold = parseFloat(document.getElementById('vol-threshold')?.value) || 0.15;
+  $vol.textContent = rangePct.toFixed(3) + '%';
+  $vol.className = rangePct < hiThreshold * 0.33 ? 'up' : rangePct < hiThreshold ? 'yellow' : 'down';
+}
+
+function updateBnDiff() {
+  const $el = document.getElementById('btc-diff-bn');
+  if (!$el) return;
+  const d = getBnDiff();
+  if (isNaN(d)) { $el.textContent = '—'; $el.className = 'gray'; return; }
+  $el.textContent = `${d >= 0 ? '+' : ''}$${Math.round(d)}`;
+  $el.className = d >= 0 ? 'up' : 'down';
+}
+
+function updateMomentum() {
+  const now = Date.now();
+  const getPriceBefore = (arr, ms) => {
+    const target = now - ms;
+    let best = null;
+    for (const p of arr) {
+      if (p.t <= target) best = p;
+      else break;
+    }
+    return best?.price ?? null;
+  };
+  const getProbBefore = (ms) => {
+    const target = now - ms;
+    let best = null;
+    for (const p of probHistory) {
+      if (p.t <= target) best = p;
+      else break;
+    }
+    return best?.mid ?? null;
+  };
+
+  const curPoly = chartPoints.length ? chartPoints[chartPoints.length - 1].price : null;
+  const curBnb  = binancePoints.length ? binancePoints[binancePoints.length - 1].price : null;
+  const curProb = probHistory.length ? probHistory[probHistory.length - 1].mid : null;
+
+  const poly5  = getPriceBefore(chartPoints, 3000);
+  const poly10 = getPriceBefore(chartPoints, 5000);
+  const bnb5   = getPriceBefore(binancePoints, 3000);
+  const bnb10  = getPriceBefore(binancePoints, 5000);
+  const prob5  = getProbBefore(3000);
+  const prob10 = getProbBefore(5000);
+
+  setMomVal($mom5Poly,  curPoly && poly5  ? curPoly - poly5   : null, false);
+  setMomVal($mom10Poly, curPoly && poly10 ? curPoly - poly10  : null, false);
+  setMomVal($mom5Bnb,   curBnb  && bnb5  ? curBnb  - bnb5    : null, false);
+  setMomVal($mom10Bnb,  curBnb  && bnb10 ? curBnb  - bnb10   : null, false);
+  setMomVal($mom5Prob,  curProb && prob5  ? (curProb - prob5) * 100 : null, true);
+  setMomVal($mom10Prob, curProb && prob10 ? (curProb - prob10) * 100 : null, true);
+}
+
+const $asksWrap   = document.getElementById('asks-wrap');
+const $bidsWrap   = document.getElementById('bids-wrap');
+const $probUp     = document.getElementById('prob-up');
+const $probDown   = document.getElementById('prob-down');
+const $probFill   = document.getElementById('prob-fill-up');
+const $acctUsdc   = document.getElementById('acct-usdc');
+const $acctAllowanceStatus = document.getElementById('acct-allowance-status');
+const $acctAllowanceTooltip = document.getElementById('acct-allowance-tooltip');
+const $acctUpL    = document.getElementById('acct-up-local');
+const $acctUpA    = document.getElementById('acct-up-api');
+const $acctDnL    = document.getElementById('acct-dn-local');
+const $acctDnA    = document.getElementById('acct-dn-api');
+const $lastSync   = document.getElementById('last-sync');
+const $amtInput   = document.getElementById('amount-input');
+const $amtUnit    = document.getElementById('amount-unit');
+const $amtLabel   = document.getElementById('amount-label');
+const $maxBtn     = document.getElementById('max-btn');
+const $estPrice   = document.getElementById('est-price');
+const $estResult  = document.getElementById('est-result');
+const $confirmBtn = document.getElementById('confirm-btn');
+const $orderResult= document.getElementById('order-result');
+const $stratConfigNote = document.getElementById('strat-config-note');
+// 动态策略控件（初始化后由 initStrategyUI 填充）
+let strategyKeys = [];
+const stratChkEls = {};  // { s1: HTMLInputElement, s2: ..., ... }
+const stratAmtEls = {};  // { s1: HTMLInputElement, s2: ..., ... }
+
+// ── 状态 ─────────────────────────────────────────────────────
+let windowEnd = 0;
+let curBestBid = NaN, curBestAsk = NaN;
+let _signalDiff = NaN, _signalUpPct = NaN, _signalDnPct = NaN;
+let probabilityReady = false;
+let curUsdc = null;
+let curUpLocal = 0, curDnLocal = 0;
+let curUpApi = 0, curDnApi = 0, curApiSyncAt = 0;
+let curUpVerified = false, curDnVerified = false;
+let curLastTradeAt = 0;
+let selDir = null;   // 'up' | 'down'
+let selSide = null;  // 'buy' | 'sell'
+
+// ── 策略状态 ──────────────────────────────────────────────────
+const strat = {
+  state: 'IDLE',
+  activeStrategy: null,
+  direction: null,
+  buyAmount: 0,
+  posBeforeBuy: 0,
+  posBeforeSell: 0,
+  waitVerifyAfterSell: false,
+  cleanupAfterVerify: false,
+  actionTs: 0,
+  prevUpPct: NaN,
+  perStrategy: {},        // 每个策略的私有状态（从服务端广播）
+};
+const stratEnabled = {};
+const stratAmount  = {};
+let maxRoundEntries = 1;
+let marketHoursOnly = false;
+let autoClaimEnabled = false;
+const $marketHoursOnly = document.getElementById('market-hours-only');
+const $autoClaimEnabled = document.getElementById('auto-claim-enabled');
+const $maxRoundEntries = document.getElementById('max-round-entries');
+const UNVERIFIED_SELL_BUFFER = 0.05;
+const STRAT_BUY_LOCK_MS = 15000;
+let stratBuyLockUntil = 0;
+let serverBinanceDiff = NaN;
+let stratConfigSaving = false;
+let _pendingStrategyConfig = null;
+
+function fmtSize(n) { return (Math.floor(n * 100) / 100).toFixed(2); }
+updateCompactOverview();
+
+function setStratConfigNote(text = 'ⓘ', color = '#555') {
+  if (!$stratConfigNote) return;
+  $stratConfigNote.textContent = text;
+  $stratConfigNote.style.color = color;
+}
+
+function setStratControlsDisabled(disabled) {
+  for (const key of strategyKeys) {
+    if (stratChkEls[key]) stratChkEls[key].disabled = disabled;
+    if (stratAmtEls[key]) stratAmtEls[key].disabled = disabled;
+  }
+  if ($maxRoundEntries) $maxRoundEntries.disabled = disabled;
+  if ($marketHoursOnly) $marketHoursOnly.disabled = disabled;
+  if ($autoClaimEnabled) $autoClaimEnabled.disabled = disabled;
+}
+
+function updateFairProb(msg) {
+  const $wrap = document.getElementById('fair-prob-panel');
+  if (!$wrap) return;
+  $wrap.style.display = '';
+
+  const fp = msg && msg.fairProb;
+  if (!fp || fp.diff == null || fp.upPct == null) {
+    document.getElementById('fp-input').textContent = '—';
+    document.getElementById('fp-compare').textContent = '—';
+    document.getElementById('fp-bias').innerHTML = '<span style="color:#666">偏差 —</span>';
+    return;
+  }
+
+  const diffSign = fp.diff > 0 ? '+' : '';
+  document.getElementById('fp-input').innerHTML =
+    `<span style="color:#666">diff</span> <span style="color:#e0e0e0">${diffSign}${Math.round(fp.diff)}</span>` +
+    ` <span style="color:#666">rem</span> <span style="color:#e0e0e0">${fp.rem}s</span>`;
+
+  if (fp.fairUp == null) {
+    document.getElementById('fp-compare').innerHTML =
+      `<span style="color:#666">涨</span> <span style="color:#e0e0e0">${fp.upPct.toFixed(0)}%</span>` +
+      ` <span style="color:#444">→</span> <span style="color:#666">合理 —</span>`;
+    document.getElementById('fp-bias').innerHTML =
+      '<span style="color:#666">偏差 —</span> <span style="color:#666">·</span>';
+    return;
+  }
+
+  document.getElementById('fp-compare').innerHTML =
+    `<span style="color:#666">涨</span> <span style="color:#e0e0e0">${fp.upPct.toFixed(0)}%</span>` +
+    ` <span style="color:#444">→</span>` +
+    ` <span style="color:#666">合理</span> <span style="color:#58a6ff">${fp.fairUp}%</span>`;
+
+  const bias = fp.biasUp;
+  const absBias = Math.abs(bias);
+  let color = '#666', icon = '·';
+  if (bias < 0) { color = '#f85149'; icon = '✗'; }
+  else if (absBias >= 10) { color = '#3fb950'; icon = '✓'; }
+  else if (absBias >= 5) { color = '#f0a500'; icon = '○'; }
+  const sign = bias >= 0 ? '+' : '';
+  document.getElementById('fp-bias').innerHTML =
+    `<span style="color:#666">偏差</span>` +
+    ` <span style="color:${color};font-weight:600">${sign}${bias.toFixed(0)}</span>` +
+    ` <span style="color:${color}">${icon}</span>`;
+}
+
+// s6 动量因子面板已移除
+
+function applyStrategyConfig(config) {
+  const activeEl = document.activeElement;
+  for (const key of strategyKeys) {
+    stratEnabled[key] = !!config.enabled?.[key];
+    stratAmount[key] = Number(config.amount?.[key]) || 1;
+    // 用户正在聚焦某个输入框时不覆盖它的当前值
+    if (stratChkEls[key] && stratChkEls[key] !== activeEl) stratChkEls[key].checked = stratEnabled[key];
+    if (stratAmtEls[key] && stratAmtEls[key] !== activeEl) stratAmtEls[key].value = String(stratAmount[key]);
+  }
+  if (config.maxRoundEntries != null) {
+    maxRoundEntries = Number(config.maxRoundEntries) || 1;
+    if ($maxRoundEntries && $maxRoundEntries !== activeEl) $maxRoundEntries.value = String(maxRoundEntries);
+  }
+  if (typeof config.marketHoursOnly === 'boolean') {
+    marketHoursOnly = config.marketHoursOnly;
+    if ($marketHoursOnly && $marketHoursOnly !== activeEl) $marketHoursOnly.checked = marketHoursOnly;
+  }
+  if (typeof config.autoClaimEnabled === 'boolean') {
+    autoClaimEnabled = config.autoClaimEnabled;
+    if ($autoClaimEnabled && $autoClaimEnabled !== activeEl) $autoClaimEnabled.checked = autoClaimEnabled;
+  }
+}
+
+async function saveStrategyConfigFromControls() {
+  if (stratConfigSaving) return;
+  const nextEnabled = {};
+  const nextAmount = {};
+  for (const key of strategyKeys) {
+    nextAmount[key] = Number(stratAmtEls[key]?.value);
+    nextEnabled[key] = !!stratChkEls[key]?.checked;
+    if (!Number.isFinite(nextAmount[key]) || nextAmount[key] < 0.01) {
+      setStratConfigNote(`策略${key.slice(1)}金额必须 ≥ 0.01`, '#f85149');
+      applyStrategyConfig({ enabled: stratEnabled, amount: stratAmount });
+      setTimeout(() => {
+        if (!stratConfigSaving) setStratConfigNote();
+      }, 2500);
+      return;
+    }
+  }
+
+  stratConfigSaving = true;
+  setStratControlsDisabled(true);
+  setStratConfigNote('保存中...', '#f0a500');
+
+  try {
+    const res = await fetch('/api/strategy/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: nextEnabled,
+        amount: nextAmount,
+        maxRoundEntries: Number($maxRoundEntries?.value) || 1,
+        marketHoursOnly: !!$marketHoursOnly?.checked,
+        autoClaimEnabled: !!$autoClaimEnabled?.checked,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.strategyConfig) applyStrategyConfig(data.strategyConfig);
+    setStratConfigNote('已保存', '#3fb950');
+    setTimeout(() => {
+      if (!stratConfigSaving) setStratConfigNote();
+    }, 1500);
+  } catch (e) {
+    applyStrategyConfig({ enabled: stratEnabled, amount: stratAmount });
+    setStratConfigNote(e.message?.slice(0, 40) || '保存失败', '#f85149');
+    setTimeout(() => {
+      if (!stratConfigSaving) setStratConfigNote();
+    }, 2500);
+  } finally {
+    stratConfigSaving = false;
+    setStratControlsDisabled(false);
+  }
+}
+
+function isDirectionVerified(dir) {
+  if (!dir) return false;
+  return dir === 'up' ? curUpVerified : curDnVerified;
+}
+
+function hasOpenPosition() {
+  return curUpLocal > 0.01 || curDnLocal > 0.01;
+}
+
+function hasPendingBuyLock() {
+  return Date.now() < stratBuyLockUntil;
+}
+
+function isWindowExpired() {
+  return !!windowEnd && Math.floor(Date.now() / 1000) >= windowEnd;
+}
+
+// ── 倒计时 ────────────────────────────────────────────────────
+setInterval(() => {
+  if (windowEnd) {
+    const rem = windowEnd - Math.floor(Date.now() / 1000);
+    if (rem <= 0) {
+      $remaining.textContent = '0:00';
+      $orderRemaining.textContent = '0:00';
+    } else {
+      const remStr = `${Math.floor(rem/60)}:${String(rem%60).padStart(2,'0')}`;
+      $remaining.textContent = remStr;
+      $orderRemaining.textContent = remStr;
+      $remaining.classList.toggle('ending', rem <= 30);
+    }
+  }
+
+  // 校准倒计时
+  const $cd = document.getElementById('calib-countdown');
+  if ($cd) {
+    const msSinceTrade = curLastTradeAt ? Date.now() - curLastTradeAt : Infinity;
+    const calibRem = Math.ceil((15000 - msSinceTrade) / 1000);
+    if (calibRem > 0) {
+      $cd.textContent = `校准中 ${calibRem}s`;
+    } else {
+      $cd.textContent = '';
+    }
+  }
+
+  // Claim 功能已移除：请在 Polymarket 官网 Settings 中开启 Auto Redeem
+  updateCompactOverview();
+}, 250);
+
+// ── 盘口渲染 ──────────────────────────────────────────────────
+function renderOrders(bids, asks) {
+  const maxSize = Math.max(...bids.map(b=>b.size), ...asks.map(a=>a.size), 1);
+  $asksWrap.innerHTML = [...asks].sort((a,b)=>a.price-b.price).slice(0,6).sort((a,b)=>b.price-a.price).map(a => {
+    const pct = (a.size/maxSize*100).toFixed(1);
+    return `<div class="order-row ask">
+      <div class="depth-bar" style="width:${pct}%"></div>
+      <span class="up-price down">${Math.round(a.price*100)}%</span>
+      <span class="qty">${a.size.toFixed(1)}</span>
+      <span class="dn-price down">${Math.round((1-a.price)*100)}%</span>
+    </div>`;
+  }).join('');
+  $bidsWrap.innerHTML = [...bids].sort((a,b)=>b.price-a.price).slice(0,6).map(b => {
+    const pct = (b.size/maxSize*100).toFixed(1);
+    return `<div class="order-row bid">
+      <div class="depth-bar" style="width:${pct}%"></div>
+      <span class="up-price up">${Math.round(b.price*100)}%</span>
+      <span class="qty">${b.size.toFixed(1)}</span>
+      <span class="dn-price up">${Math.round((1-b.price)*100)}%</span>
+    </div>`;
+  }).join('');
+}
+
+// ── WS 消息处理 ───────────────────────────────────────────────
+function onMessage(msg) {
+  if (msg.type === 'clientConfig') {
+    if (msg.dataMode === 'low' || msg.dataMode === 'full') {
+      setLowDataMode(msg.dataMode === 'low', { persist: true, syncServer: false, clearBuffers: msg.dataMode === 'low' });
+    }
+    return;
+  }
+  if (msg.type === 'tradeHistory') {
+    if (Array.isArray(msg.tradeHistory)) {
+      tradeHistory = msg.tradeHistory;
+      renderTradeHistory();
+    }
+    return;
+  }
+  if (msg.type === 'pmPnl') {
+    renderPmPnl(msg.events || [], msg.total || null);
+    return;
+  }
+  if (msg.type === 'window') {
+    windowEnd = msg.windowEnd;
+    $range.textContent = `${new Date(msg.windowStart*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} → ${new Date(msg.windowEnd*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
+    updateCompactOverview();
+    return;
+  }
+  if (msg.type === 'claimProgress') {
+    const status = document.getElementById('claim-status');
+    if (status) {
+      status.style.color = msg.status === 'error' ? '#f85149' : '#f0a500';
+      status.textContent = msg.status === 'error'
+        ? `领取中 ${msg.current}/${msg.total}，${msg.title} 失败`
+        : `领取中 ${msg.current}/${msg.total}`;
+    }
+    return;
+  }
+  // claimable / claimCooldown 消息已忽略（Claim 功能已移至 Polymarket 官网）
+  if (msg.type === 'claimable' || msg.type === 'claimCooldown') return;
+  if (msg.type === 'backtestStatus') {
+    backtestCollecting = !!msg.collecting;
+    updateBacktestUI();
+    return;
+  }
+  if (msg.type === 'recentResults') {
+    msg.results.forEach((r, i) => {
+      const dot = document.getElementById(`rd-${i}`);
+      if (!dot) return;
+      const tip = r.result
+        ? `${r.timeRange} ${r.result === 'up' ? '涨赢' : '跌赢'}`
+        : `${r.timeRange} 待确认`;
+      dot.className = 'result-dot' + (r.result ? ' ' + r.result : '');
+      dot.innerHTML = `${r.result === 'up' ? '▲' : r.result === 'down' ? '▼' : '?'}<span class="dot-tip">${tip}</span>`;
+    });
+    return;
+  }
+  if (msg.type === 'wsStatus') {
+    ['market','chainlink','user','binance'].forEach(k => {
+      const el = document.getElementById('ws-' + k);
+      if (el) el.classList.toggle('on', !!msg[k]);
+    });
+    return;
+  }
+  if (msg.type === 'chainlinkDown') {
+    $cur.textContent = '-';
+    $diff.textContent = '-'; $orderDiff.textContent = '-';
+    _signalDiff = NaN;
+    serverBinanceDiff = NaN;
+    updateBnDiff();
+    updateCompactOverview();
+    return;
+  }
+  if (msg.type === 'chainlinkPrice') {
+    if (lowDataMode) return;
+    chartPoints.push({ t: msg.t, price: msg.price });
+    const cutoff = Date.now() - 130000;
+    while (chartPoints.length > 0 && chartPoints[0].t < cutoff) chartPoints.shift();
+    if (chartPoints.length > 2000) chartPoints.splice(0, chartPoints.length - 2000);
+    drawChart();
+    return;
+  }
+  if (msg.type === 'marketDown') {
+    clearBestDrivenState('等待盘口...');
+    $asksWrap.innerHTML = '';
+    $bidsWrap.innerHTML = '';
+    serverBinanceDiff = NaN;
+    updateBnDiff();
+    updateOrderAvailability();
+    updateEst();
+    updateStratUI();
+    return;
+  }
+  if (msg.type === 'binancePrice') {
+    if (lowDataMode) return;
+    binancePoints.push({ t: msg.t, price: msg.price });
+    const cutoff = Date.now() - 130000;
+    while (binancePoints.length > 0 && binancePoints[0].t < cutoff) binancePoints.shift();
+    updateMomentum();
+    updateVol();
+    updateBnDiff();
+    return;
+  }
+  if (msg.type !== 'state') return;
+
+  // 窗口
+  if (msg.windowEnd) {
+    windowEnd = msg.windowEnd;
+    $range.textContent = `${new Date(msg.windowStart*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} → ${new Date(msg.windowEnd*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
+    // 新窗口重置图表
+    if (msg.windowStart && msg.windowStart !== chartWindowStart) {
+      chartWindowStart = msg.windowStart;
+      chartReset();
+    }
+  }
+
+  // 图表更新：始终用服务端 priceHistory 中的时间戳，避免前端本地时间偏差
+  chartPtb = msg.priceToBeat ?? null;
+  if (Array.isArray(msg.priceHistory)) {
+    chartPoints.length = 0;
+    for (const p of msg.priceHistory) chartPoints.push(p);
+    const cutoff = Date.now() - 130000;
+    while (chartPoints.length > 0 && chartPoints[0].t < cutoff) chartPoints.shift();
+    drawChart();
+  }
+  // 币安历史：刷新后补全历史轨迹
+  if (Array.isArray(msg.binanceHistory)) {
+    binancePoints.length = 0;
+    for (const p of msg.binanceHistory) binancePoints.push(p);
+    drawChart();
+  }
+
+  if (typeof msg.binanceOffset === 'number') {
+    binanceOffset = msg.binanceOffset;
+  } else if (msg.binanceOffset == null) {
+    binanceOffset = 0;
+  }
+  serverBinanceDiff = typeof msg.binanceDiff === 'number' ? msg.binanceDiff : NaN;
+  updateBnDiff();
+
+  // 更新 K 线状态
+  if (msg.klineCounts) {
+    const $k1 = document.getElementById('kline-1m-count');
+    const $k5 = document.getElementById('kline-5m-count');
+    const k1 = Number(msg.klineCounts.k1m) || 0;
+    const k5 = Number(msg.klineCounts.k5m) || 0;
+    if ($k1) {
+      $k1.textContent = String(k1);
+      $k1.style.color = k1 >= 120 ? '#3fb950' : k1 >= 30 ? '#f0a500' : '#f85149';
+    }
+    if ($k5) {
+      $k5.textContent = String(k5);
+      $k5.style.color = k5 >= 20 ? '#3fb950' : k5 >= 5 ? '#f0a500' : '#f85149';
+    }
+  }
+
+  // BTC 价格
+  $ptb.textContent = msg.priceToBeat != null ? `$${msg.priceToBeat.toFixed(2)}` : '—';
+  $ptb.className   = 'price-val gray';
+  $cur.textContent = msg.currentPrice != null ? `$${msg.currentPrice.toFixed(2)}` : '—';
+  $cur.className   = msg.currentPrice != null ? 'price-val' : 'price-val gray';
+  if (msg.priceToBeat != null && msg.currentPrice != null) {
+    const d = msg.currentPrice - msg.priceToBeat;
+    _signalDiff = d;
+    const diffStr = `${d>=0?'+':''}$${Math.round(d)}`;
+    const diffCls = d >= 0 ? 'up' : 'down';
+    $diff.textContent = diffStr; $diff.className = diffCls;
+    $orderDiff.textContent = diffStr; $orderDiff.className = diffCls;
+  } else {
+    _signalDiff = NaN;
+    $diff.textContent = '—'; $diff.className = 'gray';
+    $orderDiff.textContent = '—'; $orderDiff.className = 'gray';
+  }
+
+  // 盘口
+  probabilityReady = !!msg.probabilityReady;
+  const bid = probabilityReady ? parseFloat(msg.bestBid) : NaN;
+  const ask = probabilityReady ? parseFloat(msg.bestAsk) : NaN;
+  curBestBid = bid; curBestAsk = ask;
+  $bestBid.textContent = isNaN(bid) ? '—' : Math.round(bid*100) + '%';
+  $bestAsk.textContent = isNaN(ask) ? '—' : Math.round(ask*100) + '%';
+  $spreadVal.textContent = !isNaN(bid) && !isNaN(ask) ? Math.round((ask-bid)*100) + '%' : '—';
+  if (msg.bids && msg.asks) renderOrders(msg.bids, msg.asks);
+
+  // 概率
+  if (!isNaN(bid) && !isNaN(ask)) {
+    const mid = (bid+ask)/2;
+    const up = Math.round(mid*100), dn = Math.round((1-mid)*100);
+    _signalUpPct = up; _signalDnPct = dn;
+    $probUp.textContent = up+'%'; $probDown.textContent = dn+'%';
+    $probFill.style.width = up+'%';
+    const $upPct = document.getElementById('dir-up-pct');
+    const $dnPct = document.getElementById('dir-dn-pct');
+    $upPct.textContent = up+'%'; $upPct.style.color = '#3fb950';
+    $dnPct.textContent = dn+'%'; $dnPct.style.color = '#f85149';
+    // 记录概率历史
+    probHistory.push({ t: Date.now(), mid });
+    const cutoff = Date.now() - 130000;
+    while (probHistory.length > 0 && probHistory[0].t < cutoff) probHistory.shift();
+  } else {
+    _signalUpPct = NaN;
+    _signalDnPct = NaN;
+    $probUp.textContent = '—';
+    $probDown.textContent = '—';
+    $probFill.style.width = '50%';
+  }
+  updateMomentum();
+
+  // 账户持仓
+  curUpLocal = msg.upLocalSize ?? 0;
+  curDnLocal = msg.downLocalSize ?? 0;
+  curUpApi   = msg.upApiSize ?? 0;
+  curDnApi   = msg.downApiSize ?? 0;
+  curApiSyncAt = msg.lastApiSyncAt ?? 0;
+  curUpVerified = msg.upApiVerified ?? false;
+  curDnVerified = msg.downApiVerified ?? false;
+  curLastTradeAt = msg.lastTradeAt ?? 0;
+  curUsdc = typeof msg.usdc === 'number' ? msg.usdc : null;
+  $acctUsdc.textContent  = msg.usdc != null ? `$${msg.usdc.toFixed(2)}` : '—';
+  if ($acctAllowanceStatus) {
+    const status = msg.usdcAllowanceStatus || '—';
+    $acctAllowanceStatus.textContent = status;
+    $acctAllowanceStatus.className = 'allowance-status ' + (
+      status === '已授权' ? 'up' : status === '未完全授权' ? 'yellow' : 'down'
+    );
+    const details = Array.isArray(msg.usdcAllowanceDetails) ? msg.usdcAllowanceDetails : [];
+    if ($acctAllowanceTooltip) {
+      const allowanceNameMap = {
+        '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E': '普通市场',
+        '0xC5d563A36AE78145C45a50134d48A1215220f80a': '多结果市场',
+        '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296': '多结果适配器',
+        'default': '默认授权',
+      };
+      $acctAllowanceTooltip.innerHTML = details.length
+        ? details.map((item) => {
+            const short = allowanceNameMap[item.spender] || '其他授权';
+            const amount = typeof item.amount === 'number'
+              ? (item.amount > 1e9 ? '无限' : '$' + item.amount.toFixed(2))
+              : '—';
+            return `<div>${short}: ${amount}</div>`;
+          }).join('')
+        : '<div>暂无授权明细</div>';
+    }
+  }
+  $acctUpL.textContent   = fmtSize(curUpLocal);
+  $acctUpA.textContent   = fmtSize(curUpApi);
+  $acctDnL.textContent   = fmtSize(curDnLocal);
+  $acctDnA.textContent   = fmtSize(curDnApi);
+  $lastSync.textContent  = curApiSyncAt ? new Date(curApiSyncAt).toLocaleTimeString() : '—';
+  const $upTag = document.getElementById('up-verified-tag');
+  const $dnTag = document.getElementById('dn-verified-tag');
+  $upTag.textContent = curUpVerified ? '已校准' : '未校准';
+  $upTag.className   = 'verified-tag' + (curUpVerified ? ' ok' : '');
+  $dnTag.textContent = curDnVerified ? '已校准' : '未校准';
+  $dnTag.className   = 'verified-tag' + (curDnVerified ? ' ok' : '');
+
+  if (msg.strategyConfig && !stratConfigSaving) {
+    // 缓存最新配置，initStrategyUI 完成后会重新应用
+    _pendingStrategyConfig = msg.strategyConfig;
+    if (strategyKeys.length > 0) {
+      applyStrategyConfig(msg.strategyConfig);
+    }
+  }
+
+  if (msg.strategy) {
+    strat.state = msg.strategy.state || 'IDLE';
+    strat.activeStrategy = msg.strategy.activeStrategy ?? null;
+    strat.direction = msg.strategy.direction ?? null;
+    strat.buyAmount = Number(msg.strategy.buyAmount) || 0;
+    strat.posBeforeBuy = Number(msg.strategy.posBeforeBuy) || 0;
+    strat.posBeforeSell = Number(msg.strategy.posBeforeSell) || 0;
+    strat.waitVerifyAfterSell = !!msg.strategy.waitVerifyAfterSell;
+    strat.cleanupAfterVerify = !!msg.strategy.cleanupAfterVerify;
+    strat.actionTs = Number(msg.strategy.actionTs) || 0;
+    strat.prevUpPct = typeof msg.strategy.prevUpPct === 'number' ? msg.strategy.prevUpPct : NaN;
+    strat.perStrategy = msg.strategy.perStrategy || {};
+    stratBuyLockUntil = Number(msg.strategy.buyLockUntil) || 0;
+  }
+  updateFairProb(msg);
+
+  updateOrderAvailability();
+  updateEst();
+  updateSignal();
+  updateStratUI();
+  updateCompactOverview();
+}
+
+let _lastSignalKey = '';
+let _lastSignalTime = 0;  // 上次触发历史记录的时间戳（ms）
+const SIGNAL_COOLDOWN = 5000;  // 5秒冷却
+
+// 根据差价和概率判断买入方向
+function pickSignalDir(d, upPct, dnPct) {
+  if (d > 0) return 'down';    // 涨多了，买跌
+  if (d < 0) return 'up';      // 跌多了，买涨
+  return dnPct < upPct ? 'down' : 'up';  // 差价为0，选更便宜的
+}
+
+function clearBestDrivenState() {
+  curBestBid = NaN;
+  curBestAsk = NaN;
+  probabilityReady = false;
+  _signalDiff = NaN;
+  _signalUpPct = NaN;
+  _signalDnPct = NaN;
+  serverBinanceDiff = NaN;
+  _lastSignalKey = '';
+  $bestBid.textContent = '—';
+  $bestAsk.textContent = '—';
+  $spreadVal.textContent = '—';
+  $probUp.textContent = '—';
+  $probDown.textContent = '—';
+  $probFill.style.width = '50%';
+  updateBnDiff();
+  updateCompactOverview();
+}
+
+// ── 自动策略 ──────────────────────────────────────────────────
+
+function updateStratUI() {
+  const el = document.getElementById('strat-state-text');
+  if (!el) return;
+  const anyEnabled = strategyKeys.some(k => stratEnabled[k]);
+
+  // 扫描信息：差价、概率、偏移生效倒计时
+  const infoEl = document.getElementById('strat-scan-info');
+  if (infoEl) {
+    const bnDiff = getBnDiff();
+    const cooldown = Math.ceil((500 - (Date.now() - _bnDragEndTime)) / 1000);
+    const cooldownStr = cooldown > 0 ? ` ⏳${cooldown}s` : '';
+    const diffStr = isNaN(bnDiff) ? (cooldown > 0 ? `偏移生效中${cooldownStr}` : '差价—') : `差价${bnDiff >= 0 ? '+' : ''}${Math.round(bnDiff)}`;
+    const upStr = isNaN(_signalUpPct) ? '' : ` 涨${_signalUpPct}% 跌${_signalDnPct}%`;
+    infoEl.textContent = diffStr + upStr;
+  }
+  // 策略标签高亮：活跃策略橙色
+  const rem = windowEnd ? windowEnd - Math.floor(Date.now() / 1000) : 0;
+  for (const key of strategyKeys) {
+    const n = Number(key.slice(1));
+    const lbl = stratChkEls[key]?.closest('label');
+    if (!lbl) continue;
+    if (strat.activeStrategy === n) {
+      lbl.style.color = '#f0a500';
+    } else {
+      lbl.style.color = '';
+    }
+  }
+
+  const s = strat.state;
+  const sn = strat.activeStrategy;
+  const dir = strat.direction === 'up' ? '涨' : '跌';
+  const myPct = strat.direction === 'up' ? _signalUpPct : _signalDnPct;
+
+  if (!anyEnabled && s === 'IDLE') {
+    el.className = 'idle'; el.textContent = '未启用'; return;
+  }
+  if (isNaN(curBestBid) || isNaN(curBestAsk)) {
+    if (s === 'HOLDING') {
+      const pctStr = isNaN(myPct) ? '' : ` 概率${myPct}%`;
+      el.className = 'hold'; el.textContent = `策略${sn} 持仓${dir}${pctStr} | 等待盘口best`; return;
+    }
+    if (s === 'WAIT_FILL') {
+      const elapsed = Math.floor((Date.now() - strat.actionTs) / 1000);
+      el.className = 'active'; el.textContent = `策略${sn} 等待成交 ${elapsed}s`; return;
+    }
+    if (s === 'RECONCILING_FILL') {
+      const elapsed = Math.floor((Date.now() - strat.actionTs) / 1000);
+      el.className = 'active'; el.textContent = `策略${sn} 延迟确认中 ${elapsed}s`; return;
+    }
+    if (s === 'WAIT_SELL_FILL') {
+      el.className = 'active'; el.textContent = `策略${sn} 等待卖出确认`; return;
+    }
+    if (s === 'BUYING') {
+      el.className = 'active'; el.textContent = `策略${sn} 买${dir}中`; return;
+    }
+    if (s === 'SELLING') {
+      el.className = 'active'; el.textContent = `策略${sn} 卖出中`; return;
+    }
+    el.className = 'idle'; el.textContent = '已暂停: 等待盘口best'; return;
+  }
+  if (s === 'IDLE' || s === 'SCANNING') {
+    el.className = 'scan'; el.textContent = `扫描中...`; return;
+  }
+  if (s === 'BUYING') {
+    el.className = 'active'; el.textContent = `策略${sn} 买${dir}中`; return;
+  }
+  if (s === 'WAIT_FILL') {
+    const elapsed = Math.floor((Date.now() - strat.actionTs) / 1000);
+    el.className = 'active'; el.textContent = `策略${sn} 等待成交 ${elapsed}s`; return;
+  }
+  if (s === 'RECONCILING_FILL') {
+    const elapsed = Math.floor((Date.now() - strat.actionTs) / 1000);
+    el.className = 'active'; el.textContent = `策略${sn} 延迟确认中 ${elapsed}s`; return;
+  }
+  if (s === 'HOLDING') {
+    const pctStr = isNaN(myPct) ? '' : ` 概率${myPct}%`;
+    el.className = 'hold'; el.textContent = `策略${sn} 持仓${dir}${pctStr}`; return;
+  }
+  if (s === 'SELLING') {
+    el.className = 'active'; el.textContent = `策略${sn} 卖出中`; return;
+  }
+  if (s === 'WAIT_SELL_FILL') {
+    el.className = 'active'; el.textContent = `策略${sn} 等待卖出确认`; return;
+  }
+  if (s === 'DONE') {
+    if (strat.cleanupAfterVerify) {
+      el.className = 'done'; el.textContent = `策略${sn} 等待校准后检查残仓`; return;
+    }
+    el.className = 'done'; el.textContent = `策略${sn} 完成 ✓`; return;
+  }
+}
+
+function getBnDiff() {
+  if (!isNaN(serverBinanceDiff)) return serverBinanceDiff;
+  if (!binancePoints.length || chartPtb == null) return NaN;
+  const bnPrice = binancePoints[binancePoints.length - 1].price;
+  return bnPrice - (chartPtb - binanceOffset);
+}
+
+// stratBuy/stratSell/stratReset/checkEntry/checkExit 逻辑已全部移至后端策略模块
+// 前端仅通过 WS 接收服务端广播的策略状态并更新 UI
+
+// 策略状态机逻辑完全在后端运行，前端仅更新UI显示
+function strategyTick() {
+  updateStratUI();
+}
+
+// ── 动态策略 UI 初始化 ───────────────────────────────────────
+async function initStrategyUI() {
+  try {
+    const res = await fetch('/api/strategy/descriptions');
+    if (!res.ok) return;
+    const descriptions = await res.json();
+    const container = document.getElementById('strat-groups');
+    if (!container) return;
+
+    strategyKeys = descriptions.map(d => d.key);
+    // 初始化 stratEnabled/stratAmount 默认值
+    for (const key of strategyKeys) {
+      if (!(key in stratEnabled)) stratEnabled[key] = false;
+      if (!(key in stratAmount)) stratAmount[key] = 1;
+    }
+
+    container.innerHTML = '';
+    // 按类型分组
+    const categories = [
+      { label: '差价', color: '#58a6ff', keys: ['s1', 's2', 's3'] },
+      { label: '反转', color: '#d2a8ff', keys: ['s4'] },
+      { label: '概率追赶', color: '#f0a500', keys: ['s5'] },
+    ];
+    const seen = new Set();
+    const buildGroup = (desc) => {
+      const group = document.createElement('div');
+      group.className = 'strat-group';
+      let tipHtml = `<div style="color:#f0a500;margin-bottom:4px">${desc.title}</div>`;
+      for (const line of desc.lines) {
+        const style = [];
+        if (line.color) style.push(`color:${line.color}`);
+        if (line.marginTop) style.push('margin-top:4px');
+        const styleAttr = style.length ? ` style="${style.join(';')}"` : '';
+        tipHtml += `<div${styleAttr}>${line.text}</div>`;
+      }
+      group.innerHTML = `
+        <label>
+          <input type="checkbox" id="${desc.key}-chk" title="仅修改当前运行状态">
+          <span class="strat-tip">${desc.number}·${desc.name}
+            <div class="tip-box">${tipHtml}</div>
+          </span>
+        </label>
+        <input type="number" class="strat-amt" id="${desc.key}-amt" value="1" min="0.01" step="0.01" title="仅修改当前运行状态">
+        <span style="color:#555">U</span>
+      `;
+      return group;
+    };
+    for (const cat of categories) {
+      const cat_descs = descriptions.filter((d) => cat.keys.includes(d.key));
+      if (!cat_descs.length) continue;
+      const row = document.createElement('div');
+      row.className = 'strat-row';
+      row.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap';
+      const catLabel = document.createElement('span');
+      catLabel.style.cssText = `font-size:11px;font-weight:600;color:${cat.color};min-width:60px`;
+      catLabel.textContent = cat.label;
+      row.appendChild(catLabel);
+      for (const desc of cat_descs) {
+        row.appendChild(buildGroup(desc));
+        seen.add(desc.key);
+      }
+      container.appendChild(row);
+    }
+    // 其他未分类策略（兼容未来新增）
+    const others = descriptions.filter((d) => !seen.has(d.key));
+    if (others.length) {
+      const row = document.createElement('div');
+      row.className = 'strat-row';
+      row.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap';
+      const catLabel = document.createElement('span');
+      catLabel.style.cssText = 'font-size:11px;font-weight:600;color:#888;min-width:60px';
+      catLabel.textContent = '其他';
+      row.appendChild(catLabel);
+      for (const desc of others) {
+        row.appendChild(buildGroup(desc));
+      }
+      container.appendChild(row);
+    }
+    // 绑定控件引用（所有 descriptions）
+    for (const desc of descriptions) {
+      stratChkEls[desc.key] = document.getElementById(`${desc.key}-chk`);
+      stratAmtEls[desc.key] = document.getElementById(`${desc.key}-amt`);
+    }
+
+    // 绑定 change 事件
+    for (const key of strategyKeys) {
+      if (stratChkEls[key]) stratChkEls[key].addEventListener('change', saveStrategyConfigFromControls);
+      if (stratAmtEls[key]) stratAmtEls[key].addEventListener('change', saveStrategyConfigFromControls);
+    }
+
+    // 应用在 UI 初始化前缓存的配置
+    if (_pendingStrategyConfig) {
+      applyStrategyConfig(_pendingStrategyConfig);
+      _pendingStrategyConfig = null;
+    }
+  } catch (e) {
+    console.warn('[initStrategyUI] 获取策略描述失败:', e.message);
+  }
+}
+
+// 页面加载时初始化策略 UI
+initStrategyUI();
+if ($maxRoundEntries) $maxRoundEntries.addEventListener('change', saveStrategyConfigFromControls);
+if ($marketHoursOnly) $marketHoursOnly.addEventListener('change', saveStrategyConfigFromControls);
+if ($autoClaimEnabled) $autoClaimEnabled.addEventListener('change', saveStrategyConfigFromControls);
+
+// F1/F2 快捷键切换买入/卖出，F3/F4 切换涨跌方向
+document.addEventListener('keydown', e => {
+  if (e.key === 'F1') { e.preventDefault(); setSide('buy'); }
+  if (e.key === 'F2') { e.preventDefault(); setSide('sell'); }
+  if (e.key === 'F3') { e.preventDefault(); setDir('up'); }
+  if (e.key === 'F4') { e.preventDefault(); setDir('down'); }
+});
+
+function updateSignal() {
+  // 遗留函数，机会提示已移除；仍保留 _lastSignalKey 清理以防他处引用
+  _lastSignalKey = '';
+}
+
+// ── 下单面板逻辑 ──────────────────────────────────────────────
+function setDir(d) {
+  selDir = d;
+  document.getElementById('btn-up').className   = 'tog-btn' + (d==='up'   ? ' active-up'   : '');
+  document.getElementById('btn-down').className = 'tog-btn' + (d==='down' ? ' active-down' : '');
+  updatePanel();
+}
+
+function setSide(s) {
+  selSide = s;
+  document.getElementById('btn-buy').className  = 'side-btn' + (s==='buy'  ? ' active-buy'  : '');
+  document.getElementById('btn-sell').className = 'side-btn' + (s==='sell' ? ' active-sell' : '');
+  updatePanel();
+}
+
+function updateOrderAvailability() {
+  const ready = selDir && selSide;
+  if (ready && isProbabilityUsable()) {
+    $confirmBtn.className = selSide === 'buy' ? 'ready-buy' : 'ready-sell';
+    $confirmBtn.textContent = selSide === 'buy'
+      ? `买入 ${selDir === 'up' ? '涨▲' : '跌▼'}`
+      : `卖出 ${selDir === 'up' ? '涨▲' : '跌▼'}`;
+    $confirmBtn.disabled = false;
+    return;
+  }
+  if (ready) {
+    $confirmBtn.className = '';
+    $confirmBtn.textContent = '等待盘口恢复';
+    $confirmBtn.disabled = true;
+    return;
+  }
+  $confirmBtn.className = '';
+  $confirmBtn.textContent = '选择方向和操作';
+  $confirmBtn.disabled = true;
+}
+
+function updatePanel() {
+  if (selSide === 'buy') {
+    $amtLabel.textContent = '买入金额';
+    $amtUnit.textContent  = 'USDC';
+    $amtUnit.style.color  = '#4e9eff';
+    $maxBtn.style.visibility = 'hidden';
+    $amtInput.placeholder = '0.00';
+    $amtInput.step = '1';
+    $amtInput.value = '1';
+  } else if (selSide === 'sell') {
+    $amtLabel.textContent = '卖出份额';
+    $amtUnit.textContent  = '份';
+    $amtUnit.style.color  = '#f0a500';
+    $amtInput.step = '0.1';
+    $maxBtn.style.visibility = 'visible';
+    $amtInput.placeholder = '0.0';
+    if (selDir) fillMax();
+    else $amtInput.value = '';
+  }
+
+  updateOrderAvailability();
+  updateEst();
+}
+
+function stepAmount(dir) {
+  const step = selSide === 'sell' ? 0.1 : 1;
+  const cur = parseFloat($amtInput.value) || 0;
+  const next = Math.max(0, Math.round((cur + dir * step) * 100) / 100);
+  $amtInput.value = selSide === 'sell' ? next.toFixed(1) : next.toFixed(0);
+  updateEst();
+}
+
+function fillMax() {
+  $amtInput.value = fmtSize(getSellableShares(selDir));
+  updateEst();
+}
+
+function hasEnoughUsdcForBuy(amount) {
+  if (curUsdc == null || !Number.isFinite(amount)) return true;
+  return curUsdc + 1e-6 >= amount;
+}
+
+function isProbabilityUsable() {
+  return probabilityReady && !isNaN(curBestBid) && !isNaN(curBestAsk);
+}
+
+function getSellableShares(dir) {
+  if (!dir) return 0;
+  const localSize = dir === 'up' ? curUpLocal : curDnLocal;
+  const verified  = isDirectionVerified(dir);
+  if (localSize <= 0) return 0;
+  if (verified) return localSize;
+  return Math.max(0, localSize - UNVERIFIED_SELL_BUFFER);
+}
+
+function updateEst() {
+  const amount = parseFloat($amtInput.value);
+  if (!selSide || isNaN(amount) || amount <= 0 || !isProbabilityUsable()) {
+    $estPrice.textContent = '—'; $estResult.textContent = '—'; return;
+  }
+  // 买涨用 ask，买跌用 1-bid；卖涨用 bid，卖跌用 1-ask
+  let price = null;
+  if (selSide === 'buy') {
+    if (selDir === 'up')   price = isNaN(curBestAsk) ? null : curBestAsk;
+    if (selDir === 'down') price = isNaN(curBestBid) ? null : 1 - curBestBid;
+    $estPrice.textContent  = price != null ? Math.round(price*100) + '%' : '—';
+    $estResult.textContent = price != null ? `约 ${(amount / price).toFixed(1)} 份` : '—';
+  } else {
+    if (selDir === 'up')   price = isNaN(curBestBid) ? null : curBestBid;
+    if (selDir === 'down') price = isNaN(curBestAsk) ? null : 1 - curBestAsk;
+    $estPrice.textContent  = price != null ? Math.round(price*100) + '%' : '—';
+    $estResult.textContent = price != null ? `约 $${(amount * price).toFixed(2)} USDC` : '—';
+  }
+}
+
+function translateError(msg) {
+  if (!msg) return '';
+  if (msg.includes("couldn't be fully filled") || msg.includes("FOK")) return '流动性不足，订单未能完全成交';
+  if (msg.includes("insufficient")) return '余额不足';
+  if (msg.includes("invalid")) return '参数无效';
+  if (msg.includes("下单被拒绝 status=400")) return '下单被接口拒绝，通常是流动性不足或订单参数不满足要求';
+  return msg;
+}
+
+// Claim 状态变量已移除（功能迁移至 Polymarket 官网）
+function refreshClaimDisplayMeta() { /* no-op */ }
+
+// ── 回测数据收集 ─────────────────────────────────────────────
+let backtestCollecting = false;
+
+function updateBacktestUI() {
+  const btn = document.getElementById('backtest-btn');
+  const label = document.getElementById('backtest-label');
+  if (btn) {
+    btn.textContent = backtestCollecting ? '收集中' : '关闭';
+    btn.style.borderColor = backtestCollecting ? '#3fb950' : '#30363d';
+    btn.style.color = backtestCollecting ? '#3fb950' : '#888';
+  }
+  if (label) {
+    label.style.color = backtestCollecting ? '#3fb950' : '#666';
+  }
+}
+
+async function toggleBacktest() {
+  try {
+    const res = await fetch('/api/backtest/toggle', { method: 'POST' });
+    const data = await res.json();
+    backtestCollecting = !!data.collecting;
+    updateBacktestUI();
+  } catch (e) {
+    console.warn('[Backtest] 切换失败:', e.message);
+  }
+}
+
+// submitClaim 已移除：请在 Polymarket 官网 Settings 中开启 Auto Redeem
+
+async function submitOrder() {
+  const amount = parseFloat($amtInput.value);
+  if (!selDir || !selSide || isNaN(amount) || amount <= 0) return;
+  if (!isProbabilityUsable()) {
+    $orderResult.textContent = '✗ 等待盘口恢复';
+    $orderResult.className = 'fail';
+    setTimeout(() => { $orderResult.className = ''; }, 5000);
+    return;
+  }
+  if (selSide === 'buy' && !hasEnoughUsdcForBuy(amount)) {
+    $orderResult.textContent = '✗ 余额不足';
+    $orderResult.className = 'fail';
+    setTimeout(() => { $orderResult.className = ''; }, 5000);
+    return;
+  }
+
+  $confirmBtn.disabled = true;
+  $confirmBtn.textContent = '下单中...';
+  $orderResult.className = '';
+  $orderResult.removeAttribute('style');
+
+  try {
+    const res = await fetch('/api/order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction: selDir, side: selSide, amount, slippage: parseFloat(document.getElementById('slippage-input').value) || 0.05 }),
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      $orderResult.textContent = `✓ 下单成功  状态: ${data.result?.status ?? '-'}`;
+      $orderResult.className = 'ok';
+      recordTradeMarker(selSide, selDir);
+      $amtInput.value = '';
+      updateEst();
+    } else {
+      $orderResult.textContent = `✗ ${translateError(data.error) || '下单失败'}`;
+      $orderResult.className = 'fail';
+    }
+  } catch (err) {
+    $orderResult.textContent = `✗ 网络错误`;
+    $orderResult.className = 'fail';
+  }
+  // 5 秒后自动隐藏结果提示
+  setTimeout(() => { $orderResult.className = ''; }, 5000);
+
+  updatePanel(); // 恢复按钮
+}
+
+// ── 价格曲线（1分钟滑动窗口） ─────────────────────────────────
+const chartCanvas = document.getElementById('chart-canvas');
+const chartCtx = chartCanvas.getContext('2d');
+const chartPoints = [];   // Chainlink 数据点 [{t, price}]
+const binancePoints = []; // 币安数据点 [{t, price}]
+const tradeMarkers = [];  // 当前窗口买卖点 [{t, side, dir, prob, windowStart}]
+const _volStartTime = Date.now();
+let chartPtb = null;
+let chartWindowStart = 0;
+let binanceOffset = 0;    // 后端计算后的币安价格偏移量
+let probScale = 250;      // 概率线缩放：mid变化1对应多少价格单位
+let chartZoom = 1.0;      // 整体Y轴比例尺（>1放大，<1缩小）
+const BINANCE_OFFSET_MANUAL_ENABLED = false;
+
+function recordTradeMarker(side, dir) {
+  if (!side || !dir || !chartWindowStart) return;
+  const prob = dir === 'up' ? _signalUpPct : _signalDnPct;
+  tradeMarkers.push({
+    t: Date.now(),
+    side,
+    dir,
+    prob: Number.isFinite(prob) ? Math.round(prob) : null,
+    windowStart: chartWindowStart,
+  });
+  if (tradeMarkers.length > 100) tradeMarkers.splice(0, tradeMarkers.length - 100);
+}
+
+// 拖动逻辑（右键拖动币安线）
+let _bnDragging = false;
+let _dragStartY = 0, _dragStartOffset = 0;
+const chartCanvas2 = document.getElementById('chart-canvas');
+chartCanvas2.addEventListener('mousedown', (e) => {
+  if (!BINANCE_OFFSET_MANUAL_ENABLED) return;
+  if (e.button !== 2 || e.shiftKey) return;
+  e.preventDefault();
+  _bnDragging = true;
+  _dragStartY = e.clientY;
+  _dragStartOffset = binanceOffset;
+});
+window.addEventListener('mousemove', (e) => {
+  if (!BINANCE_OFFSET_MANUAL_ENABLED) return;
+  if (!_bnDragging) return;
+  const h = chartCanvas2.offsetHeight;
+  const priceRange = (smoothMaxP ?? 100) - (smoothMinP ?? 0);
+  const pxPerPrice = h / (priceRange || 1);
+  binanceOffset = _dragStartOffset - (e.clientY - _dragStartY) / pxPerPrice;
+  drawChart();
+});
+window.addEventListener('mouseup', () => { if (_bnDragging) { _bnDragEndTime = Date.now(); } _bnDragging = false; });
+let _bnDragEndTime = 0;
+chartCanvas2.addEventListener('contextmenu', (e) => e.preventDefault());
+chartCanvas2.addEventListener('dblclick', () => {
+  if (!BINANCE_OFFSET_MANUAL_ENABLED) return;
+  const now = Date.now();
+  const bnRecent = binancePoints.filter(p => p.t >= now - 60000);
+  const clRecent = chartPoints.filter(p => p.t >= now - 60000);
+  const bnSpan = bnRecent.length >= 2 ? bnRecent[bnRecent.length-1].t - bnRecent[0].t : 0;
+  const clSpan = clRecent.length >= 2 ? clRecent[clRecent.length-1].t - clRecent[0].t : 0;
+  const minSpan = Math.min(bnSpan, clSpan);
+  const infoEl = document.getElementById('strat-scan-info');
+  const showHint = (msg) => {
+    if (!infoEl) return;
+    const prev = infoEl.textContent;
+    infoEl.textContent = msg;
+    setTimeout(() => { infoEl.textContent = prev; }, 2000);
+  };
+  // 策略执行中禁止对齐
+  const s = strat.state;
+  if (s === 'BUYING' || s === 'HOLDING' || s === 'SELLING' || s === 'WAIT_FILL' || s === 'RECONCILING_FILL' || s === 'WAIT_SELL_FILL') {
+    showHint('策略执行中，无法对齐');
+    return;
+  }
+  if (minSpan < 10000) {
+    const waitSec = Math.ceil((10000 - minSpan) / 1000);
+    showHint(`对齐数据不足，等待 ${waitSec}s`);
+    return;
+  }
+  binanceOffset = calcAlignOffset();
+  probScale = 250;
+  chartZoom = 1.0;
+  _bnDragEndTime = now;
+  drawChart();
+});
+
+// 用过去60秒两线差值的平均值计算对齐 offset
+function calcMedian(values) {
+  if (!values.length) return NaN;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function calcTrimmedMean(values, trimRatio = 0.15) {
+  if (!values.length) return NaN;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const trim = sorted.length >= 8 ? Math.floor(sorted.length * trimRatio) : 0;
+  const trimmed = trim > 0 ? sorted.slice(trim, sorted.length - trim) : sorted;
+  return trimmed.reduce((sum, value) => sum + value, 0) / trimmed.length;
+}
+
+function calcAlignOffset() {
+  if (!binancePoints.length || !chartPoints.length) return 0;
+  const now = Date.now();
+  const bnRecent = binancePoints.filter(p => p.t >= now - 60000);
+  const clRecent = chartPoints.filter(p => p.t >= now - 60000);
+  if (!bnRecent.length) bnRecent.push(...binancePoints.slice(-1));
+  if (!clRecent.length) clRecent.push(...chartPoints.slice(-1));
+  const overlapStart = Math.max(bnRecent[0].t, clRecent[0].t);
+  const overlapEnd = Math.min(bnRecent[bnRecent.length - 1].t, clRecent[clRecent.length - 1].t);
+  const bucketMs = 500;
+  const diffs = [];
+
+  if (overlapEnd - overlapStart >= bucketMs * 2) {
+    let bnIdx = 0;
+    let clIdx = 0;
+    for (let bucketStart = overlapStart; bucketStart <= overlapEnd; bucketStart += bucketMs) {
+      const bucketEnd = bucketStart + bucketMs;
+      const bnBucket = [];
+      const clBucket = [];
+
+      while (bnIdx < bnRecent.length && bnRecent[bnIdx].t < bucketStart) bnIdx++;
+      while (clIdx < clRecent.length && clRecent[clIdx].t < bucketStart) clIdx++;
+
+      let i = bnIdx;
+      while (i < bnRecent.length && bnRecent[i].t < bucketEnd) {
+        bnBucket.push(bnRecent[i].price);
+        i++;
+      }
+      let j = clIdx;
+      while (j < clRecent.length && clRecent[j].t < bucketEnd) {
+        clBucket.push(clRecent[j].price);
+        j++;
+      }
+
+      if (bnBucket.length && clBucket.length) {
+        diffs.push(calcMedian(clBucket) - calcMedian(bnBucket));
+      }
+    }
+  }
+
+  if (!diffs.length) {
+    return clRecent[clRecent.length - 1].price - bnRecent[bnRecent.length - 1].price;
+  }
+  if (diffs.length < 5) {
+    return calcTrimmedMean(diffs, 0);
+  }
+
+  const median = calcMedian(diffs);
+  const absDeviations = diffs.map(diff => Math.abs(diff - median));
+  const mad = calcMedian(absDeviations);
+  const threshold = Math.max(10, mad * 3);
+  const filtered = diffs.filter(diff => Math.abs(diff - median) <= threshold);
+  const stable = filtered.length >= 3 ? filtered : diffs;
+  return calcTrimmedMean(stable, 0.15);
+}
+
+// 每30秒自动修正一次 offset，用60秒数据窗口（手动操作后0.5s内跳过，策略活跃时跳过）
+let _lastAutoAlign = 0;
+setInterval(() => {
+  if (!BINANCE_OFFSET_MANUAL_ENABLED) return;
+  const now = Date.now();
+  if (now - _bnDragEndTime < 500) return;
+  const activeState = strat.state;
+  if (activeState === 'BUYING' || activeState === 'HOLDING' || activeState === 'SELLING' ||
+      activeState === 'WAIT_FILL' || activeState === 'RECONCILING_FILL' || activeState === 'WAIT_SELL_FILL') return;
+  const bnRecent = binancePoints.filter(p => p.t >= now - 60000);
+  const clRecent = chartPoints.filter(p => p.t >= now - 60000);
+  const bnSpan = bnRecent.length >= 2 ? bnRecent[bnRecent.length-1].t - bnRecent[0].t : 0;
+  const clSpan = clRecent.length >= 2 ? clRecent[clRecent.length-1].t - clRecent[0].t : 0;
+  if (Math.min(bnSpan, clSpan) < 10000) return;
+  binanceOffset = calcAlignOffset();
+  _lastAutoAlign = now;
+  drawChart();
+}, 30000);
+chartCanvas2.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  if (e.shiftKey) {
+    probScale *= factor;
+  } else {
+    chartZoom = Math.max(0.2, Math.min(20, chartZoom * factor));
+  }
+  drawChart();
+}, { passive: false });
+// 滑动窗口随宽度动态变化，drawChart 里实时计算
+let CHART_WINDOW_MS = 60000;
+
+function calcWindowMs(canvasWidth) {
+  if (!canvasWidth) return 120000;
+  // 300px → 60s，900px+ → 120s，线性插值
+  const t = Math.min(Math.max((canvasWidth - 300) / 600, 0), 1);
+  return Math.round((60000 + t * 60000) / 1000) * 1000;
+}
+
+// 平滑后的Y轴范围
+let smoothMinP = null;
+let smoothMaxP = null;
+
+// 平滑后的末尾价格（只对最新点做平滑，历史点不动）
+let smoothLastPrice = null;
+let lastRealPrice = null;
+let lastFrameTime = null;
+
+function clearRealtimeBuffers() {
+  chartPoints.length = 0;
+  binancePoints.length = 0;
+  probHistory.length = 0;
+  tradeMarkers.length = 0;
+  smoothMinP = null;
+  smoothMaxP = null;
+  smoothLastPrice = null;
+  lastRealPrice = null;
+  lastFrameTime = null;
+}
+
+function chartReset() {
+  chartPtb = null;
+  probHistory.length = 0;
+  tradeMarkers.length = 0;
+  binanceOffset = 0;
+  serverBinanceDiff = NaN;
+  updateBnDiff();
+}
+
+// 用 requestAnimationFrame 持续重绘，保持流畅滑动
+function chartLoop(frameTime) {
+  const dt = lastFrameTime ? Math.min(frameTime - lastFrameTime, 100) : 16;
+  lastFrameTime = frameTime;
+
+  if (chartPoints.length >= 2) {
+    const realLast = chartPoints[chartPoints.length - 1].price;
+    smoothLastPrice = realLast; // 关闭EMA，直接使用真实价格
+    lastRealPrice = realLast;
+    drawChart();
+  }
+  requestAnimationFrame(chartLoop);
+}
+requestAnimationFrame(chartLoop);
+
+function drawChart() {
+  if (lowDataMode) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = chartCanvas.offsetWidth;
+  const h = chartCanvas.offsetHeight;
+  if (w <= 0 || h <= 0) return;
+  // 根据宽度动态更新滑动窗口
+  CHART_WINDOW_MS = calcWindowMs(w);
+  // 只在尺寸变化时重置，避免每帧强制清空 canvas
+  if (chartCanvas.width !== w * dpr || chartCanvas.height !== h * dpr) {
+    chartCanvas.width  = w * dpr;
+    chartCanvas.height = h * dpr;
+  }
+  const ctx = chartCtx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  if (chartPoints.length < 2) return;
+
+  const PAD_L = 58, PAD_R = 10, PAD_T = 12, PAD_B = 22;
+  const pw = w - PAD_L - PAD_R;
+  const ph = h - PAD_T - PAD_B;
+
+  // 时间范围：最近1分钟，最新点在最右
+  const now = Date.now();
+  const tEnd   = now;
+  const tStart = now - CHART_WINDOW_MS;
+
+  // 只绘制窗口内的点，末尾点替换为平滑价格+当前时刻，实现流畅滑动
+  const raw = chartPoints.filter(p => p.t >= tStart);
+  if (raw.length < 2) return;
+  const visible = raw.slice(0, -1);
+  const sp = smoothLastPrice ?? raw[raw.length - 1].price;
+  visible.push({ t: now, price: sp });
+
+  // 价格范围（目标值）
+  const prices = visible.map(p => p.price);
+  if (chartPtb) prices.push(chartPtb);
+  let targetMin = Math.min(...prices);
+  let targetMax = Math.max(...prices);
+  const range = targetMax - targetMin;
+  const pad = range * 0.18 || 5;
+  targetMin -= pad; targetMax += pad;
+  // 应用整体比例尺：以中心点缩放
+  if (chartZoom !== 1.0) {
+    const center = (targetMin + targetMax) / 2;
+    const half = (targetMax - targetMin) / 2 / chartZoom;
+    targetMin = center - half;
+    targetMax = center + half;
+  }
+
+  // 平滑插值，避免Y轴范围突变
+  const alpha = 0.06; // 越小越平滑，越大越跟手
+  if (smoothMinP === null) { smoothMinP = targetMin; smoothMaxP = targetMax; }
+  else {
+    smoothMinP += (targetMin - smoothMinP) * alpha;
+    smoothMaxP += (targetMax - smoothMaxP) * alpha;
+  }
+  const minP = smoothMinP;
+  const maxP = smoothMaxP;
+
+  const tx = t  => PAD_L + (t - tStart) / (tEnd - tStart) * pw;
+  const ty = p  => PAD_T + ph - (p - minP) / (maxP - minP) * ph;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // ── 网格线 + Y轴刻度 ──
+  ctx.setLineDash([2, 3]);
+  ctx.strokeStyle = '#1a1f28';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#555';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'right';
+  const yTicks = 5;
+  for (let i = 0; i <= yTicks; i++) {
+    const p = minP + (maxP - minP) * i / yTicks;
+    const y = ty(p);
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, y); ctx.lineTo(w - PAD_R, y);
+    ctx.stroke();
+    ctx.fillText('$' + Math.round(p), PAD_L - 4, y + 3.5);
+  }
+  ctx.setLineDash([]);
+  ctx.textAlign = 'left';
+
+  // ── 5分钟窗口分界线 ────────────────────────────────────────
+  const WINDOW_MS = 300000;
+  let boundaryTs = Math.floor(tStart / WINDOW_MS) * WINDOW_MS;
+  if (boundaryTs < tStart) boundaryTs += WINDOW_MS;
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = '#f0a50055';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#f0a500aa';
+  ctx.font = '9px monospace';
+  while (boundaryTs < tEnd) {
+    const x = tx(boundaryTs);
+    ctx.beginPath();
+    ctx.moveTo(x, PAD_T);
+    ctx.lineTo(x, PAD_T + ph);
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.fillText(new Date(boundaryTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), x, PAD_T + 10);
+    boundaryTs += WINDOW_MS;
+  }
+  ctx.setLineDash([]);
+  ctx.textAlign = 'left';
+
+  // ── price to beat 基准线 ──
+  if (chartPtb) {
+    const y = ty(chartPtb);
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = '#f0a50088';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, y); ctx.lineTo(w - PAD_R, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // 标签
+    ctx.fillStyle = '#f0a500';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('PTB $' + Math.round(chartPtb), PAD_L - 4, y - 4);
+    ctx.textAlign = 'left';
+  }
+
+  // ── 差价参考线（±50 / ±100） ──
+  if (chartPtb != null) {
+    const diffLevels = [100, 50, -50, -100];
+    ctx.save();
+    ctx.setLineDash([3, 5]);
+    ctx.strokeStyle = '#f0a50044';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#f0a50088';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    diffLevels.forEach((diffLevel) => {
+      const refPrice = chartPtb + diffLevel;
+      if (refPrice < minP || refPrice > maxP) return;
+      const y = ty(refPrice);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, y);
+      ctx.lineTo(w - PAD_R, y);
+      ctx.stroke();
+      ctx.fillText(`${diffLevel > 0 ? '+' : ''}${diffLevel}`, PAD_L - 4, y + 3);
+    });
+    ctx.restore();
+  }
+
+  // ── 渐变填充（基准线上绿/下红） ──
+  if (chartPtb && visible.length >= 2) {
+    const ptbY = ty(chartPtb);
+    // 绿色填充（曲线在基准线上方）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD_L, PAD_T, pw, ptbY - PAD_T);
+    ctx.clip();
+    ctx.beginPath();
+    visible.forEach((p, i) => {
+      const x = tx(p.t), y = ty(p.price);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.lineTo(tx(visible[visible.length-1].t), ptbY);
+    ctx.lineTo(tx(visible[0].t), ptbY);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(63,185,80,0.08)';
+    ctx.fill();
+    ctx.restore();
+    // 红色填充（曲线在基准线下方）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD_L, ptbY, pw, PAD_T + ph - ptbY);
+    ctx.clip();
+    ctx.beginPath();
+    visible.forEach((p, i) => {
+      const x = tx(p.t), y = ty(p.price);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.lineTo(tx(visible[visible.length-1].t), ptbY);
+    ctx.lineTo(tx(visible[0].t), ptbY);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(248,81,73,0.08)';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ── 当前窗口买卖点竖线 ──
+  const visibleMarkers = tradeMarkers.filter(m =>
+    m.windowStart === chartWindowStart && m.t >= tStart && m.t <= tEnd
+  );
+  visibleMarkers.forEach((marker) => {
+    const x = Math.max(PAD_L, Math.min(w - PAD_R, tx(marker.t)));
+    const color = marker.side === 'buy' ? '#3fb950cc' : '#f85149cc';
+    const label = marker.side === 'buy' ? '买' : '卖';
+    const probText = marker.prob != null ? `${marker.dir === 'up' ? '涨' : '跌'}${marker.prob}%` : '';
+    const placeTop = marker.dir === 'up';
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, PAD_T);
+    ctx.lineTo(x, PAD_T + ph);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x, placeTop ? PAD_T + 10 : PAD_T + ph - 18);
+    if (probText) {
+      ctx.font = '9px sans-serif';
+      ctx.fillText(probText, x, placeTop ? PAD_T + 22 : PAD_T + ph - 30);
+    }
+    ctx.restore();
+  });
+
+  // ── 价格曲线（涨绿跌红渐变） ──
+  const last = visible[visible.length - 1];
+  const lineColor = chartPtb != null
+    ? (last.price >= chartPtb ? '#3fb950' : '#f85149')
+    : '#f0a500';
+  ctx.beginPath();
+  ctx.lineWidth = 1.8;
+  ctx.strokeStyle = lineColor;
+  ctx.lineJoin = 'round';
+  visible.forEach((p, i) => {
+    const x = tx(p.t), y = ty(p.price);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // ── 币安价格线（黄色实线，应用偏移） ──
+  const binanceRaw = binancePoints.filter(p => p.t >= tStart);
+  if (binanceRaw.length >= 2) {
+    const binanceVisible = binanceRaw.slice();
+    const lastBinance = binanceRaw[binanceRaw.length - 1];
+    if (lastBinance.t < now) {
+      binanceVisible.push({ t: now, price: lastBinance.price });
+    }
+    // 判断溢出
+    const bnPrices = binanceVisible.map(p => p.price + binanceOffset);
+    const bnMax = Math.max(...bnPrices);
+    const bnMin = Math.min(...bnPrices);
+    const overTop    = bnMax > maxP;
+    const overBottom = bnMin < minP;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD_L, PAD_T, pw, ph);
+    ctx.clip();
+    ctx.beginPath();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#f0a500cc';
+    ctx.lineJoin = 'round';
+    binanceVisible.forEach((p, i) => {
+      const x = tx(p.t), y = ty(p.price + binanceOffset);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+
+    // 溢出提示箭头
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'left';
+    if (overTop) {
+      ctx.fillStyle = '#f0a500cc';
+      ctx.fillText('▲ 币安在上方', PAD_L + 4, PAD_T + 14);
+    }
+    if (overBottom) {
+      ctx.fillStyle = '#f0a500cc';
+      ctx.fillText('▼ 币安在下方', PAD_L + 4, PAD_T + ph - 4);
+    }
+
+    // 偏移量
+    ctx.fillStyle = '#f0a50099';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`币安${binanceOffset >= 0 ? '+' : ''}${Math.round(binanceOffset)}`, w - PAD_R, PAD_T + 12);
+    ctx.textAlign = 'left';
+
+    // 末端点 + 差价标签
+    if (chartPtb != null) {
+      const last = binanceVisible[binanceVisible.length - 1];
+      const bnBase = chartPtb - binanceOffset;
+      const d = last.price - bnBase;
+      const lx = tx(last.t);
+      const ly = ty(last.price + binanceOffset);
+      // 末端点
+      ctx.beginPath();
+      ctx.arc(lx, ly, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#f0a500';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(lx, ly, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#f0a50033';
+      ctx.fill();
+      const dStr = `${d >= 0 ? '+' : ''}$${Math.round(d)}`;
+      ctx.save();
+      ctx.font = 'bold 11px monospace';
+      ctx.fillStyle = '#f0a500';
+      ctx.textAlign = 'right';
+      ctx.fillText(dStr, w - PAD_R - 30, Math.max(Math.min(ty(last.price + binanceOffset), PAD_T + ph - 4), PAD_T + 10));
+      ctx.restore();
+    }
+  }
+
+  // ── 概率线（青色实线，Shift+右键拖动） ──
+  const probVisible = probHistory.filter(p => p.t >= tStart);
+  if (probVisible.length >= 2 && chartPtb) {
+    const probToPrice = mid => chartPtb + (mid - 0.5) * probScale;
+
+    // 概率辅助线（每25%一根，跳过50%因为基准线已有）
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 0.8;
+    ctx.strokeStyle = '#58a6ff88';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#58a6ffaa';
+    ctx.font = '9px monospace';
+    [0, 25, 75, 100].forEach(pct => {
+      const y = ty(probToPrice(pct / 100));
+      if (y >= PAD_T && y <= PAD_T + ph) {
+        ctx.beginPath();
+        ctx.moveTo(PAD_L, y); ctx.lineTo(w - PAD_R, y);
+        ctx.stroke();
+        ctx.fillText(pct + '%', PAD_L + 2, y - 2);
+      }
+    });
+    ctx.setLineDash([]);
+    const probPrices = probVisible.map(p => probToPrice(p.mid));
+    const probMax = Math.max(...probPrices);
+    const probMin = Math.min(...probPrices);
+    const probOverTop    = probMax > maxP;
+    const probOverBottom = probMin < minP;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD_L, PAD_T, pw, ph);
+    ctx.clip();
+    ctx.beginPath();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#58a6ffaa';
+    ctx.lineJoin = 'round';
+    probVisible.forEach((p, i) => {
+      const x = tx(p.t), y = ty(probToPrice(p.mid));
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+
+    // 最新概率点 + 标签（始终可见，溢出时贴边）
+    const lastProb = probVisible[probVisible.length - 1];
+    const lpx = tx(lastProb.t);
+    const lpyRaw = ty(probToPrice(lastProb.mid));
+    const lpyClamped = Math.max(PAD_T + 2, Math.min(PAD_T + ph - 2, lpyRaw));
+    const probPct = Math.round(lastProb.mid * 100);
+    const isOverflow = lpyRaw < PAD_T || lpyRaw > PAD_T + ph;
+
+    if (!isOverflow) {
+      ctx.beginPath();
+      ctx.arc(lpx, lpyClamped, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#58a6ff';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(lpx, lpyClamped, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#58a6ff33';
+      ctx.fill();
+    }
+
+    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = '#58a6ffee';
+    const probLabelY = Math.max(PAD_T + 14, Math.min(PAD_T + ph - 4, lpyClamped + 4));
+    ctx.textAlign = 'right';
+    ctx.fillText(`${probPct}%涨`, w - PAD_R, probLabelY);
+
+    // 溢出提示
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'left';
+    if (probOverTop)    { ctx.fillStyle = '#58a6ffcc'; ctx.fillText(`▲ 概率在上方 ${probPct}%`, PAD_L + 4, PAD_T + 28); }
+    if (probOverBottom) { ctx.fillStyle = '#58a6ffcc'; ctx.fillText(`▼ 概率在下方 ${probPct}%`, PAD_L + 4, PAD_T + ph - 18); }
+
+    // 比例尺标签
+    ctx.fillStyle = '#58a6ff99';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`概率比例×${Math.round(probScale)}`, w - PAD_R, PAD_T + 24);
+    ctx.textAlign = 'left';
+  }
+
+  // ── 右键拖动提示（常驻） ──
+  ctx.fillStyle = '#ffffff66';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText('滚轮缩放 | 右键拖币安 | Shift+滚轮调概率 | 双击重置', w - PAD_R, h - PAD_B - 6);
+  ctx.textAlign = 'left';
+
+  // ── 当前价格点 + 标签 ──
+  const lx = tx(last.t), ly = ty(last.price);
+  ctx.beginPath();
+  ctx.arc(lx, ly, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = lineColor;
+  ctx.fill();
+  // 光晕
+  ctx.beginPath();
+  ctx.arc(lx, ly, 6, 0, Math.PI * 2);
+  ctx.fillStyle = lineColor.replace(')', ',0.25)').replace('rgb', 'rgba');
+  if (!ctx.fillStyle.includes('rgba')) ctx.fillStyle = lineColor + '40';
+  ctx.fill();
+
+  // 当前价 + 差值标签
+  ctx.font = 'bold 11px monospace';
+  ctx.fillStyle = lineColor;
+  let priceLabel = '$' + Math.round(last.price);
+  if (chartPtb != null) {
+    const d = last.price - chartPtb;
+    priceLabel = `${d >= 0 ? '+' : ''}${Math.round(d)}`;
+  }
+  ctx.textAlign = 'right';
+  ctx.fillText(priceLabel, w - PAD_R - 60, Math.max(Math.min(ly + 4, PAD_T + ph - 4), PAD_T + 10));
+
+  // ── X 轴时间刻度 ──
+  ctx.fillStyle = '#444';
+  ctx.font = '9px monospace';
+  const xTicks = 4;
+  for (let i = 0; i <= xTicks; i++) {
+    const t = tStart + (tEnd - tStart) * i / xTicks;
+    const x = tx(t);
+    ctx.textAlign = i === xTicks ? 'right' : i === 0 ? 'left' : 'center';
+    const sec = Math.round((t - now) / 1000);
+    ctx.fillText(sec === 0 ? '现在' : sec + 's', x, h - 5);
+  }
+  ctx.textAlign = 'left';
+}
+
+// ── WS 连接 ───────────────────────────────────────────────────
+let ws = null, reconnectDelay = 1000;
+function connect() {
+  ws = new WebSocket(buildWsUrl());
+  ws.onopen = () => {
+    $connDot.classList.remove('disconnected');
+    reconnectDelay = 1000;
+    ws.send(JSON.stringify({ type: 'clientConfig', dataMode: lowDataMode ? 'low' : 'full' }));
+  };
+  ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch {} };
+  ws.onclose = () => {
+    $connDot.classList.add('disconnected');
+    // 断联时清空实时数据，避免旧数据误判
+    clearRealtimeBuffers();
+    $cur.textContent = '-';
+    $diff.textContent = '-'; $orderDiff.textContent = '-';
+    $ptb.textContent = '-';
+    curUsdc = null;
+    curUpLocal = 0; curDnLocal = 0;
+    curUpApi = 0; curDnApi = 0; curApiSyncAt = 0;
+    clearBestDrivenState('等待数据…');
+    updateEst();
+    updateStratUI();
+    $acctUsdc.textContent = '-';
+    updateCompactOverview();
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+  };
+  ws.onerror = () => ws.close();
+}
+connect();
+</script>
+<div id="app-footer" style="text-align:center;padding:8px 0;font-size:11px;color:#666;border-top:1px solid #1a1f28">
+  BTC 5m by <b style="color:#f0a500">岳来岳会赚</b> &nbsp;|&nbsp; <a href="https://x.com/188888_x" target="_blank" rel="noopener" style="color:#58a6ff;text-decoration:none;font-weight:600">@188888_x</a>
+</div>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "btc5m-web",
+  "version": "1.0.0",
+  "description": "BTC 5分钟涨跌盘口监控 — 独立部署版",
+  "type": "module",
+  "scripts": {
+    "start": "npx tsx server.ts"
+  },
+  "dependencies": {
+    "@polymarket/clob-client-v2": "^1.0.0",
+    "dotenv": "^16.0.0",
+    "ethers": "^6.0.0",
+    "express": "^5.2.1",
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
