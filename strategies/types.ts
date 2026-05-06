@@ -1,17 +1,11 @@
-/**
- * 策略模块共享类型
- */
-
-// ── 策略注册（添加/删除策略只需改这里）─────────────────────
-// 添加策略：在 ALL_STRATEGY_KEYS 加 key，在 ALL_STRATEGY_NUMBERS 加 number
-// StrategyKey 和 StrategyNumber 会自动从数组推导
-export const ALL_STRATEGY_KEYS = ["s1", "s2", "s3", "s4", "s5"] as const;
-export const ALL_STRATEGY_NUMBERS = [1, 2, 3, 4, 5] as const;
+export const ALL_STRATEGY_KEYS = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10"] as const;
+export const ALL_STRATEGY_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 
 export type StrategyKey = typeof ALL_STRATEGY_KEYS[number];
 export type StrategyNumber = typeof ALL_STRATEGY_NUMBERS[number];
 
 export type StrategyDirection = "up" | "down";
+export type TrendBias = "bullish" | "bearish" | "neutral";
 export type StrategyLifecycleState =
   | "IDLE"
   | "SCANNING"
@@ -19,11 +13,12 @@ export type StrategyLifecycleState =
   | "WAIT_FILL"
   | "RECONCILING_FILL"
   | "HOLDING"
+  | "LOCKING"
+  | "WAIT_LOCK_FILL"
   | "SELLING"
   | "WAIT_SELL_FILL"
   | "DONE";
 
-/** Binance K 线 */
 export interface Kline {
   openTime: number;
   open: number;
@@ -34,7 +29,49 @@ export interface Kline {
   closed: boolean;
 }
 
-/** 每个 tick 传给策略的只读市场快照 */
+export interface MacdSnapshot {
+  ready: boolean;
+  trend: TrendBias;
+  line: number | null;
+  signal: number | null;
+  histogram: number | null;
+  histogramBps: number | null;
+  histogramSlopeBps: number | null;
+  priceSlopeBps: number | null;
+  bars: number;
+  reason: string;
+}
+
+export interface FullSetArbSnapshot {
+  ready: boolean;
+  status: string;
+  reason: string;
+  windowStart: number;
+  updatedAt: number;
+  ageMs: number | null;
+  maxBudget: number;
+  targetShares: number;
+  totalCost: number | null;
+  totalCostPct: number | null;
+  grossProfit: number | null;
+  grossProfitPct: number | null;
+  netProfitPct: number | null;
+  minProfitPct: number;
+  triggerProfitPct: number;
+  feeBufferPct: number;
+  upAvgAsk: number | null;
+  downAvgAsk: number | null;
+  upTopAsk: number | null;
+  downTopAsk: number | null;
+  upLevelsUsed: number;
+  downLevelsUsed: number;
+  firstLegDirection: StrategyDirection | null;
+  firstLegCost: number | null;
+  secondLegDirection: StrategyDirection | null;
+  secondLegCost: number | null;
+  bookLatencyMs: number | null;
+}
+
 export interface StrategyTickContext {
   rem: number;
   upPct: number | null;
@@ -42,32 +79,69 @@ export interface StrategyTickContext {
   diff: number | null;
   now: number;
   prevUpPct: number | null;
-  kline1m: readonly Kline[];   // Binance 1分钟K线（最新在末尾）
-  kline5m: readonly Kline[];   // Binance 5分钟K线
-  marketHoursOnly: boolean;    // 动量策略是否只在美股开盘时段入场
+  bestBid: number | null;
+  bestAsk: number | null;
+  kline1m: readonly Kline[];
+  kline5m: readonly Kline[];
+  macd1m: MacdSnapshot;
+  macdFast1m: MacdSnapshot;
+  fullSetArb: FullSetArbSnapshot;
+  marketHoursOnly: boolean;
+  position: {
+    upSize: number;
+    downSize: number;
+    upCostPct: number | null;
+    downCostPct: number | null;
+  };
 }
 
-/** 策略入场信号 */
 export interface EntrySignal {
   direction: StrategyDirection;
+  amount?: number;
+  reason?: string;
 }
 
-/** 策略出场信号 */
+export interface MakerQuoteSignal {
+  direction: StrategyDirection;
+  price: number;
+  shares: number;
+  ttlMs?: number;
+  reason?: string;
+}
+
+export interface MakerStatusSnapshot {
+  activeOrders: number;
+  upOrders: number;
+  downOrders: number;
+  upBidPct: number | null;
+  downBidPct: number | null;
+  totalBidCostPct: number | null;
+  targetEdgePct: number | null;
+  filledCount: number;
+  mergedCount: number;
+  lastFill: {
+    direction: StrategyDirection;
+    price: number;
+    shares: number;
+    trigger: string;
+    ts: number;
+  } | null;
+  lastReason: string;
+}
+
 export interface ExitSignalResult {
-  signal: "tp" | "sl";
+  signal: "tp" | "sl" | "lock";
   reason: string;
 }
 
 export type ExitSignal = ExitSignalResult | null;
 
-/** 前端 hover 提示的描述行 */
 export interface StrategyDescriptionLine {
   text: string;
   color?: string;
   marginTop?: boolean;
 }
 
-/** 策略描述（用于前端动态生成 UI） */
 export interface StrategyDescription {
   key: StrategyKey;
   number: StrategyNumber;
@@ -76,30 +150,30 @@ export interface StrategyDescription {
   lines: StrategyDescriptionLine[];
 }
 
-/** 策略接口 — 每个策略必须实现 */
 export interface IStrategy {
   readonly key: StrategyKey;
   readonly number: StrategyNumber;
   readonly name: string;
 
-  /** 返回前端 hover 描述 */
   getDescription(): StrategyDescription;
 
-  /** 每个 tick 更新内部守卫状态（冷却锁等），在 checkEntry 之前调用 */
   updateGuards(ctx: StrategyTickContext): void;
 
-  /** 检查入场条件（SCANNING 阶段调用） */
   checkEntry(ctx: StrategyTickContext): EntrySignal | null;
 
-  /** 检查出场条件（HOLDING 阶段调用） */
   checkExit(ctx: StrategyTickContext, direction: StrategyDirection): ExitSignal;
 
-  /** 窗口切换时重置策略私有状态 */
   resetState(): void;
 
-  /** 序列化策略私有状态，用于广播给前端 */
   getStatePayload(): Record<string, unknown>;
 
-  /** 通知策略已进入持仓（买入成交后调用） */
   onEntryFilled?(ctx: StrategyTickContext, direction: StrategyDirection): void;
+
+  onLockFilled?(ctx: StrategyTickContext, direction: StrategyDirection): void;
+
+  checkScaleIn?(ctx: StrategyTickContext, direction: StrategyDirection, currentPosition: number): EntrySignal | null;
+
+  getMakerQuotes?(ctx: StrategyTickContext): MakerQuoteSignal[];
+
+  onMakerStatus?(ctx: StrategyTickContext, status: MakerStatusSnapshot): void;
 }

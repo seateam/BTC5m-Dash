@@ -9,11 +9,27 @@ import { S2Regular } from "./s2.js";
 import { S3Sweep } from "./s3.js";
 import { S4Reversal } from "./s4.js";
 import { S5ProbChase } from "./s5.js";
+import { S6MomentumSweep } from "./s6.js";
+import { S7PresetMomentumSweep } from "./s7.js";
+import { S8SteadyArb } from "./s8.js";
+import { S9SmartLockArb } from "./s9.js";
+import { S10FullSetArb } from "./s10.js";
 
 const strategies: Map<StrategyKey, IStrategy> = new Map();
 
 export function registerAllStrategies(): void {
-  const all: IStrategy[] = [new S1Enhanced(), new S2Regular(), new S3Sweep(), new S4Reversal(), new S5ProbChase()];
+  const all: IStrategy[] = [
+    new S1Enhanced(),
+    new S2Regular(),
+    new S3Sweep(),
+    new S4Reversal(),
+    new S5ProbChase(),
+    new S6MomentumSweep(),
+    new S7PresetMomentumSweep(),
+    new S8SteadyArb(),
+    new S9SmartLockArb(),
+    new S10FullSetArb(),
+  ];
   for (const s of all) strategies.set(s.key, s);
 }
 
@@ -22,9 +38,9 @@ export function getStrategy(key: StrategyKey): IStrategy | undefined {
 }
 
 export function getAllStrategies(): IStrategy[] {
-  return ALL_STRATEGY_KEYS
-    .map((key) => strategies.get(key))
-    .filter((s): s is IStrategy => s != null);
+  return ALL_STRATEGY_KEYS.map((key) => strategies.get(key)).filter(
+    (s): s is IStrategy => s != null,
+  );
 }
 
 export function getAllStrategyKeys(): StrategyKey[] {

@@ -1,0 +1,433 @@
+{
+  "address": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+  "value": [
+    {
+      "user": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "value": 535.9682
+    }
+  ],
+  "traded": {
+    "user": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+    "traded": 27036
+  },
+  "currentPositions": 28,
+  "openConditionCount": 23,
+  "openBothOutcomeConditions": 5,
+  "topOpenConditions": [
+    {
+      "conditionId": "0x9f7828af047cfe864e894eed95f3fdc054533f6923a15cf30edd5000915be30b",
+      "title": "Bitcoin Up or Down - April 4, 10AM ET",
+      "bothOutcomes": false,
+      "initialValue": 2765.29,
+      "currentValue": 0,
+      "cashPnl": -2765.29
+    },
+    {
+      "conditionId": "0x24548646b997f0645ba612fae2551260c07e7496c3938505442205e26551bb23",
+      "title": "Bitcoin Up or Down - May 4, 2:00AM-2:15AM ET",
+      "bothOutcomes": true,
+      "initialValue": 189.72,
+      "currentValue": 166.31,
+      "cashPnl": -23.41
+    },
+    {
+      "conditionId": "0x2ec668195b48bf10fb8f03024d54e4f4ea53a3e2f131e34046848a4116e760fa",
+      "title": "Solana Up or Down - April 2, 12:30AM-12:35AM ET",
+      "bothOutcomes": false,
+      "initialValue": 125.83,
+      "currentValue": 0,
+      "cashPnl": -125.83
+    },
+    {
+      "conditionId": "0x304bf7aa07a53a5950a7526f81418574515aab6193c68c35ba3bac188eaf941d",
+      "title": "Bitcoin Up or Down - May 4, 1AM ET",
+      "bothOutcomes": true,
+      "initialValue": 117.21,
+      "currentValue": 137.52,
+      "cashPnl": 20.31
+    },
+    {
+      "conditionId": "0x1ae31fd8398f67cd1d1160757ad3f8f7cf82205f97920c2f6ca9d746dc155e62",
+      "title": "Bitcoin Up or Down - March 28, 10AM ET",
+      "bothOutcomes": false,
+      "initialValue": 89.29,
+      "currentValue": 0,
+      "cashPnl": -89.29
+    },
+    {
+      "conditionId": "0x021d6063822d7d9057ae3001d6ef61266b9c46f5c38f2fdd56756504c09527b7",
+      "title": "Bitcoin Up or Down - May 4, 12:00AM-4:00AM ET",
+      "bothOutcomes": true,
+      "initialValue": 82.18,
+      "currentValue": 87.52,
+      "cashPnl": 5.34
+    },
+    {
+      "conditionId": "0xae3d68bfe7fc6ffd771e1795332f48a7a18a18934af46c31096c18109e52e605",
+      "title": "Bitcoin Up or Down - April 1, 12:00AM-4:00AM ET",
+      "bothOutcomes": false,
+      "initialValue": 34.5,
+      "currentValue": 0,
+      "cashPnl": -34.5
+    },
+    {
+      "conditionId": "0x236a04c256e3e4d627f3a1c863e594b00faaf5f36bc0cf6fdf1f79607ec54422",
+      "title": "Solana Up or Down - April 1, 6:50AM-6:55AM ET",
+      "bothOutcomes": false,
+      "initialValue": 22.33,
+      "currentValue": 0,
+      "cashPnl": -22.33
+    },
+    {
+      "conditionId": "0xdcb355f70e0e23191d58e1824dfec2f42a36cd001e39bd7269ecd3ccb915436a",
+      "title": "Bitcoin Up or Down - April 1, 5:30PM-5:35PM ET",
+      "bothOutcomes": false,
+      "initialValue": 20.08,
+      "currentValue": 0,
+      "cashPnl": -20.08
+    },
+    {
+      "conditionId": "0x2c191e3afa313cc8d2cd2b6efffd0a54626049eb7dece779826b920cd39f21b4",
+      "title": "Bitcoin Up or Down - May 4, 2AM ET",
+      "bothOutcomes": true,
+      "initialValue": 16.95,
+      "currentValue": 15.63,
+      "cashPnl": -1.32
+    }
+  ],
+  "closedSampleCount": 10000,
+  "closedSampleCost": 6761807.78,
+  "closedSamplePnl": 68236.95,
+  "closedSampleRoiPct": 1.01,
+  "closedPositionWinRatePct": 52.26,
+  "closedConditionCount": 4869,
+  "closedBothOutcomeConditionPct": 82.73,
+  "activityFetched": 3500,
+  "activityTypes": [
+    {
+      "type": "TRADE",
+      "count": 3457
+    },
+    {
+      "type": "REDEEM",
+      "count": 43
+    }
+  ],
+  "recentMergeCount": 500,
+  "recentMergeCash": 297763.73,
+  "recentRedeemCount": 500,
+  "recentRedeemCash": 785054.43,
+  "recentSplitCount": 0,
+  "bucketStats": [
+    {
+      "bucket": "5m",
+      "count": 9557,
+      "cost": 6700990.79,
+      "pnl": 66255.75,
+      "roiPct": 0.99
+    },
+    {
+      "bucket": "crypto_other",
+      "count": 347,
+      "cost": 46828.44,
+      "pnl": 2020.02,
+      "roiPct": 4.31
+    },
+    {
+      "bucket": "4h",
+      "count": 96,
+      "cost": 13988.54,
+      "pnl": -38.82,
+      "roiPct": -0.28
+    }
+  ],
+  "topRecentTradeConditions": [
+    {
+      "conditionId": "0x2e3c58b448c7445cb6dea9aac1053b78090c1f396b1f3b49ee4ceffbe12efa3f",
+      "title": "Bitcoin Up or Down - May 4, 1:10AM-1:15AM ET",
+      "trades": 199,
+      "outcomeCount": 2,
+      "buyCash": 7169.14,
+      "sellCash": 0,
+      "minPrice": 0.054634146341463415,
+      "maxPrice": 0.987340396039604
+    },
+    {
+      "conditionId": "0x2d93d78400835e76769e13541606f60d118758c750508122a3fc62dbaafff589",
+      "title": "Bitcoin Up or Down - May 4, 12:50AM-12:55AM ET",
+      "trades": 196,
+      "outcomeCount": 2,
+      "buyCash": 3344.97,
+      "sellCash": 0,
+      "minPrice": 0.01,
+      "maxPrice": 0.95
+    },
+    {
+      "conditionId": "0x3f2ab5aaa526c5e4ad02ba41b9053e5b083b779bb58696397fd62e2a8ef55195",
+      "title": "Bitcoin Up or Down - May 4, 1:40AM-1:45AM ET",
+      "trades": 184,
+      "outcomeCount": 2,
+      "buyCash": 3822.04,
+      "sellCash": 0,
+      "minPrice": 0.01,
+      "maxPrice": 0.9723266666666667
+    },
+    {
+      "conditionId": "0x2df95424ab51f42fdb8447aa8507c2bc64aac4006598b051653b685684b45e4e",
+      "title": "Bitcoin Up or Down - May 4, 1:55AM-2:00AM ET",
+      "trades": 176,
+      "outcomeCount": 2,
+      "buyCash": 5094.8,
+      "sellCash": 0,
+      "minPrice": 0.06399740943467179,
+      "maxPrice": 0.98
+    },
+    {
+      "conditionId": "0xf23110d0048f4b4f7c38952a5276a3e3b2f3bb87ad1ec2ff89bbe52200c3294b",
+      "title": "Bitcoin Up or Down - May 4, 1:20AM-1:25AM ET",
+      "trades": 159,
+      "outcomeCount": 2,
+      "buyCash": 2956.62,
+      "sellCash": 0,
+      "minPrice": 0.02,
+      "maxPrice": 0.9778852303835035
+    },
+    {
+      "conditionId": "0xd1d58921dbcc0ddafed72566a521a38cf4657fcb4347e343c0b4192df3d23f72",
+      "title": "Bitcoin Up or Down - May 4, 1:00AM-1:05AM ET",
+      "trades": 156,
+      "outcomeCount": 2,
+      "buyCash": 1346.98,
+      "sellCash": 0,
+      "minPrice": 0.12,
+      "maxPrice": 0.85
+    },
+    {
+      "conditionId": "0x0985f9c5e8e15f3cfb71b8b9a4bab007d3fd67b7f48b6cac1060fc1808979653",
+      "title": "Bitcoin Up or Down - May 4, 1:25AM-1:30AM ET",
+      "trades": 138,
+      "outcomeCount": 2,
+      "buyCash": 2962.17,
+      "sellCash": 0,
+      "minPrice": 0.16,
+      "maxPrice": 0.91
+    },
+    {
+      "conditionId": "0x53d083fd53447379b80c792bcc9941d1690d8297bd48108d80c574ef5624a24f",
+      "title": "Bitcoin Up or Down - May 4, 1:15AM-1:20AM ET",
+      "trades": 137,
+      "outcomeCount": 2,
+      "buyCash": 4290.19,
+      "sellCash": 0,
+      "minPrice": 0.02,
+      "maxPrice": 0.98
+    },
+    {
+      "conditionId": "0xd082fd4e9bb23de4ccfab562232f90402826ba014a6ef2dbfe30333666d0a5d5",
+      "title": "Bitcoin Up or Down - May 4, 12:55AM-1:00AM ET",
+      "trades": 131,
+      "outcomeCount": 2,
+      "buyCash": 3213.72,
+      "sellCash": 0,
+      "minPrice": 0.029429825482495748,
+      "maxPrice": 0.98
+    },
+    {
+      "conditionId": "0x2b33c6e986d849869d5009c836e714dac2aab2ccbd52e45798d2b595a265e44e",
+      "title": "Bitcoin Up or Down - May 4, 1:30AM-1:35AM ET",
+      "trades": 128,
+      "outcomeCount": 2,
+      "buyCash": 3626.31,
+      "sellCash": 0,
+      "minPrice": 0.08,
+      "maxPrice": 0.9493856046065259
+    },
+    {
+      "conditionId": "0xdb3e84232e87c8a71a08e6f2135a56a2e12e8a66d8c1a3fd0a55822c4da46b72",
+      "title": "Bitcoin Up or Down - May 4, 2:00AM-2:05AM ET",
+      "trades": 119,
+      "outcomeCount": 2,
+      "buyCash": 4869.45,
+      "sellCash": 0,
+      "minPrice": 0.07375,
+      "maxPrice": 0.9482724509803921
+    },
+    {
+      "conditionId": "0xe5baceebf8f7f1823690055ad609f363ad0c73cc0491da2b38abe8fcab061b0b",
+      "title": "Bitcoin Up or Down - May 4, 12:45AM-12:50AM ET",
+      "trades": 112,
+      "outcomeCount": 2,
+      "buyCash": 1799.05,
+      "sellCash": 0,
+      "minPrice": 0.10519788918205805,
+      "maxPrice": 0.9300000203000008
+    },
+    {
+      "conditionId": "0x7085d6159082114e5b5ff32ecf2ccebf356aafbf8be752e01a3646ea662efd5b",
+      "title": "Bitcoin Up or Down - May 4, 12:45AM-1:00AM ET",
+      "trades": 94,
+      "outcomeCount": 2,
+      "buyCash": 646.45,
+      "sellCash": 0,
+      "minPrice": 0.06,
+      "maxPrice": 0.97
+    },
+    {
+      "conditionId": "0x1fa5a22395ae6e1f48130cf1ab57df0bc37ffdb71a16fa6a0c687de6df240ae9",
+      "title": "Bitcoin Up or Down - May 4, 1:45AM-1:50AM ET",
+      "trades": 78,
+      "outcomeCount": 2,
+      "buyCash": 1213.08,
+      "sellCash": 0,
+      "minPrice": 0.09,
+      "maxPrice": 0.9
+    },
+    {
+      "conditionId": "0x5f727d6bd5e3dbf03495689b8b46c41145f0e811231ddca2c171869703a7baf0",
+      "title": "Ethereum Up or Down - May 4, 2:00AM-2:05AM ET",
+      "trades": 76,
+      "outcomeCount": 2,
+      "buyCash": 468.2,
+      "sellCash": 0,
+      "minPrice": 0.05,
+      "maxPrice": 0.88
+    }
+  ],
+  "topBothClosedConditions": [
+    {
+      "conditionId": "0xbea81e79848840c0981903e92998da0001c32cba7261bda7159b14bcdb000f92",
+      "title": "Bitcoin Up or Down - April 30, 3:35PM-3:40PM ET",
+      "positions": 3,
+      "bothOutcomes": true,
+      "cost": 2472.2,
+      "pnl": 2301.04,
+      "roiPct": 93.08
+    },
+    {
+      "conditionId": "0x46316913f9b31faa42228b605fda50ff71baa5f888dc96660ba9838549d1151e",
+      "title": "Bitcoin Up or Down - April 26, 4:45PM-4:50PM ET",
+      "positions": 2,
+      "bothOutcomes": true,
+      "cost": 593.21,
+      "pnl": 2063.12,
+      "roiPct": 347.79
+    },
+    {
+      "conditionId": "0x882a9a5701a66b960ce37d4e1b4dd7da68e389ac2cbd7b0e5a7084e0d09718ca",
+      "title": "Bitcoin Up or Down - April 30, 8:30PM-8:45PM ET",
+      "positions": 3,
+      "bothOutcomes": true,
+      "cost": 1607.77,
+      "pnl": 2018.98,
+      "roiPct": 125.58
+    },
+    {
+      "conditionId": "0x6d639cf0d97aa9408c0692c354366928134b24e7ba05f9f71fb76ea19d041a6e",
+      "title": "Bitcoin Up or Down - April 30, 4:05PM-4:10PM ET",
+      "positions": 6,
+      "bothOutcomes": true,
+      "cost": 2228.74,
+      "pnl": 1708.7,
+      "roiPct": 76.67
+    },
+    {
+      "conditionId": "0x8b7891217aeeae9295f8c214e87f2b97df96868f2601ca9a757bf43fe8282a86",
+      "title": "Bitcoin Up or Down - April 30, 9:10PM-9:15PM ET",
+      "positions": 4,
+      "bothOutcomes": true,
+      "cost": 2091.41,
+      "pnl": 1471.84,
+      "roiPct": 70.38
+    },
+    {
+      "conditionId": "0x81700a55b97859dc15acb8727b893d481284c9d7e3aa386a5afe9005685ff3bc",
+      "title": "Bitcoin Up or Down - May 1, 12:20AM-12:25AM ET",
+      "positions": 4,
+      "bothOutcomes": true,
+      "cost": 4284.31,
+      "pnl": 1349.37,
+      "roiPct": 31.5
+    },
+    {
+      "conditionId": "0xa38ae8d7900610caf7df884d7f61cf0eefc2165009e7a112163a0aef30f39734",
+      "title": "Bitcoin Up or Down - April 30, 6:30AM-6:45AM ET",
+      "positions": 4,
+      "bothOutcomes": true,
+      "cost": 16345.2,
+      "pnl": 1193.6,
+      "roiPct": 7.3
+    },
+    {
+      "conditionId": "0x7cba6e626c5335d2843bdffada0f5d5a5d7a2d6571ca4412d9635151e1ad0c0e",
+      "title": "Bitcoin Up or Down - May 3, 9:15PM-9:20PM ET",
+      "positions": 2,
+      "bothOutcomes": true,
+      "cost": 970.38,
+      "pnl": 1173.37,
+      "roiPct": 120.92
+    },
+    {
+      "conditionId": "0xcc3b5c8aa51bfe0d52d228b0b34a6f6a9ecead36dbbd151f842c77b0936f2a7d",
+      "title": "Bitcoin Up or Down - April 30, 12:00PM-12:05PM ET",
+      "positions": 4,
+      "bothOutcomes": true,
+      "cost": 5525.45,
+      "pnl": 1037.92,
+      "roiPct": 18.78
+    },
+    {
+      "conditionId": "0xe4a2a6bc651cb0cbfc21f0385d460d1df31103ab5b16d73c35c4c8d007815fd0",
+      "title": "Bitcoin Up or Down - May 1, 9:05AM-9:10AM ET",
+      "positions": 3,
+      "bothOutcomes": true,
+      "cost": 1726.52,
+      "pnl": 1003.45,
+      "roiPct": 58.12
+    },
+    {
+      "conditionId": "0xe25a60b244b0e7d275bede376bc6c9f61a37850a64580e43e86cfd1e583a7b29",
+      "title": "Bitcoin Up or Down - May 1, 10:50AM-10:55AM ET",
+      "positions": 3,
+      "bothOutcomes": true,
+      "cost": 2108.35,
+      "pnl": 985.85,
+      "roiPct": 46.76
+    },
+    {
+      "conditionId": "0x1739b06610b638ec5b66a5f1feb610c978e3d1e1730fd07032e698fa307a4b5b",
+      "title": "Bitcoin Up or Down - April 27, 12:05PM-12:10PM ET",
+      "positions": 3,
+      "bothOutcomes": true,
+      "cost": 2101.14,
+      "pnl": 926.25,
+      "roiPct": 44.08
+    },
+    {
+      "conditionId": "0xae39508e0132406c5de929194ceb005f89620d88ab7b1201a5fb7697a30737a2",
+      "title": "Bitcoin Up or Down - April 30, 11:35PM-11:40PM ET",
+      "positions": 4,
+      "bothOutcomes": true,
+      "cost": 10443.74,
+      "pnl": 857.87,
+      "roiPct": 8.21
+    },
+    {
+      "conditionId": "0x61c4eaf7cc3ea90f2ff60e3609e2153c5bedddde718d5bd27430449b963d16c6",
+      "title": "Bitcoin Up or Down - April 30, 1:30PM-1:45PM ET",
+      "positions": 3,
+      "bothOutcomes": true,
+      "cost": 2914.66,
+      "pnl": 851.35,
+      "roiPct": 29.21
+    },
+    {
+      "conditionId": "0xd340b320c2ac02e5766cdf7d48eafc159f7916453061799d16f65a9cceee09ef",
+      "title": "Bitcoin Up or Down - April 30, 7:25AM-7:30AM ET",
+      "positions": 4,
+      "bothOutcomes": true,
+      "cost": 2302.37,
+      "pnl": 830.85,
+      "roiPct": 36.09
+    }
+  ]
+}

@@ -13,11 +13,21 @@ import { ethers } from "ethers";
 import dotenv from "dotenv";
 import { ClobClient, Side, OrderType, Chain, SignatureTypeV2 as SignatureType, AssetType, getContractConfig } from "@polymarket/clob-client-v2";
 import { getAllStrategies, getStrategy, getAllDescriptions } from "./strategies/registry.js";
-import type { StrategyNumber, StrategyDirection, StrategyLifecycleState, StrategyKey } from "./strategies/types.js";
+import type {
+  FullSetArbSnapshot,
+  MakerQuoteSignal,
+  MakerStatusSnapshot,
+  StrategyNumber,
+  StrategyDirection,
+  StrategyLifecycleState,
+  StrategyKey,
+} from "./strategies/types.js";
 import { ALL_STRATEGY_KEYS } from "./strategies/types.js";
 import { getFairProb } from "./strategies/fair-prob.js";
+import { buildMacdSnapshot, isDirectionAgainstTrend } from "./strategies/indicators.js";
 import { getRealFillFromTx } from "./chain-watcher.js";
 import { PmPnlManager } from "./polymarket-pnl.js";
+import { BonereaperMonitor, type BonereaperMarketSample } from "./bonereaper-monitor.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(__dirname, ".env") });
@@ -29,6 +39,7 @@ process.on('unhandledRejection', (reason) => {
 
 type AppMode = "full" | "headless";
 type ClientDataMode = "full" | "low";
+type ExecutionMode = "paper" | "live";
 
 interface StrategyConfig {
   enabled: Record<StrategyKey, boolean>;
@@ -37,6 +48,7 @@ interface StrategyConfig {
   autoClaimEnabled: boolean;
   maxRoundEntries: number;
   marketHoursOnly: boolean;  // 动量策略只在美股开盘时段入场
+  executionMode: ExecutionMode;
 }
 
 interface StrategyConfigUpdate {
@@ -46,6 +58,7 @@ interface StrategyConfigUpdate {
   autoClaimEnabled?: unknown;
   maxRoundEntries?: unknown;
   marketHoursOnly?: unknown;
+  executionMode?: unknown;
 }
 
 interface StrategyRuntimeState {
@@ -55,6 +68,11 @@ interface StrategyRuntimeState {
   buyAmount: number;
   posBeforeBuy: number;
   posBeforeSell: number;
+  lockDirection: StrategyDirection | null;
+  lockPosBeforeBuy: number;
+  lockTargetShares: number;
+  lockReason: string;
+  locked: boolean;
   waitVerifyAfterSell: boolean;
   cleanupAfterVerify: boolean;
   actionTs: number;
@@ -90,6 +108,162 @@ interface TradeHistoryItem {
   orderId?: string;
   exitReason?: string;
   roundEntry?: string;
+  executionMode?: ExecutionMode;
+  requestedAmount?: number | null;
+  requestedShares?: number | null;
+  filledShares?: number | null;
+  filledNotional?: number | null;
+  avgPrice?: number | null;
+  topBid?: number | null;
+  topAsk?: number | null;
+  spread?: number | null;
+  levelsUsed?: number | null;
+  availableLiquidity?: number | null;
+  priceImpactPct?: number | null;
+  simLatencyMs?: number | null;
+  simLatencyMode?: string | null;
+  simLatencyBookP80Ms?: number | null;
+  simLatencyRestP80Ms?: number | null;
+  simLatencyWsP80Ms?: number | null;
+  simLatencyPressureMs?: number | null;
+  simLatencyJitterMs?: number | null;
+  bookLatencyMs?: number | null;
+  totalLatencyMs?: number | null;
+  partial?: boolean;
+  rejectReason?: string;
+  bookTokenId?: string | null;
+  bookWindowStart?: number | null;
+  bookFetchedAt?: number | null;
+  bookBids?: BookLevel[];
+  bookAsks?: BookLevel[];
+  paperBookExpectedBid?: number | null;
+  paperBookExpectedAsk?: number | null;
+  paperBookDiffPct?: number | null;
+  paperBookCheckStatus?: string | null;
+  paperBookCheckReason?: string | null;
+  makerOrderId?: string | null;
+  makerLimitPrice?: number | null;
+  makerTrigger?: string | null;
+  makerQueueFillRatio?: number | null;
+  makerActiveMs?: number | null;
+  paperAction?: "order" | "merge" | "settlement";
+}
+
+type ExecutionEventType =
+  | "paper_order_filled"
+  | "paper_order_rejected"
+  | "paper_settled"
+  | "paper_merged"
+  | "live_order_submitted"
+  | "live_order_rejected"
+  | "live_order_mined"
+  | "live_maker_posted"
+  | "live_maker_canceled"
+  | "live_maker_cancel_failed"
+  | "live_maker_rejected"
+  | "live_maker_filled";
+
+interface ExecutionEventItem {
+  id: string;
+  ts: number;
+  executionMode: ExecutionMode;
+  event: ExecutionEventType;
+  windowStart: number;
+  source: string;
+  strategy?: StrategyNumber | null;
+  side?: "buy" | "sell" | null;
+  direction?: StrategyDirection | null;
+  orderId?: string | null;
+  makerOrderId?: string | null;
+  tokenId?: string | null;
+  status?: string | null;
+  reason?: string | null;
+  price?: number | null;
+  avgPrice?: number | null;
+  worstPrice?: number | null;
+  shares?: number | null;
+  requestedShares?: number | null;
+  filledShares?: number | null;
+  remainingShares?: number | null;
+  notional?: number | null;
+  requestedNotional?: number | null;
+  filledNotional?: number | null;
+  topBid?: number | null;
+  topAsk?: number | null;
+  spread?: number | null;
+  bookAgeMs?: number | null;
+  bookSource?: string | null;
+  bookCheckStatus?: string | null;
+  bookCheckReason?: string | null;
+  bookCheckDiffPct?: number | null;
+  bookLatencyMs?: number | null;
+  latencyMs?: number | null;
+  totalLatencyMs?: number | null;
+}
+
+interface BookLevel {
+  price: number;
+  size: number;
+}
+
+interface BookSnapshot {
+  tokenId: string;
+  bids: BookLevel[];
+  asks: BookLevel[];
+  topBid: number;
+  topAsk: number;
+  fetchedAt: number;
+  latencyMs: number;
+}
+
+interface LatencyStats {
+  count: number;
+  last: number | null;
+  p50: number;
+  p80: number;
+  p95: number;
+}
+
+interface PaperLatencyEstimate {
+  delayMs: number;
+  mode: "dynamic" | "fixed";
+  minMs: number;
+  maxMs: number;
+  bookP80Ms: number;
+  restP80Ms: number;
+  wsP80Ms: number;
+  pressureMs: number;
+  jitterMs: number;
+  bookSamples: number;
+  restSamples: number;
+  wsSamples: number;
+}
+
+interface PaperWindowInfo {
+  upTokenId: string;
+  downTokenId: string;
+  eventStartTime?: string;
+  endDate?: string;
+  settled?: boolean;
+  result?: StrategyDirection | null;
+  localResult?: StrategyDirection | null;
+  priceToBeat?: number | null;
+  closePrice?: number | null;
+  closeDiff?: number | null;
+  closeCapturedAt?: number;
+  settlementSource?: string;
+  upMark?: number | null;
+  downMark?: number | null;
+  markUpdatedAt?: number;
+}
+
+interface PaperAccountState {
+  usdc: number;
+  localSize: Record<string, number>;
+  realizedPnl: number;
+  resetAt: number;
+  lastTradeAt: number;
+  windows: Record<string, PaperWindowInfo>;
 }
 
 interface PendingTradeMeta {
@@ -104,6 +278,44 @@ interface PendingTradeMeta {
   source: string;
   exitReason?: string;
   roundEntry?: string;
+}
+
+interface PaperMakerOrder {
+  id: string;
+  strategy: StrategyNumber;
+  windowStart: number;
+  direction: StrategyDirection;
+  price: number;
+  shares: number;
+  remainingShares: number;
+  createdAt: number;
+  activeAt: number;
+  expiresAt: number;
+  reason: string;
+  lastSeenBid: number | null;
+  lastSeenAsk: number | null;
+  lastTouchAt: number;
+  touchStartedAt: number;
+  touchCount: number;
+}
+
+interface LiveMakerOrder {
+  id: string;
+  orderId: string;
+  strategy: StrategyNumber;
+  windowStart: number;
+  tokenId: string;
+  direction: StrategyDirection;
+  price: number;
+  shares: number;
+  remainingShares: number;
+  createdAt: number;
+  postedAt: number;
+  expiresAt: number;
+  reason: string;
+  status: "open" | "canceling" | "canceled" | "filled" | "unknown";
+  lastSeenMatchedShares: number;
+  lastSyncAt: number;
 }
 
 interface ClientSession {
@@ -152,6 +364,10 @@ function parseNumberLike(value: unknown, minimum: number): number | null {
   return parsed;
 }
 
+function parseExecutionMode(value: unknown): ExecutionMode | null {
+  return value === "paper" || value === "live" ? value : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value != null && !Array.isArray(value);
 }
@@ -185,16 +401,167 @@ const BINANCE_OFFSET_EPSILON = 0.01;
 const FULL_DATA_STATE_INTERVAL_MS = 200;
 const LOW_DATA_STATE_INTERVAL_MS = 2000;
 const MAX_WS_BUFFERED_BYTES = 512 * 1024;
+const MAX_BOOK_STALE_MS = 2500;
 const TRADE_HISTORY_FILE = resolve(__dirname, ".trade-history.json");
+const PAPER_STATE_FILE = resolve(__dirname, ".paper-state.json");
+const PAPER_TRADE_HISTORY_FILE = resolve(__dirname, ".paper-trade-history.json");
+const EXECUTION_EVENTS_FILE = resolve(__dirname, ".execution-events.json");
 const STRATEGY_CONFIG_FILE = resolve(__dirname, ".strategy-config.json");
 const BACKTEST_DATA_DIR = resolve(__dirname, "backtest-data");
+const BONEREAPER_MONITOR_FILE = resolve(BACKTEST_DATA_DIR, "bonereaper-btc5m-monitor.json");
 const TRADE_HISTORY_MAX = 200;
+const PAPER_TRADE_HISTORY_MAX = 1000;
+const EXECUTION_EVENTS_MAX = 5000;
 const PENDING_TRADE_META_MAX_AGE_MS = 15 * 60 * 1000;
 
 const PRIVATE_KEY   = process.env.POLYMARKET_PRIVATE_KEY || "";
 const PROXY_ADDRESS = process.env.POLYMARKET_PROXY_ADDRESS || "";
 const APP_MODE: AppMode = process.env.APP_MODE === "headless" ? "headless" : "full";
 const IS_FULL_MODE = APP_MODE === "full";
+const PAPER_INITIAL_USDC = parseNumberEnv("PAPER_INITIAL_USDC", 1000, 1);
+const PAPER_MIN_LATENCY_MS = parseNumberEnv("PAPER_MIN_LATENCY_MS", 120, 0);
+const PAPER_MAX_LATENCY_MS = parseNumberEnv("PAPER_MAX_LATENCY_MS", 850, 0);
+const PAPER_LATENCY_MODE: "dynamic" | "fixed" = process.env.PAPER_LATENCY_MODE?.trim().toLowerCase() === "fixed" ? "fixed" : "dynamic";
+const PAPER_DYNAMIC_MAX_LATENCY_MS = parseNumberEnv("PAPER_DYNAMIC_MAX_LATENCY_MS", Math.max(PAPER_MAX_LATENCY_MS, 2500), 100);
+const PAPER_LATENCY_SAMPLE_MAX = 180;
+const PAPER_RESULT_RETRY_MS = 3000;
+const PAPER_PENDING_SETTLEMENT_CONFIDENCE = 0.8;
+const PAPER_FAST_SETTLE_MIN_DIFF = parseNumberEnv("PAPER_FAST_SETTLE_MIN_DIFF", 1, 0);
+const PAPER_FAST_SETTLE_MAX_PRICE_AGE_MS = parseNumberEnv("PAPER_FAST_SETTLE_MAX_PRICE_AGE_MS", 5000, 500);
+const PAPER_BOOK_AUDIT_LEVELS = Math.max(1, Math.round(parseNumberEnv("PAPER_BOOK_AUDIT_LEVELS", 5, 1)));
+const PAPER_BOOK_WS_MAX_DIFF = parseNumberEnv("PAPER_BOOK_WS_MAX_DIFF", 0.08, 0);
+const PAPER_BOOK_CONFIRM_DELAY_MS = parseNumberEnv("PAPER_BOOK_CONFIRM_DELAY_MS", 250, 0);
+const TERMINAL_BOOK_GUARD_ENABLED = parseBooleanEnv("TERMINAL_BOOK_GUARD_ENABLED", true);
+const TERMINAL_BOOK_GUARD_SECONDS = parseNumberEnv("TERMINAL_BOOK_GUARD_SECONDS", 6, 0);
+const TERMINAL_BOOK_GUARD_DIFF = parseNumberEnv("TERMINAL_BOOK_GUARD_DIFF", 10, 0);
+const TERMINAL_BOOK_GUARD_WIN_MAX_ASK = parseNumberEnv("TERMINAL_BOOK_GUARD_WIN_MAX_ASK", 0.7, 0);
+const MACD_FILTER_ENABLED = parseBooleanEnv("MACD_FILTER_ENABLED", true);
+const MACD_FILTER_REQUIRE_FAST_AGREE = parseBooleanEnv("MACD_FILTER_REQUIRE_FAST_AGREE", true);
+const MACD_FILTER_MIN_REMAINING = parseNumberEnv("MACD_FILTER_MIN_REMAINING", 12, 0);
+const MACD_FILTER_STRONG_DIFF_BYPASS = parseNumberEnv("MACD_FILTER_STRONG_DIFF_BYPASS", 120, 0);
+const S10_FULLSET_SCANNER_ENABLED = parseBooleanEnv("S10_FULLSET_SCANNER_ENABLED", true);
+const S10_FULLSET_REFRESH_MS = parseNumberEnv("S10_FULLSET_REFRESH_MS", 800, 200);
+const S10_FULLSET_MIN_PROFIT_PCT = parseNumberEnv("S10_FULLSET_MIN_PROFIT_PCT", 5, 0);
+const S10_FULLSET_TRIGGER_PROFIT_PCT = parseNumberEnv("S10_FULLSET_TRIGGER_PROFIT_PCT", 6.5, 0);
+const S10_FULLSET_FEE_BUFFER_PCT = parseNumberEnv("S10_FULLSET_FEE_BUFFER_PCT", 1.2, 0);
+const S10_FULLSET_MIN_SHARES = parseNumberEnv("S10_FULLSET_MIN_SHARES", 1, 0.01);
+const S10_FULLSET_MAX_BOOK_AGE_MS = parseNumberEnv("S10_FULLSET_MAX_BOOK_AGE_MS", 1800, 100);
+const S10_MAKER_ENGINE_ENABLED = parseBooleanEnv("S10_MAKER_ENGINE_ENABLED", true);
+const S10_MAKER_ONLY = parseBooleanEnv("S10_MAKER_ONLY", true);
+const S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE = Math.max(1, Math.round(parseNumberEnv("S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE", 2, 1)));
+const S10_MAKER_MIN_ACTIVE_MS = parseNumberEnv("S10_MAKER_MIN_ACTIVE_MS", 250, 0);
+const S10_MAKER_MAX_BOOK_AGE_MS = parseNumberEnv("S10_MAKER_MAX_BOOK_AGE_MS", 1800, 100);
+const S10_MAKER_PARTIAL_MIN_SHARES = parseNumberEnv("S10_MAKER_PARTIAL_MIN_SHARES", 0.5, 0.01);
+const S10_MAKER_MAX_WINDOW_NOTIONAL = parseNumberEnv("S10_MAKER_MAX_WINDOW_NOTIONAL", 420, 1);
+const S10_MAKER_FILL_COOLDOWN_MS = parseNumberEnv("S10_MAKER_FILL_COOLDOWN_MS", 1500, 0);
+const S10_MAKER_SOFT_IMBALANCE_SHARES = parseNumberEnv("S10_MAKER_SOFT_IMBALANCE_SHARES", 60, 1);
+const S10_MAKER_MAX_TAIL_AFTER_FILL_SHARES = parseNumberEnv("S10_MAKER_MAX_TAIL_AFTER_FILL_SHARES", 45, 1);
+const S10_MAKER_BOOK_TOUCH_MIN_ACTIVE_MS = parseNumberEnv("S10_MAKER_BOOK_TOUCH_MIN_ACTIVE_MS", 1200, 0);
+const S10_MAKER_BOOK_TOUCH_PRICE_EPS = parseNumberEnv("S10_MAKER_BOOK_TOUCH_PRICE_EPS", 0.005, 0);
+const S10_MAKER_DUPLICATE_PRICE_EPS = parseNumberEnv("S10_MAKER_DUPLICATE_PRICE_EPS", 0.0125, 0);
+const S10_MAKER_BOOK_TOUCH_MAX_RATIO = parseNumberEnv("S10_MAKER_BOOK_TOUCH_MAX_RATIO", 0.85, 0.01);
+const S10_MAKER_SMALL_TOUCH_NOTIONAL = parseNumberEnv("S10_MAKER_SMALL_TOUCH_NOTIONAL", 15, 1);
+const S10_MAKER_TOUCH_HOLD_FULL_MS = parseNumberEnv("S10_MAKER_TOUCH_HOLD_FULL_MS", 2200, 200);
+let liveTradingEnabled = parseBooleanEnv("LIVE_TRADING_ENABLED", false);
+const LIVE_MAX_BOOK_STALE_MS = parseNumberEnv("LIVE_MAX_BOOK_STALE_MS", 900, 100);
+const LIVE_BOOK_WS_MAX_DIFF = parseNumberEnv("LIVE_BOOK_WS_MAX_DIFF", 0.025, 0);
+const LIVE_BOOK_CONFIRM_DELAY_MS = parseNumberEnv("LIVE_BOOK_CONFIRM_DELAY_MS", 160, 0);
+const LIVE_MIN_BUY_REMAINING_SEC = parseNumberEnv("LIVE_MIN_BUY_REMAINING_SEC", 12, 0);
+const LIVE_MAX_ORDER_USDC = parseNumberEnv("LIVE_MAX_ORDER_USDC", 25, 1);
+const LIVE_STRATEGY_MAX_ORDER_USDC = parseNumberEnv("LIVE_STRATEGY_MAX_ORDER_USDC", 12, 1);
+const LIVE_MAX_PRICE_IMPACT_PCT = parseNumberEnv("LIVE_MAX_PRICE_IMPACT_PCT", 0.35, 0);
+const LIVE_STRATEGY_ORDER_RETRIES = Math.max(0, Math.round(parseNumberEnv("LIVE_STRATEGY_ORDER_RETRIES", 1, 0)));
+const LIVE_STRATEGY_RETRY_DELAY_MS = parseNumberEnv("LIVE_STRATEGY_RETRY_DELAY_MS", 350, 0);
+let s10LiveMakerEnabled = parseBooleanEnv("S10_LIVE_MAKER_ENABLED", false);
+const S10_LIVE_MAKER_MIN_REMAINING_SEC = parseNumberEnv("S10_LIVE_MAKER_MIN_REMAINING_SEC", 4, 0);
+const S10_LIVE_MAKER_ORDER_SYNC_MS = parseNumberEnv("S10_LIVE_MAKER_ORDER_SYNC_MS", 2000, 250);
+const PAPER_PRE_SETTLEMENT_MERGE_ENABLED = parseBooleanEnv("PAPER_PRE_SETTLEMENT_MERGE_ENABLED", false);
+const POLYMARKET_CLOCK_MAX_AGE_MS = 15000;
+const BONEREAPER_MONITOR_ENABLED = parseBooleanEnv("BONEREAPER_MONITOR_ENABLED", true);
+const BONEREAPER_MONITOR_ADDRESS = process.env.BONEREAPER_MONITOR_ADDRESS || "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30";
+const BONEREAPER_MONITOR_POLL_MS = parseNumberEnv("BONEREAPER_MONITOR_POLL_MS", 10000, 5000);
+const BONEREAPER_MARKET_SAMPLE_MS = parseNumberEnv("BONEREAPER_MARKET_SAMPLE_MS", 1000, 250);
+
+let polymarketClockOffsetMs = 0;
+let polymarketClockSyncedAt = 0;
+let polymarketClockSource = "";
+let polymarketClockLatencyMs: number | null = null;
+const bookLatencySamples: number[] = [];
+const restCheckLatencySamples: number[] = [];
+const wsUpdateIntervalSamples: number[] = [];
+let lastWsBookUpdateAt = 0;
+let fullSetArbSnapshot: FullSetArbSnapshot = createEmptyFullSetArbSnapshot("init");
+let fullSetRefreshRunning = false;
+const bonereaperMonitor = new BonereaperMonitor({
+  file: BONEREAPER_MONITOR_FILE,
+  address: BONEREAPER_MONITOR_ADDRESS,
+  pollMs: BONEREAPER_MONITOR_POLL_MS,
+});
+
+function recordLatencySample(samples: number[], value: unknown, maxSize = PAPER_LATENCY_SAMPLE_MAX): void {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return;
+  samples.push(Math.round(n));
+  if (samples.length > maxSize) samples.splice(0, samples.length - maxSize);
+}
+
+function percentile(values: number[], p: number, fallback: number): number {
+  const clean = values.filter(v => Number.isFinite(v) && v >= 0).sort((a, b) => a - b);
+  if (!clean.length) return fallback;
+  const idx = Math.min(clean.length - 1, Math.max(0, Math.ceil(clean.length * p) - 1));
+  return clean[idx];
+}
+
+function getLatencyStats(samples: number[], fallback: number): LatencyStats {
+  return {
+    count: samples.length,
+    last: samples.length ? samples[samples.length - 1] : null,
+    p50: percentile(samples, 0.5, fallback),
+    p80: percentile(samples, 0.8, fallback),
+    p95: percentile(samples, 0.95, fallback),
+  };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function recordWsLatencyUpdate(now = Date.now()): void {
+  if (lastWsBookUpdateAt > 0) {
+    const interval = now - lastWsBookUpdateAt;
+    if (interval >= 5 && interval <= 10000) recordLatencySample(wsUpdateIntervalSamples, interval);
+  }
+  lastWsBookUpdateAt = now;
+}
+
+function getPolymarketNowMs(): number {
+  return Date.now() + polymarketClockOffsetMs;
+}
+
+function getPolymarketClockAgeMs(now = Date.now()): number | null {
+  return polymarketClockSyncedAt > 0 ? now - polymarketClockSyncedAt : null;
+}
+
+function updatePolymarketClockFromHeaders(
+  headers: Headers,
+  startedAt: number,
+  endedAt: number,
+  source: string,
+): void {
+  const dateHeader = headers.get("date");
+  if (!dateHeader) return;
+  const serverMs = Date.parse(dateHeader);
+  if (!Number.isFinite(serverMs)) return;
+  const midpoint = (startedAt + endedAt) / 2;
+  const nextOffset = serverMs - midpoint;
+  if (!Number.isFinite(nextOffset)) return;
+  polymarketClockOffsetMs = polymarketClockSyncedAt > 0
+    ? polymarketClockOffsetMs * 0.7 + nextOffset * 0.3
+    : nextOffset;
+  polymarketClockSyncedAt = endedAt;
+  polymarketClockSource = source;
+  polymarketClockLatencyMs = endedAt - startedAt;
+}
 
 function createEnvStrategyConfig(): StrategyConfig {
   const enabled = {} as Record<StrategyKey, boolean>;
@@ -211,6 +578,7 @@ function createEnvStrategyConfig(): StrategyConfig {
     autoClaimEnabled: parseBooleanEnv("AUTO_CLAIM_ENABLED", false),
     maxRoundEntries: parseNumberEnv("MAX_ROUND_ENTRIES", 1, 1),
     marketHoursOnly: parseBooleanEnv("MARKET_HOURS_ONLY", false),
+    executionMode: process.env.TRADING_MODE === "live" ? "live" : "paper",
   };
 }
 
@@ -222,6 +590,7 @@ function cloneStrategyConfig(config: StrategyConfig): StrategyConfig {
     autoClaimEnabled: config.autoClaimEnabled,
     maxRoundEntries: config.maxRoundEntries,
     marketHoursOnly: config.marketHoursOnly,
+    executionMode: config.executionMode,
   };
 }
 
@@ -238,6 +607,9 @@ function loadPersistedStrategyConfig(config: StrategyConfig): void {
     if (typeof raw.autoClaimEnabled === "boolean") {
       config.autoClaimEnabled = raw.autoClaimEnabled;
     }
+    if (raw.executionMode === "paper" || raw.executionMode === "live") {
+      config.executionMode = raw.executionMode;
+    }
   } catch {
     // ignore
   }
@@ -249,6 +621,7 @@ function savePersistedStrategyConfig(config: StrategyConfig): void {
       maxRoundEntries: config.maxRoundEntries,
       marketHoursOnly: config.marketHoursOnly,
       autoClaimEnabled: config.autoClaimEnabled,
+      executionMode: config.executionMode,
     }, null, 2));
   } catch (err) {
     console.warn(`[StrategyConfig] 持久化保存失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -303,13 +676,38 @@ function applyStrategyConfigUpdate(current: StrategyConfig, rawUpdate: unknown):
     next.marketHoursOnly = parsed;
   }
 
+  if ("executionMode" in rawUpdate) {
+    const parsed = parseExecutionMode(rawUpdate.executionMode);
+    if (parsed == null) return { error: "executionMode 必须是 paper 或 live" };
+    next.executionMode = parsed;
+  }
+
   return { config: next };
 }
 
 let strategyConfig = createEnvStrategyConfig();
 loadPersistedStrategyConfig(strategyConfig);
 let tradeHistory: TradeHistoryItem[] = loadTradeHistory();
+let paperTradeHistory: TradeHistoryItem[] = loadPaperTradeHistory();
+let executionEvents: ExecutionEventItem[] = loadExecutionEvents();
+let paperAccount: PaperAccountState = loadPaperAccountState();
 const pendingTradeMeta = new Map<string, PendingTradeMeta>();
+let paperMakerOrders: PaperMakerOrder[] = [];
+let paperMakerFilledCount = 0;
+let paperMakerMergedCount = 0;
+let paperMakerLastFill: MakerStatusSnapshot["lastFill"] = null;
+let paperMakerLastReason = "";
+let paperMakerLastFillAt: Record<StrategyDirection, number> = { up: 0, down: 0 };
+const paperMakerEpochTs = Date.now();
+let liveMakerOrders: LiveMakerOrder[] = [];
+let liveMakerFilledCount = 0;
+let liveMakerCanceledCount = 0;
+let liveMakerLastFill: MakerStatusSnapshot["lastFill"] = null;
+let liveMakerLastReason = "";
+let liveMakerLastFillAt: Record<StrategyDirection, number> = { up: 0, down: 0 };
+let liveMakerLastSyncAt = 0;
+let liveMakerReconciling = false;
+const liveMakerEpochTs = Date.now();
 
 function loadTradeHistory(): TradeHistoryItem[] {
   if (!existsSync(TRADE_HISTORY_FILE)) return [];
@@ -353,24 +751,23 @@ function roundMoney(value: number): number {
 }
 
 function applyTradeHistoryMetrics(items: TradeHistoryItem[]): TradeHistoryItem[] {
-  const lots: Record<StrategyDirection, Array<{ amount: number; price: number }>> = {
-    up: [],
-    down: [],
-  };
+  const lots = new Map<string, Array<{ amount: number; price: number }>>();
   const ordered = [...items].sort((a, b) => a.ts - b.ts);
   for (const item of ordered) {
     const price = getTradeHistoryPrice(item);
     item.price = price;
     item.pnl = null;
     if (price == null || !Number.isFinite(item.amount) || item.amount <= 0) continue;
+    const lotKey = `${Number.isFinite(item.windowStart) ? item.windowStart : 0}:${item.direction}`;
+    const directionLots = lots.get(lotKey) ?? [];
+    lots.set(lotKey, directionLots);
     if (item.side === "buy") {
-      lots[item.direction].push({ amount: item.amount, price });
+      directionLots.push({ amount: item.amount, price });
       continue;
     }
     let remaining = item.amount;
     let realizedPnl = 0;
     let matchedAmount = 0;
-    const directionLots = lots[item.direction];
     while (remaining > 1e-8 && directionLots.length > 0) {
       const lot = directionLots[0];
       const matched = Math.min(remaining, lot.amount);
@@ -387,12 +784,132 @@ function applyTradeHistoryMetrics(items: TradeHistoryItem[]): TradeHistoryItem[]
   return items.sort((a, b) => b.ts - a.ts);
 }
 
+function normalizeExecutionEventItem(item: unknown): ExecutionEventItem | null {
+  if (!isRecord(item)) return null;
+  if (
+    typeof item.id !== "string" ||
+    typeof item.ts !== "number" ||
+    typeof item.windowStart !== "number" ||
+    typeof item.event !== "string" ||
+    typeof item.source !== "string" ||
+    (item.executionMode !== "paper" && item.executionMode !== "live")
+  ) return null;
+  return item as unknown as ExecutionEventItem;
+}
+
+function loadExecutionEvents(): ExecutionEventItem[] {
+  if (!existsSync(EXECUTION_EVENTS_FILE)) return [];
+  try {
+    const raw = JSON.parse(readFileSync(EXECUTION_EVENTS_FILE, "utf-8"));
+    if (!Array.isArray(raw)) return [];
+    return raw.map(normalizeExecutionEventItem)
+      .filter((item): item is ExecutionEventItem => item != null)
+      .slice(0, EXECUTION_EVENTS_MAX);
+  } catch (err) {
+    console.warn(`[ExecutionEvents] 读取失败: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
+function persistExecutionEvents(): void {
+  writeFileSync(EXECUTION_EVENTS_FILE, `${JSON.stringify(executionEvents, null, 2)}\n`, "utf-8");
+}
+
+function getStrategyNumberFromSource(source: string): StrategyNumber | null {
+  const match = source.match(/strategy(\d+)/);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) && n >= 1 && n <= 10 ? n as StrategyNumber : null;
+}
+
+function finiteOrNull(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function recordExecutionEvent(item: Omit<ExecutionEventItem, "id">): void {
+  const record: ExecutionEventItem = {
+    id: `${item.ts}-${item.executionMode}-${item.event}-${item.source}-${Math.random().toString(36).slice(2, 8)}`,
+    ...item,
+  };
+  executionEvents.unshift(record);
+  if (executionEvents.length > EXECUTION_EVENTS_MAX) {
+    executionEvents = executionEvents.slice(0, EXECUTION_EVENTS_MAX);
+  }
+  try {
+    persistExecutionEvents();
+  } catch (err) {
+    console.warn(`[ExecutionEvents] 保存失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  broadcastExecutionEvents();
+}
+
+function getExecutionEventFromTrade(record: TradeHistoryItem): ExecutionEventType {
+  const status = String(record.status || "").toUpperCase();
+  if (record.executionMode === "paper") {
+    if (status.includes("REJECT")) return "paper_order_rejected";
+    if (status.includes("SETTLED")) return "paper_settled";
+    if (status.includes("MERGED")) return "paper_merged";
+    return "paper_order_filled";
+  }
+  if (/^strategy10maker/.test(String(record.source || "")) && status.includes("MINED")) {
+    return "live_maker_filled";
+  }
+  if (status.includes("REJECT")) return "live_order_rejected";
+  return "live_order_mined";
+}
+
+function recordExecutionEventFromTrade(record: TradeHistoryItem): void {
+  const price = finiteOrNull(record.avgPrice ?? record.price ?? record.worstPrice);
+  const filledShares = finiteOrNull(record.filledShares ?? record.amount);
+  const filledNotional = finiteOrNull(record.filledNotional ?? (
+    filledShares != null && price != null ? filledShares * price : null
+  ));
+  recordExecutionEvent({
+    ts: record.ts,
+    executionMode: record.executionMode ?? "live",
+    event: getExecutionEventFromTrade(record),
+    windowStart: record.windowStart,
+    source: record.source,
+    strategy: getStrategyNumberFromSource(record.source),
+    side: record.side,
+    direction: record.direction,
+    orderId: record.orderId ?? null,
+    makerOrderId: record.makerOrderId ?? null,
+    tokenId: record.bookTokenId ?? null,
+    status: record.status,
+    reason: record.rejectReason ?? record.exitReason ?? null,
+    price: finiteOrNull(record.price),
+    avgPrice: finiteOrNull(record.avgPrice),
+    worstPrice: finiteOrNull(record.worstPrice),
+    shares: finiteOrNull(record.amount),
+    requestedShares: finiteOrNull(record.requestedShares),
+    filledShares,
+    notional: filledNotional,
+    requestedNotional: finiteOrNull(record.requestedAmount),
+    filledNotional,
+    topBid: finiteOrNull(record.topBid),
+    topAsk: finiteOrNull(record.topAsk),
+    spread: finiteOrNull(record.spread),
+    bookAgeMs: finiteOrNull(record.bookLatencyMs),
+    bookSource: record.paperBookCheckStatus ? "paper-book-check" : null,
+    bookCheckStatus: record.paperBookCheckStatus ?? null,
+    bookCheckReason: record.paperBookCheckReason ?? null,
+    bookCheckDiffPct: finiteOrNull(record.paperBookDiffPct),
+    bookLatencyMs: finiteOrNull(record.bookLatencyMs),
+    latencyMs: finiteOrNull(record.simLatencyMs),
+    totalLatencyMs: finiteOrNull(record.totalLatencyMs),
+  });
+}
+
 // ── Polymarket 真实盈亏管理器 ─────────────────────────────────
 const pmPnlManager = new PmPnlManager(PROXY_ADDRESS);
 
 function recordTradeHistory(item: Omit<TradeHistoryItem, "id">): void {
   const record: TradeHistoryItem = {
     id: `${item.ts}-${item.side}-${item.direction}-${item.source}-${Math.random().toString(36).slice(2, 8)}`,
+    executionMode: item.executionMode ?? "live",
     ...item,
   };
   tradeHistory.unshift(record);
@@ -406,6 +923,7 @@ function recordTradeHistory(item: Omit<TradeHistoryItem, "id">): void {
     console.warn(`[TradeHistory] 保存失败: ${err instanceof Error ? err.message : String(err)}`);
   }
   // 记录 txHash → source 映射，供 Polymarket PnL 标注策略来源
+  recordExecutionEventFromTrade(record);
   if (record.txHash && record.source) {
     pmPnlManager.recordStrategySource(record.txHash, record.source);
   }
@@ -422,6 +940,462 @@ function recordTradeHistory(item: Omit<TradeHistoryItem, "id">): void {
     console.log(`[PmPnl] 跳过增量同步（无 txHash）`);
   }
   broadcastTradeHistory();
+}
+
+function createPaperAccountState(): PaperAccountState {
+  return {
+    usdc: PAPER_INITIAL_USDC,
+    localSize: {},
+    realizedPnl: 0,
+    resetAt: Date.now(),
+    lastTradeAt: 0,
+    windows: {},
+  };
+}
+
+function normalizeTradeHistoryItem(item: unknown): TradeHistoryItem | null {
+  if (!isRecord(item)) return null;
+  if (
+    typeof item.id !== "string" ||
+    typeof item.ts !== "number" ||
+    typeof item.windowStart !== "number" ||
+    (item.side !== "buy" && item.side !== "sell") ||
+    (item.direction !== "up" && item.direction !== "down") ||
+    typeof item.amount !== "number" ||
+    typeof item.status !== "string" ||
+    typeof item.source !== "string"
+  ) return null;
+  return item as unknown as TradeHistoryItem;
+}
+
+function loadPaperTradeHistory(): TradeHistoryItem[] {
+  if (!existsSync(PAPER_TRADE_HISTORY_FILE)) return [];
+  try {
+    const raw = JSON.parse(readFileSync(PAPER_TRADE_HISTORY_FILE, "utf-8"));
+    if (!Array.isArray(raw)) return [];
+    return applyTradeHistoryMetrics(
+      raw.map(normalizeTradeHistoryItem)
+        .filter((item): item is TradeHistoryItem => item != null)
+        .slice(0, PAPER_TRADE_HISTORY_MAX),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistPaperTradeHistory(): void {
+  writeFileSync(PAPER_TRADE_HISTORY_FILE, `${JSON.stringify(paperTradeHistory, null, 2)}\n`, "utf-8");
+}
+
+function loadPaperAccountState(): PaperAccountState {
+  if (!existsSync(PAPER_STATE_FILE)) return createPaperAccountState();
+  try {
+    const raw = JSON.parse(readFileSync(PAPER_STATE_FILE, "utf-8"));
+    if (!isRecord(raw)) return createPaperAccountState();
+    const next = createPaperAccountState();
+    if (typeof raw.usdc === "number" && Number.isFinite(raw.usdc)) next.usdc = raw.usdc;
+    if (typeof raw.realizedPnl === "number" && Number.isFinite(raw.realizedPnl)) next.realizedPnl = raw.realizedPnl;
+    if (typeof raw.resetAt === "number") next.resetAt = raw.resetAt;
+    if (typeof raw.lastTradeAt === "number") next.lastTradeAt = raw.lastTradeAt;
+    if (isRecord(raw.localSize)) {
+      for (const [tokenId, size] of Object.entries(raw.localSize)) {
+        const n = Number(size);
+        if (tokenId && Number.isFinite(n) && n > 0) next.localSize[tokenId] = n;
+      }
+    }
+    if (isRecord(raw.windows)) {
+      for (const [windowStart, info] of Object.entries(raw.windows)) {
+        if (isRecord(info) && typeof info.upTokenId === "string" && typeof info.downTokenId === "string") {
+          next.windows[windowStart] = {
+            upTokenId: info.upTokenId,
+            downTokenId: info.downTokenId,
+            eventStartTime: typeof info.eventStartTime === "string" ? info.eventStartTime : undefined,
+            endDate: typeof info.endDate === "string" ? info.endDate : undefined,
+            settled: info.settled === true,
+            result: info.result === "up" || info.result === "down" ? info.result : null,
+            localResult: info.localResult === "up" || info.localResult === "down" ? info.localResult : null,
+            priceToBeat: typeof info.priceToBeat === "number" && Number.isFinite(info.priceToBeat) ? info.priceToBeat : null,
+            closePrice: typeof info.closePrice === "number" && Number.isFinite(info.closePrice) ? info.closePrice : null,
+            closeDiff: typeof info.closeDiff === "number" && Number.isFinite(info.closeDiff) ? info.closeDiff : null,
+            closeCapturedAt: typeof info.closeCapturedAt === "number" && Number.isFinite(info.closeCapturedAt) ? info.closeCapturedAt : 0,
+            settlementSource: typeof info.settlementSource === "string" ? info.settlementSource : "",
+            upMark: typeof info.upMark === "number" && Number.isFinite(info.upMark) ? info.upMark : null,
+            downMark: typeof info.downMark === "number" && Number.isFinite(info.downMark) ? info.downMark : null,
+            markUpdatedAt: typeof info.markUpdatedAt === "number" && Number.isFinite(info.markUpdatedAt) ? info.markUpdatedAt : 0,
+          };
+        }
+      }
+    }
+    return next;
+  } catch {
+    return createPaperAccountState();
+  }
+}
+
+function persistPaperAccountState(): void {
+  writeFileSync(PAPER_STATE_FILE, `${JSON.stringify(paperAccount, null, 2)}\n`, "utf-8");
+}
+
+function recordPaperTradeHistory(item: Omit<TradeHistoryItem, "id">): void {
+  const record: TradeHistoryItem = {
+    id: `${item.ts}-${item.side}-${item.direction}-${item.source}-${Math.random().toString(36).slice(2, 8)}`,
+    executionMode: "paper",
+    ...item,
+  };
+  paperTradeHistory.unshift(record);
+  if (paperTradeHistory.length > PAPER_TRADE_HISTORY_MAX) {
+    paperTradeHistory = paperTradeHistory.slice(0, PAPER_TRADE_HISTORY_MAX);
+  }
+  paperTradeHistory = applyTradeHistoryMetrics(paperTradeHistory);
+  paperAccount.realizedPnl = roundMoney(
+    paperTradeHistory.reduce((sum, trade) => sum + (typeof trade.pnl === "number" ? trade.pnl : 0), 0),
+  );
+  persistPaperTradeHistory();
+  persistPaperAccountState();
+  recordExecutionEventFromTrade(record);
+  broadcastPaperTradeHistory();
+}
+
+function getPaperDirectionSize(direction: StrategyDirection | null): number {
+  const tokenId = getDirectionTokenId(direction);
+  return tokenId ? (paperAccount.localSize[tokenId] ?? 0) : 0;
+}
+
+function paperPositionKey(windowStart: number, direction: StrategyDirection): string {
+  return `${Number.isFinite(windowStart) ? windowStart : 0}:${direction}`;
+}
+
+function getPaperOpenCostBasis(): Map<string, { shares: number; cost: number }> {
+  const lots = new Map<string, Array<{ amount: number; price: number }>>();
+  const ordered = [...paperTradeHistory].sort((a, b) => a.ts - b.ts);
+  for (const item of ordered) {
+    const price = getTradeHistoryPrice(item);
+    const amount = Number(item.amount);
+    if (price == null || !Number.isFinite(amount) || amount <= 0) continue;
+    if (String(item.status || "").includes("REJECT")) continue;
+    const key = paperPositionKey(item.windowStart, item.direction);
+    const positionLots = lots.get(key) ?? [];
+    lots.set(key, positionLots);
+    if (item.side === "buy") {
+      positionLots.push({ amount, price });
+      continue;
+    }
+    let remaining = amount;
+    while (remaining > 1e-8 && positionLots.length > 0) {
+      const lot = positionLots[0];
+      const matched = Math.min(remaining, lot.amount);
+      lot.amount -= matched;
+      remaining -= matched;
+      if (lot.amount <= 1e-8) positionLots.shift();
+    }
+  }
+
+  const costs = new Map<string, { shares: number; cost: number }>();
+  for (const [key, positionLots] of lots) {
+    let shares = 0;
+    let cost = 0;
+    for (const lot of positionLots) {
+      if (lot.amount <= 1e-8) continue;
+      shares += lot.amount;
+      cost += lot.amount * lot.price;
+    }
+    if (shares > 1e-8) costs.set(key, { shares, cost });
+  }
+  return costs;
+}
+
+function cleanPaperPrice(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? clampNumber(n, 0, 1) : null;
+}
+
+function getPaperOpenPositions(): Array<{
+  windowStart: number;
+  direction: StrategyDirection;
+  tokenId: string;
+  size: number;
+  info: PaperWindowInfo | null;
+}> {
+  const out: Array<{
+    windowStart: number;
+    direction: StrategyDirection;
+    tokenId: string;
+    size: number;
+    info: PaperWindowInfo | null;
+  }> = [];
+  const seenTokens = new Set<string>();
+
+  for (const [windowKey, info] of Object.entries(paperAccount.windows)) {
+    const windowStart = Number(windowKey);
+    if (!Number.isFinite(windowStart)) continue;
+    const upSize = paperAccount.localSize[info.upTokenId] ?? 0;
+    const downSize = paperAccount.localSize[info.downTokenId] ?? 0;
+    seenTokens.add(info.upTokenId);
+    seenTokens.add(info.downTokenId);
+    if (upSize > 1e-8) out.push({ windowStart, direction: "up", tokenId: info.upTokenId, size: upSize, info });
+    if (downSize > 1e-8) out.push({ windowStart, direction: "down", tokenId: info.downTokenId, size: downSize, info });
+  }
+
+  for (const [tokenId, size] of Object.entries(paperAccount.localSize)) {
+    if (seenTokens.has(tokenId) || size <= 1e-8) continue;
+    const direction = tokenId === state.upTokenId ? "up" : tokenId === state.downTokenId ? "down" : null;
+    if (direction) out.push({ windowStart: state.windowStart, direction, tokenId, size, info: null });
+  }
+
+  return out;
+}
+
+function getPaperPositionValuation(
+  pos: { windowStart: number; direction: StrategyDirection; tokenId: string; size: number; info: PaperWindowInfo | null },
+  currentUpMark: number | null,
+  currentDownMark: number | null,
+  costs: Map<string, { shares: number; cost: number }>,
+): { equityPrice: number; markPrice: number; source: string; projected: boolean } {
+  const currentMark = pos.tokenId === state.upTokenId
+    ? currentUpMark
+    : pos.tokenId === state.downTokenId
+      ? currentDownMark
+      : null;
+  if (currentMark != null) {
+    return { equityPrice: currentMark, markPrice: currentMark, source: "current-book", projected: false };
+  }
+
+  const result = pos.info?.result === "up" || pos.info?.result === "down" ? pos.info.result : null;
+  if (result) {
+    const price = pos.direction === result ? 1 : 0;
+    return { equityPrice: price, markPrice: price, source: "official-result", projected: false };
+  }
+  const localResult = pos.info?.localResult === "up" || pos.info?.localResult === "down" ? pos.info.localResult : null;
+  if (localResult) {
+    const price = pos.direction === localResult ? 1 : 0;
+    return { equityPrice: price, markPrice: price, source: "local-close", projected: true };
+  }
+
+  const upMark = cleanPaperPrice(pos.info?.upMark);
+  const downMark = cleanPaperPrice(pos.info?.downMark);
+  const directionMark = pos.direction === "up" ? upMark : downMark;
+  const oppositeMark = pos.direction === "up" ? downMark : upMark;
+  if (directionMark != null) {
+    const marketNowSec = Math.floor(getPolymarketNowMs() / 1000);
+    const expired = pos.windowStart < state.windowStart || pos.windowStart + 300 <= marketNowSec;
+    if (
+      expired &&
+      oppositeMark != null &&
+      Math.max(directionMark, oppositeMark) >= PAPER_PENDING_SETTLEMENT_CONFIDENCE
+    ) {
+      const equityPrice = directionMark >= oppositeMark ? 1 : 0;
+      return { equityPrice, markPrice: directionMark, source: "pending-settlement", projected: true };
+    }
+    return { equityPrice: directionMark, markPrice: directionMark, source: "gamma-mark", projected: false };
+  }
+
+  const cost = costs.get(paperPositionKey(pos.windowStart, pos.direction));
+  if (cost && cost.shares > 1e-8) {
+    const avgCost = clampNumber(cost.cost / cost.shares, 0, 1);
+    return { equityPrice: avgCost, markPrice: avgCost, source: "cost-basis", projected: false };
+  }
+
+  return { equityPrice: 0, markPrice: 0, source: "unpriced", projected: false };
+}
+
+function getPaperSummary(): Record<string, unknown> {
+  const upSize = state.upTokenId ? (paperAccount.localSize[state.upTokenId] ?? 0) : 0;
+  const downSize = state.downTokenId ? (paperAccount.localSize[state.downTokenId] ?? 0) : 0;
+  const bestBid = Number(state.bestBid);
+  const bestAsk = Number(state.bestAsk);
+  const currentUpMark = Number.isFinite(bestBid) && Number.isFinite(bestAsk) ? clampNumber((bestBid + bestAsk) / 2, 0, 1) : null;
+  const currentDownMark = currentUpMark != null ? 1 - currentUpMark : null;
+  const costs = getPaperOpenCostBasis();
+  const openPositions = getPaperOpenPositions();
+
+  let equity = paperAccount.usdc;
+  let markEquity = paperAccount.usdc;
+  let totalUpSize = 0;
+  let totalDownSize = 0;
+  let pendingSettlementShares = 0;
+  let pendingSettlementValue = 0;
+  let pendingSettlementMarkValue = 0;
+  let pendingProjected = false;
+  const pendingWindows = new Set<number>();
+  const windowSummaries = Object.entries(paperAccount.windows)
+    .map(([windowStart, info]) => ({
+      windowStart: Number(windowStart),
+      eventStartTime: info.eventStartTime || null,
+      endDate: info.endDate || null,
+      settled: info.settled === true,
+      result: info.result ?? info.localResult ?? null,
+      officialResult: info.result ?? null,
+      localResult: info.localResult ?? null,
+      settlementSource: info.settlementSource || "",
+      priceToBeat: info.priceToBeat ?? null,
+      closePrice: info.closePrice ?? null,
+      closeDiff: info.closeDiff ?? null,
+      closeCapturedAt: info.closeCapturedAt || 0,
+      upMark: info.upMark ?? null,
+      downMark: info.downMark ?? null,
+      markUpdatedAt: info.markUpdatedAt || 0,
+    }))
+    .filter((item) => Number.isFinite(item.windowStart))
+    .sort((a, b) => b.windowStart - a.windowStart)
+    .slice(0, 240);
+  const positionSummaries = openPositions.map((pos) => {
+    const valuation = getPaperPositionValuation(pos, currentUpMark, currentDownMark, costs);
+    const value = pos.size * valuation.equityPrice;
+    const markValue = pos.size * valuation.markPrice;
+    equity += value;
+    markEquity += markValue;
+    if (pos.direction === "up") totalUpSize += pos.size;
+    else totalDownSize += pos.size;
+    const pending = pos.windowStart !== state.windowStart;
+    if (pending) {
+      pendingWindows.add(pos.windowStart);
+      pendingSettlementShares += pos.size;
+      pendingSettlementValue += value;
+      pendingSettlementMarkValue += markValue;
+      pendingProjected = pendingProjected || valuation.projected;
+    }
+    return {
+      windowStart: pos.windowStart,
+      direction: pos.direction,
+      size: pos.size,
+      price: valuation.equityPrice,
+      markPrice: valuation.markPrice,
+      value: roundMoney(value),
+      markValue: roundMoney(markValue),
+      pending,
+      projected: valuation.projected,
+      source: valuation.source,
+    };
+  });
+
+  return {
+    usdc: roundMoney(paperAccount.usdc),
+    equity: roundMoney(equity),
+    markEquity: roundMoney(markEquity),
+    initialUsdc: PAPER_INITIAL_USDC,
+    realizedPnl: roundMoney(paperAccount.realizedPnl),
+    totalPnl: roundMoney(equity - PAPER_INITIAL_USDC),
+    markPnl: roundMoney(markEquity - PAPER_INITIAL_USDC),
+    upLocalSize: upSize,
+    downLocalSize: downSize,
+    totalUpLocalSize: totalUpSize,
+    totalDownLocalSize: totalDownSize,
+    pendingSettlementShares,
+    pendingSettlementValue: roundMoney(pendingSettlementValue),
+    pendingSettlementMarkValue: roundMoney(pendingSettlementMarkValue),
+    pendingSettlementWindows: pendingWindows.size,
+    pendingSettlementProjected: pendingProjected,
+    openPositions: positionSummaries.slice(0, 20),
+    windowSummaries,
+    lastTradeAt: paperAccount.lastTradeAt,
+    resetAt: paperAccount.resetAt,
+    latencyRangeMs: { min: PAPER_MIN_LATENCY_MS, max: PAPER_MAX_LATENCY_MS },
+    latencyModel: getPaperLatencyModelSnapshot(),
+  };
+}
+
+function rememberPaperWindow(info: {
+  windowStart: number;
+  upTokenId: string;
+  downTokenId: string;
+  eventStartTime?: string;
+  endDate?: string;
+}): void {
+  const key = String(info.windowStart);
+  const prev = paperAccount.windows[key];
+  paperAccount.windows[String(info.windowStart)] = {
+    ...prev,
+    upTokenId: info.upTokenId,
+    downTokenId: info.downTokenId,
+    eventStartTime: info.eventStartTime || prev?.eventStartTime,
+    endDate: info.endDate || prev?.endDate,
+    settled: prev?.settled === true,
+  };
+  persistPaperAccountState();
+}
+
+function settlePaperWindow(windowStart: number, result: StrategyDirection | null, settlementSource = "official"): boolean {
+  if (!result) return false;
+  const key = String(windowStart);
+  const info = paperAccount.windows[key];
+  if (!info || info.settled) return false;
+  const sizes: Array<[StrategyDirection, string, number]> = [
+    ["up", info.upTokenId, paperAccount.localSize[info.upTokenId] ?? 0],
+    ["down", info.downTokenId, paperAccount.localSize[info.downTokenId] ?? 0],
+  ];
+  let changed = info.result !== result || info.settled !== true;
+  if (settlementSource === "official") info.result = result;
+  else info.localResult = result;
+  info.settlementSource = settlementSource;
+  info.upMark = result === "up" ? 1 : 0;
+  info.downMark = result === "down" ? 1 : 0;
+  info.markUpdatedAt = Date.now();
+  const ts = Date.now();
+  let recordedSettlement = false;
+  for (const [direction, tokenId, size] of sizes) {
+    if (size <= 0.000001) continue;
+    const win = direction === result;
+    const price = win ? 1 : 0;
+    if (win) paperAccount.usdc = roundMoney(paperAccount.usdc + size);
+    recordPaperTradeHistory({
+      ts,
+      windowStart,
+      side: "sell",
+      direction,
+      amount: size,
+      price,
+      avgPrice: price,
+      worstPrice: price,
+      status: "SIM_SETTLED",
+      source: "paper-settlement",
+      exitReason: settlementSource === "official" ? `settled:${result}` : `${settlementSource}:${result}`,
+      filledShares: size,
+      filledNotional: win ? size : 0,
+    });
+    paperAccount.localSize[tokenId] = 0;
+    recordedSettlement = true;
+    changed = true;
+  }
+  info.settled = true;
+  if (recordedSettlement) paperAccount.lastTradeAt = ts;
+  persistPaperAccountState();
+  broadcastState();
+  return changed;
+}
+
+function mergePaperFullSet(windowStart: number, source: string, reason: string): number {
+  const info = paperAccount.windows[String(windowStart)];
+  if (!info) return 0;
+  const upSize = paperAccount.localSize[info.upTokenId] ?? 0;
+  const downSize = paperAccount.localSize[info.downTokenId] ?? 0;
+  const shares = Math.min(upSize, downSize);
+  if (!(shares > 0.01)) return 0;
+
+  paperAccount.localSize[info.upTokenId] = Math.max(0, upSize - shares);
+  paperAccount.localSize[info.downTokenId] = Math.max(0, downSize - shares);
+  paperAccount.usdc = roundMoney(paperAccount.usdc + shares);
+  paperAccount.lastTradeAt = Date.now();
+  persistPaperAccountState();
+  recordPaperTradeHistory({
+    ts: Date.now(),
+    windowStart,
+    side: "sell",
+    direction: "up",
+    amount: shares,
+    price: 1,
+    avgPrice: 1,
+    worstPrice: 1,
+    status: "SIM_MERGED",
+    source,
+    exitReason: reason,
+    paperAction: "merge",
+    requestedShares: shares,
+    filledShares: shares,
+    filledNotional: shares,
+    partial: false,
+  });
+  broadcastState();
+  return shares;
 }
 
 function broadcastPmPnl(): void {
@@ -449,6 +1423,11 @@ function rememberPendingTradeMeta(meta: Omit<PendingTradeMeta, "key">): void {
   cleanupPendingTradeMeta(meta.ts);
   const key = meta.orderId || `pending-${meta.ts}-${Math.random().toString(36).slice(2, 8)}`;
   pendingTradeMeta.set(key, { key, ...meta });
+}
+
+function forgetPendingTradeMeta(orderId: string | undefined): void {
+  if (!orderId) return;
+  pendingTradeMeta.delete(orderId);
 }
 
 function normalizeTradeSide(value: unknown): "buy" | "sell" | null {
@@ -490,7 +1469,7 @@ function consumePendingTradeMeta(evt: Record<string, unknown>): PendingTradeMeta
   for (const id of candidateIds) {
     const meta = pendingTradeMeta.get(id);
     if (!meta) continue;
-    pendingTradeMeta.delete(id);
+    if (meta.source !== "strategy10maker") pendingTradeMeta.delete(id);
     return meta;
   }
 
@@ -512,7 +1491,7 @@ function consumePendingTradeMeta(evt: Record<string, unknown>): PendingTradeMeta
   }
   if (!bestKey) return null;
   const meta = pendingTradeMeta.get(bestKey) || null;
-  if (meta) pendingTradeMeta.delete(bestKey);
+  if (meta && meta.source !== "strategy10maker") pendingTradeMeta.delete(bestKey);
   return meta;
 }
 
@@ -620,9 +1599,17 @@ const state = {
   bestAsk: "-",
   lastPrice: "-",
   lastSide: "",
+  lastPriceUpdatedAt: 0,
   updatedAt: 0,
+  bookUpdatedAt: 0,
+  bookEventTs: 0,
+  bookSource: "",
+  bookCheckAt: 0,
+  bookCheckLatencyMs: null as number | null,
+  bookCheckDiffPct: null as number | null,
   priceToBeat: null as number | null,
   currentPrice: null as number | null,
+  currentPriceUpdatedAt: 0,
   binanceOffset: null as number | null,
   priceHistory: [] as Array<{ t: number; price: number }>,
   binanceHistory: [] as Array<{ t: number; price: number }>,
@@ -637,14 +1624,22 @@ const strategyRuntime: StrategyRuntimeState = {
   buyAmount: 0,
   posBeforeBuy: 0,
   posBeforeSell: 0,
+  lockDirection: null,
+  lockPosBeforeBuy: 0,
+  lockTargetShares: 0,
+  lockReason: "",
+  locked: false,
   waitVerifyAfterSell: false,
   cleanupAfterVerify: false,
   actionTs: 0,
   prevUpPct: null,
   buyLockUntil: 0,
-  positionsReady: !PROXY_ADDRESS,
+  positionsReady: strategyConfig.executionMode === "paper" || !PROXY_ADDRESS,
   roundEntryCount: 0,
 };
+
+let macdFilterBlockedReason = "";
+let macdFilterBlockedAt = 0;
 
 // ── 持仓状态 ──────────────────────────────────────────────────
 const wsStatus = { market: false, chainlink: false, user: false, binance: false };
@@ -675,6 +1670,80 @@ function sendTradeHistoryToClient(ws: WebSocket): void {
 
 function broadcastTradeHistory(): void {
   broadcast("tradeHistory", { tradeHistory });
+}
+
+function sendPaperTradeHistoryToClient(ws: WebSocket): void {
+  send(ws, "paperTradeHistory", { paperTradeHistory });
+}
+
+function broadcastPaperTradeHistory(): void {
+  broadcast("paperTradeHistory", { paperTradeHistory });
+}
+
+function sendExecutionEventsToClient(ws: WebSocket): void {
+  send(ws, "executionEvents", { executionEvents: executionEvents.slice(0, 500) });
+}
+
+function broadcastExecutionEvents(): void {
+  broadcast("executionEvents", { executionEvents: executionEvents.slice(0, 500) });
+}
+
+function getBonereaperMonitorPayload(): Record<string, unknown> {
+  return {
+    bonereaperMonitor: bonereaperMonitor.getSnapshot({
+      currentConditionId: state.conditionId,
+      currentWindowStart: state.windowStart,
+    }),
+  };
+}
+
+function buildBonereaperMarketSample(): BonereaperMarketSample | null {
+  if (!state.windowStart || !state.windowEnd) return null;
+  const bid = Number(state.bestBid);
+  const ask = Number(state.bestAsk);
+  const upBid = Number.isFinite(bid) && bid > 0 ? bid : null;
+  const upAsk = Number.isFinite(ask) && ask > 0 ? ask : null;
+  const upMid = upBid != null && upAsk != null ? clampNumber((upBid + upAsk) / 2, 0, 1) : null;
+  const downBid = upAsk != null ? clampNumber(1 - upAsk, 0, 1) : null;
+  const downAsk = upBid != null ? clampNumber(1 - upBid, 0, 1) : null;
+  const downMid = upMid != null ? clampNumber(1 - upMid, 0, 1) : null;
+  const fair = computeFairProbPayload();
+  const technical = computeTechnicalPayload() as {
+    macd1m?: { trend?: string };
+    macdFast1m?: { trend?: string };
+  };
+  return {
+    ts: Date.now(),
+    exchangeTs: getPolymarketNowMs(),
+    windowStart: state.windowStart,
+    windowEnd: state.windowEnd,
+    remSec: getStrategyRemainingSeconds(),
+    priceToBeat: Number.isFinite(Number(state.priceToBeat)) ? Number(state.priceToBeat) : null,
+    currentPrice: Number.isFinite(Number(state.currentPrice)) ? Number(state.currentPrice) : null,
+    diff: getStrategyDiff(),
+    upBid,
+    upAsk,
+    upMid,
+    downBid,
+    downAsk,
+    downMid,
+    spreadPct: upBid != null && upAsk != null ? (upAsk - upBid) * 100 : null,
+    marketUpPct: fair?.upPct ?? (upMid != null ? upMid * 100 : null),
+    fairUpPct: fair?.fairUp ?? null,
+    biasUpPct: fair?.biasUp ?? null,
+    macd1mTrend: technical.macd1m?.trend ?? null,
+    macdFast1mTrend: technical.macdFast1m?.trend ?? null,
+    bookAgeMs: state.bookUpdatedAt ? Date.now() - state.bookUpdatedAt : null,
+    bookSource: state.bookSource || null,
+  };
+}
+
+function sendBonereaperMonitorToClient(ws: WebSocket): void {
+  send(ws, "bonereaperMonitor", getBonereaperMonitorPayload());
+}
+
+function broadcastBonereaperMonitor(): void {
+  broadcast("bonereaperMonitor", getBonereaperMonitorPayload());
 }
 
 function createClientSession(dataMode: ClientDataMode): ClientSession {
@@ -775,24 +1844,51 @@ function getDirectionTokenId(direction: StrategyDirection | null): string {
 
 function getDirectionLocalSize(direction: StrategyDirection | null): number {
   const tokenId = getDirectionTokenId(direction);
-  return tokenId ? (positions.localSize[tokenId] ?? 0) : 0;
+  if (!tokenId) return 0;
+  if (strategyConfig.executionMode === "paper") return paperAccount.localSize[tokenId] ?? 0;
+  return positions.localSize[tokenId] ?? 0;
+}
+
+function getDirectionCostPctFromBasis(
+  basis: Map<string, { shares: number; cost: number }> | null,
+  direction: StrategyDirection,
+): number | null {
+  if (!basis) return null;
+  const item = basis.get(paperPositionKey(state.windowStart, direction));
+  if (!item || !(item.shares > 0)) return null;
+  return clampNumber((item.cost / item.shares) * 100, 0, 100);
 }
 
 function getDirectionApiSize(direction: StrategyDirection | null): number {
   const tokenId = getDirectionTokenId(direction);
-  return tokenId ? (positions.apiSize[tokenId] ?? 0) : 0;
+  if (!tokenId) return 0;
+  if (strategyConfig.executionMode === "paper") return paperAccount.localSize[tokenId] ?? 0;
+  return positions.apiSize[tokenId] ?? 0;
 }
 
 function isDirectionVerified(direction: StrategyDirection | null): boolean {
   const tokenId = getDirectionTokenId(direction);
-  return tokenId ? (positions.apiVerified[tokenId] ?? false) : false;
+  if (!tokenId) return false;
+  if (strategyConfig.executionMode === "paper") return true;
+  return positions.apiVerified[tokenId] ?? false;
 }
 
 function hasOpenPosition(): boolean {
   return getDirectionLocalSize("up") > 0.01 || getDirectionLocalSize("down") > 0.01;
 }
 
+function getSingleOpenPositionDirection(): StrategyDirection | null {
+  const upSize = getDirectionLocalSize("up");
+  const downSize = getDirectionLocalSize("down");
+  const hasUp = upSize > 0.01;
+  const hasDown = downSize > 0.01;
+  if (hasUp && !hasDown) return "up";
+  if (hasDown && !hasUp) return "down";
+  return null;
+}
+
 function hasEnoughUsdcForBuy(amount: number): boolean {
+  if (strategyConfig.executionMode === "paper") return paperAccount.usdc + 1e-6 >= amount;
   if (positions.usdc == null || !Number.isFinite(amount)) return true;
   return positions.usdc + 1e-6 >= amount;
 }
@@ -829,6 +1925,64 @@ function getStrategyDiff(): number | null {
   const latestBinancePrice = getLatestBinancePrice();
   if (latestBinancePrice == null || state.priceToBeat == null || state.binanceOffset == null) return null;
   return latestBinancePrice - (state.priceToBeat - state.binanceOffset);
+}
+
+function getDirectionAskEstimate(direction: StrategyDirection | null): number | null {
+  const bid = Number(state.bestBid);
+  const ask = Number(state.bestAsk);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  if (direction === "up") return ask;
+  if (direction === "down") return clampNumber(1 - bid, 0.01, 0.99);
+  return null;
+}
+
+function getTerminalBookDislocationReason(direction: StrategyDirection | null, side: "buy" | "sell" | null): string | null {
+  if (!TERMINAL_BOOK_GUARD_ENABLED || side !== "buy" || !direction) return null;
+  const rem = getStrategyRemainingSeconds();
+  if (rem < 0 || rem > TERMINAL_BOOK_GUARD_SECONDS) return null;
+  const diff = getStrategyDiff();
+  if (diff == null || Math.abs(diff) < TERMINAL_BOOK_GUARD_DIFF) return null;
+  const winningDirection: StrategyDirection = diff >= 0 ? "up" : "down";
+  if (direction !== winningDirection) return null;
+  const askEstimate = getDirectionAskEstimate(direction);
+  if (askEstimate == null || askEstimate > TERMINAL_BOOK_GUARD_WIN_MAX_ASK) return null;
+  return `terminal_book_dislocation:${direction}:ask=${askEstimate.toFixed(2)}:diff=${diff.toFixed(2)}:rem=${rem.toFixed(1)}`;
+}
+
+function isStrategyOrderSource(source: string | undefined): boolean {
+  return String(source || "").startsWith("strategy");
+}
+
+function getEstimatedOrderNotional(side: "buy" | "sell", amount: number, book?: BookSnapshot | null): number {
+  if (side === "buy") return amount;
+  const bid = book?.topBid ?? 0;
+  return bid > 0 ? amount * bid : amount;
+}
+
+function getLiveOrderGuardReason(input: PlaceOrderInput, book?: BookSnapshot | null): string | null {
+  if (strategyConfig.executionMode !== "live") return null;
+  if (!liveTradingEnabled) return "live_trading_disabled:switch to live mode to arm live trading";
+  const source = input.source || "manual";
+  if (source === "strategy10maker" && !s10LiveMakerEnabled) {
+    return "s10_live_maker_disabled:switch to live mode to arm S10 live maker";
+  }
+  const clockAge = getPolymarketClockAgeMs();
+  if (clockAge == null || clockAge > POLYMARKET_CLOCK_MAX_AGE_MS) {
+    return `live_clock_stale:${clockAge == null ? "none" : Math.round(clockAge)}ms`;
+  }
+  const bookAge = state.bookUpdatedAt > 0 ? Date.now() - state.bookUpdatedAt : Infinity;
+  if (bookAge > LIVE_MAX_BOOK_STALE_MS) return `live_ws_book_stale:${Math.round(bookAge)}ms`;
+  const rem = getStrategyRemainingSeconds(getPolymarketNowMs());
+  const minBuyRemaining = source === "strategy10maker" ? S10_LIVE_MAKER_MIN_REMAINING_SEC : LIVE_MIN_BUY_REMAINING_SEC;
+  if (input.side === "buy" && rem < minBuyRemaining) {
+    return `live_too_late_to_buy:rem=${rem.toFixed(1)}s<${minBuyRemaining.toFixed(1)}s`;
+  }
+  const maxOrderUsdc = isStrategyOrderSource(source) ? LIVE_STRATEGY_MAX_ORDER_USDC : LIVE_MAX_ORDER_USDC;
+  const notional = getEstimatedOrderNotional(input.side, input.amount, book);
+  if (notional > maxOrderUsdc + 1e-9) {
+    return `live_order_notional_cap:${notional.toFixed(2)}>${maxOrderUsdc.toFixed(2)}`;
+  }
+  return null;
 }
 
 function calcMedian(values: number[]): number | null {
@@ -959,12 +2113,19 @@ function resetStrategyRuntime(reason?: string): void {
   strategyRuntime.buyAmount = 0;
   strategyRuntime.posBeforeBuy = 0;
   strategyRuntime.posBeforeSell = 0;
+  strategyRuntime.lockDirection = null;
+  strategyRuntime.lockPosBeforeBuy = 0;
+  strategyRuntime.lockTargetShares = 0;
+  strategyRuntime.lockReason = "";
+  strategyRuntime.locked = false;
   strategyRuntime.waitVerifyAfterSell = false;
   strategyRuntime.cleanupAfterVerify = false;
   strategyRuntime.actionTs = 0;
   strategyRuntime.prevUpPct = null;
   strategyRuntime.buyLockUntil = 0;
   strategyRuntime.roundEntryCount = 0;
+  macdFilterBlockedReason = "";
+  macdFilterBlockedAt = 0;
   for (const s of getAllStrategies()) s.resetState();
   if (reason) console.log(`[Strategy] 重置: ${reason}`);
 }
@@ -982,6 +2143,11 @@ function transitionToDone(): void {
     strategyRuntime.buyAmount = 0;
     strategyRuntime.posBeforeBuy = 0;
     strategyRuntime.posBeforeSell = 0;
+    strategyRuntime.lockDirection = null;
+    strategyRuntime.lockPosBeforeBuy = 0;
+    strategyRuntime.lockTargetShares = 0;
+    strategyRuntime.lockReason = "";
+    strategyRuntime.locked = false;
     strategyRuntime.waitVerifyAfterSell = false;
     strategyRuntime.cleanupAfterVerify = false;
     strategyRuntime.actionTs = 0;
@@ -1000,6 +2166,15 @@ function hasConfirmedBuyPosition(): boolean {
     && getDirectionLocalSize(strategyRuntime.direction) > strategyRuntime.posBeforeBuy + 0.01;
 }
 
+function oppositeDirection(direction: StrategyDirection): StrategyDirection {
+  return direction === "up" ? "down" : "up";
+}
+
+function hasConfirmedLockPosition(): boolean {
+  return strategyRuntime.lockDirection != null
+    && getDirectionLocalSize(strategyRuntime.lockDirection) > strategyRuntime.lockPosBeforeBuy + 0.01;
+}
+
 function canReleaseUnconfirmedBuy(now = Date.now()): boolean {
   if (now - strategyRuntime.actionTs < FILL_RECONCILE_TIMEOUT_MS) return false;
   if (!strategyRuntime.direction) return true;
@@ -1007,6 +2182,56 @@ function canReleaseUnconfirmedBuy(now = Date.now()): boolean {
   return getDirectionApiSize(strategyRuntime.direction) <= strategyRuntime.posBeforeBuy + 0.01;
 }
 
+function buildLiveSafetyPayload(): Record<string, unknown> {
+  const bookAgeMs = state.bookUpdatedAt > 0 ? Date.now() - state.bookUpdatedAt : null;
+  const clockAgeMs = getPolymarketClockAgeMs();
+  const s10MakerMode = S10_MAKER_ENGINE_ENABLED
+    ? (s10LiveMakerEnabled ? "live-enabled" : "paper-only")
+    : "disabled";
+  const ready = strategyConfig.executionMode !== "live"
+    ? true
+    : liveTradingEnabled
+      && bookAgeMs != null
+      && bookAgeMs <= LIVE_MAX_BOOK_STALE_MS
+      && clockAgeMs != null
+      && clockAgeMs <= POLYMARKET_CLOCK_MAX_AGE_MS;
+  let reason = "ok";
+  if (strategyConfig.executionMode === "live") {
+    if (!liveTradingEnabled) reason = "live runtime switch off";
+    else if (bookAgeMs == null || bookAgeMs > LIVE_MAX_BOOK_STALE_MS) reason = `book stale ${bookAgeMs == null ? "-" : Math.round(bookAgeMs)}ms`;
+    else if (clockAgeMs == null || clockAgeMs > POLYMARKET_CLOCK_MAX_AGE_MS) reason = `clock stale ${clockAgeMs == null ? "-" : Math.round(clockAgeMs)}ms`;
+  }
+  return {
+    ready,
+    reason,
+    liveTradingEnabled,
+    s10LiveMakerEnabled,
+    s10MakerMode,
+    maxBookStaleMs: LIVE_MAX_BOOK_STALE_MS,
+    bookWsMaxDiffPct: LIVE_BOOK_WS_MAX_DIFF * 100,
+    maxOrderUsdc: LIVE_MAX_ORDER_USDC,
+    strategyMaxOrderUsdc: LIVE_STRATEGY_MAX_ORDER_USDC,
+    maxPriceImpactPct: LIVE_MAX_PRICE_IMPACT_PCT,
+    minBuyRemainingSec: LIVE_MIN_BUY_REMAINING_SEC,
+    s10MakerMinBuyRemainingSec: S10_LIVE_MAKER_MIN_REMAINING_SEC,
+    s10LiveMakerActiveOrders: liveMakerOrders.filter((order) => order.status === "open" || order.status === "unknown").length,
+    bookAgeMs,
+    clockAgeMs,
+  };
+}
+
+function setLiveRuntimeSwitches(enabled: boolean, reason: string): void {
+  const nextEnabled = !!enabled;
+  const changed = liveTradingEnabled !== nextEnabled || s10LiveMakerEnabled !== nextEnabled;
+  liveTradingEnabled = nextEnabled;
+  s10LiveMakerEnabled = nextEnabled;
+  if (changed) {
+    console.log(`[LiveRuntime] ${nextEnabled ? "armed" : "disarmed"}: ${reason}`);
+  }
+  if (!nextEnabled) {
+    void cancelLiveMakerOrders(() => true, reason);
+  }
+}
 
 function buildStrategyRuntimePayload(): Record<string, unknown> {
   const perStrategy: Record<string, Record<string, unknown>> = {};
@@ -1020,6 +2245,11 @@ function buildStrategyRuntimePayload(): Record<string, unknown> {
     buyAmount: strategyRuntime.buyAmount,
     posBeforeBuy: strategyRuntime.posBeforeBuy,
     posBeforeSell: strategyRuntime.posBeforeSell,
+    lockDirection: strategyRuntime.lockDirection,
+    lockPosBeforeBuy: strategyRuntime.lockPosBeforeBuy,
+    lockTargetShares: strategyRuntime.lockTargetShares,
+    lockReason: strategyRuntime.lockReason,
+    locked: strategyRuntime.locked,
     waitVerifyAfterSell: strategyRuntime.waitVerifyAfterSell,
     cleanupAfterVerify: strategyRuntime.cleanupAfterVerify,
     actionTs: strategyRuntime.actionTs,
@@ -1027,6 +2257,12 @@ function buildStrategyRuntimePayload(): Record<string, unknown> {
     buyLockUntil: strategyRuntime.buyLockUntil,
     positionsReady: strategyRuntime.positionsReady,
     roundEntryCount: strategyRuntime.roundEntryCount,
+    macdFilter: {
+      enabled: MACD_FILTER_ENABLED,
+      blockedReason: macdFilterBlockedReason,
+      blockedAt: macdFilterBlockedAt || null,
+    },
+    liveSafety: buildLiveSafetyPayload(),
     perStrategy,
   };
 }
@@ -1048,6 +2284,31 @@ function computeFairProbPayload(): {
   return { diff, rem, upPct: snap.upPct, fairUp, biasUp };
 }
 
+function computeTechnicalPayload(): Record<string, unknown> {
+  return {
+    macd1m: buildMacdSnapshot(state.kline1m, {
+      fast: 12,
+      slow: 26,
+      signal: 9,
+      confirmBars: 3,
+      minHistBps: 0.02,
+      minSlopeBps: 0,
+    }),
+    macdFast1m: buildMacdSnapshot(state.kline1m, {
+      fast: 6,
+      slow: 13,
+      signal: 5,
+      confirmBars: 3,
+      minHistBps: 0.02,
+      minSlopeBps: 0,
+    }),
+  };
+}
+
+function computeFullSetArbPayload(): FullSetArbSnapshot {
+  return withFullSetAge(fullSetArbSnapshot);
+}
+
 function buildStatePayload(options: boolean | StatePayloadOptions = false): Record<string, unknown> {
   const normalized = typeof options === "boolean" ? { includeHistory: options } : options;
   const includeHistory = normalized.includeHistory === true;
@@ -1059,21 +2320,36 @@ function buildStatePayload(options: boolean | StatePayloadOptions = false): Reco
     .map(([price, size]) => ({ price: Number(price), size: Number(size) }))
     .sort((a, b) => a.price - b.price).slice(0, 8);
 
+  const clockAgeMs = getPolymarketClockAgeMs();
   const payload: Record<string, unknown> = {
     windowStart:  state.windowStart,
     windowEnd:    state.windowEnd,
     bestBid:      state.bestBid,
     bestAsk:      state.bestAsk,
     probabilityReady: isProbabilityReady(),
+    bookUpdatedAt: state.bookUpdatedAt,
+    bookEventTs: state.bookEventTs || null,
+    bookSource: state.bookSource || null,
+    bookAgeMs: state.bookUpdatedAt ? Date.now() - state.bookUpdatedAt : null,
+    bookStaleAfterMs: MAX_BOOK_STALE_MS,
+    bookEventAgeMs: state.bookEventTs ? Math.max(0, Date.now() - state.bookEventTs) : null,
+    bookCheckAt: state.bookCheckAt || null,
+    bookCheckAgeMs: state.bookCheckAt ? Date.now() - state.bookCheckAt : null,
+    bookCheckLatencyMs: state.bookCheckLatencyMs,
+    bookCheckDiffPct: state.bookCheckDiffPct,
     lastPrice:    state.lastPrice,
     lastSide:     state.lastSide,
+    lastPriceUpdatedAt: state.lastPriceUpdatedAt,
     updatedAt:    state.updatedAt,
     priceToBeat:  state.priceToBeat,
     currentPrice: state.currentPrice,
+    currentPriceUpdatedAt: state.currentPriceUpdatedAt || null,
     binanceOffset: state.binanceOffset,
     klineCounts: { k1m: state.kline1m.length, k5m: state.kline5m.length },
     binanceDiff: getStrategyDiff(),
     fairProb: computeFairProbPayload(),
+    technical: computeTechnicalPayload(),
+    fullSetArb: computeFullSetArbPayload(),
     usdc:           positions.usdc,
     usdcAllowanceStatus: positions.usdcAllowanceStatus,
     usdcAllowanceMin: positions.usdcAllowanceMin,
@@ -1085,10 +2361,18 @@ function buildStatePayload(options: boolean | StatePayloadOptions = false): Reco
     downApiVerified:positions.apiVerified[state.downTokenId] ?? false,
     lastTradeAt:    positions.lastTradeAt,
     lastApiSyncAt:  positions.lastApiSyncAt,
+    executionMode:  strategyConfig.executionMode,
+    paper:          getPaperSummary(),
     runtimeMode:    APP_MODE,
     strategyConfig,
     strategy:       buildStrategyRuntimePayload(),
     ts: Date.now(),
+    exchangeTs: getPolymarketNowMs(),
+    polymarketClockOffsetMs,
+    polymarketClockAgeMs: clockAgeMs,
+    polymarketClockSource: polymarketClockSource || null,
+    polymarketClockLatencyMs,
+    polymarketClockReady: clockAgeMs != null && clockAgeMs <= POLYMARKET_CLOCK_MAX_AGE_MS,
   };
   if (!simple) {
     payload.conditionId = state.conditionId;
@@ -1164,15 +2448,240 @@ function applyClientConfig(ws: WebSocket, raw: unknown): void {
 }
 
 async function fetchBookTopOfBook(tokenId: string): Promise<{ bestBid: number; bestAsk: number }> {
-  const book = await fetch(`${CLOB_URL}/book?token_id=${tokenId}`).then(r => r.json()) as {
-    bids?: { price: string }[]; asks?: { price: string }[];
-  };
-  const bids = (book.bids || []).map(b => Number(b.price)).filter(p => p > 0);
-  const asks = (book.asks || []).map(a => Number(a.price)).filter(p => p > 0);
+  const book = await fetchBookSnapshot(tokenId);
   return {
-    bestBid: bids.length ? Math.max(...bids) : 0,
-    bestAsk: asks.length ? Math.min(...asks) : 0,
+    bestBid: book.topBid,
+    bestAsk: book.topAsk,
   };
+}
+
+async function fetchBookSnapshot(tokenId: string): Promise<BookSnapshot> {
+  const startedAt = Date.now();
+  const res = await fetch(`${CLOB_URL}/book?token_id=${tokenId}`);
+  const endedAt = Date.now();
+  updatePolymarketClockFromHeaders(res.headers, startedAt, endedAt, "clob");
+  recordLatencySample(bookLatencySamples, endedAt - startedAt);
+  const book = await res.json() as {
+    bids?: { price: string; size?: string }[];
+    asks?: { price: string; size?: string }[];
+  };
+  const bids = (book.bids || [])
+    .map(b => ({ price: Number(b.price), size: Number(b.size ?? 0) }))
+    .filter(b => b.price > 0 && b.size > 0)
+    .sort((a, b) => b.price - a.price);
+  const asks = (book.asks || [])
+    .map(a => ({ price: Number(a.price), size: Number(a.size ?? 0) }))
+    .filter(a => a.price > 0 && a.size > 0)
+    .sort((a, b) => a.price - b.price);
+  return {
+    tokenId,
+    bids,
+    asks,
+    topBid: bids[0]?.price ?? 0,
+    topAsk: asks[0]?.price ?? 0,
+    fetchedAt: Date.now(),
+    latencyMs: endedAt - startedAt,
+  };
+}
+
+function createEmptyFullSetArbSnapshot(reason: string): FullSetArbSnapshot {
+  return {
+    ready: false,
+    status: "idle",
+    reason,
+    windowStart: 0,
+    updatedAt: 0,
+    ageMs: null,
+    maxBudget: 0,
+    targetShares: 0,
+    totalCost: null,
+    totalCostPct: null,
+    grossProfit: null,
+    grossProfitPct: null,
+    netProfitPct: null,
+    minProfitPct: S10_FULLSET_MIN_PROFIT_PCT,
+    triggerProfitPct: S10_FULLSET_TRIGGER_PROFIT_PCT,
+    feeBufferPct: S10_FULLSET_FEE_BUFFER_PCT,
+    upAvgAsk: null,
+    downAvgAsk: null,
+    upTopAsk: null,
+    downTopAsk: null,
+    upLevelsUsed: 0,
+    downLevelsUsed: 0,
+    firstLegDirection: null,
+    firstLegCost: null,
+    secondLegDirection: null,
+    secondLegCost: null,
+    bookLatencyMs: null,
+  };
+}
+
+function withFullSetAge(snapshot: FullSetArbSnapshot): FullSetArbSnapshot {
+  return {
+    ...snapshot,
+    ageMs: snapshot.updatedAt > 0 ? Math.max(0, Date.now() - snapshot.updatedAt) : null,
+  };
+}
+
+function calcBuyCostForShares(levels: BookLevel[], targetShares: number): {
+  ok: boolean;
+  cost: number;
+  avgPrice: number | null;
+  levelsUsed: number;
+  maxPrice: number | null;
+  availableShares: number;
+} {
+  if (!(targetShares > 0)) {
+    return { ok: false, cost: 0, avgPrice: null, levelsUsed: 0, maxPrice: null, availableShares: 0 };
+  }
+  let remaining = targetShares;
+  let cost = 0;
+  let levelsUsed = 0;
+  let maxPrice: number | null = null;
+  let availableShares = 0;
+  for (const level of levels) {
+    availableShares += level.size;
+    if (remaining <= 1e-9) continue;
+    const take = Math.min(remaining, level.size);
+    cost += take * level.price;
+    remaining -= take;
+    levelsUsed++;
+    maxPrice = level.price;
+  }
+  const filled = targetShares - Math.max(0, remaining);
+  return {
+    ok: remaining <= 1e-8,
+    cost,
+    avgPrice: filled > 0 ? cost / filled : null,
+    levelsUsed,
+    maxPrice,
+    availableShares,
+  };
+}
+
+function getCandidateShareSizes(upAsks: BookLevel[], downAsks: BookLevel[], maxBudget: number): number[] {
+  const sizes = new Set<number>();
+  let upCum = 0;
+  for (const level of upAsks.slice(0, 12)) {
+    upCum += level.size;
+    if (upCum >= S10_FULLSET_MIN_SHARES) sizes.add(Number(upCum.toFixed(4)));
+  }
+  let downCum = 0;
+  for (const level of downAsks.slice(0, 12)) {
+    downCum += level.size;
+    if (downCum >= S10_FULLSET_MIN_SHARES) sizes.add(Number(downCum.toFixed(4)));
+  }
+  const topCost = (upAsks[0]?.price ?? 0) + (downAsks[0]?.price ?? 0);
+  if (topCost > 0) sizes.add(Number((maxBudget / topCost).toFixed(4)));
+  sizes.add(S10_FULLSET_MIN_SHARES);
+  return [...sizes].filter(v => Number.isFinite(v) && v >= S10_FULLSET_MIN_SHARES).sort((a, b) => a - b);
+}
+
+function buildFullSetOpportunity(upBook: BookSnapshot, downBook: BookSnapshot, maxBudget: number): FullSetArbSnapshot {
+  const now = Date.now();
+  const base: FullSetArbSnapshot = {
+    ...createEmptyFullSetArbSnapshot("scanning"),
+    status: "scanning",
+    windowStart: state.windowStart,
+    updatedAt: now,
+    maxBudget,
+    upTopAsk: upBook.topAsk || null,
+    downTopAsk: downBook.topAsk || null,
+    bookLatencyMs: Math.max(upBook.latencyMs, downBook.latencyMs),
+  };
+  if (!upBook.asks.length || !downBook.asks.length) {
+    return { ...base, status: "empty_book", reason: "missing up/down ask" };
+  }
+  if (!(maxBudget > 0)) {
+    return { ...base, status: "no_budget", reason: "S10 amount is zero" };
+  }
+
+  let best: FullSetArbSnapshot | null = null;
+  const maxCostPct = 100 - S10_FULLSET_MIN_PROFIT_PCT - S10_FULLSET_FEE_BUFFER_PCT;
+  for (const shares of getCandidateShareSizes(upBook.asks, downBook.asks, maxBudget)) {
+    const up = calcBuyCostForShares(upBook.asks, shares);
+    const down = calcBuyCostForShares(downBook.asks, shares);
+    if (!up.ok || !down.ok) continue;
+    const totalCost = up.cost + down.cost;
+    if (totalCost > maxBudget + 1e-9) continue;
+    const totalCostPct = (totalCost / shares) * 100;
+    const grossProfit = shares - totalCost;
+    const grossProfitPct = 100 - totalCostPct;
+    const netProfitPct = grossProfitPct - S10_FULLSET_FEE_BUFFER_PCT;
+    if (totalCostPct > maxCostPct) continue;
+    const firstLegDirection: StrategyDirection = up.avgPrice != null && down.avgPrice != null && up.avgPrice <= down.avgPrice ? "up" : "down";
+    const candidate: FullSetArbSnapshot = {
+      ...base,
+      ready: netProfitPct >= S10_FULLSET_TRIGGER_PROFIT_PCT,
+      status: netProfitPct >= S10_FULLSET_TRIGGER_PROFIT_PCT ? "ready" : "watching",
+      reason: `net=${netProfitPct.toFixed(2)}% cost=${totalCostPct.toFixed(2)}%`,
+      targetShares: shares,
+      totalCost,
+      totalCostPct,
+      grossProfit,
+      grossProfitPct,
+      netProfitPct,
+      upAvgAsk: up.avgPrice,
+      downAvgAsk: down.avgPrice,
+      upLevelsUsed: up.levelsUsed,
+      downLevelsUsed: down.levelsUsed,
+      firstLegDirection,
+      firstLegCost: firstLegDirection === "up" ? up.cost : down.cost,
+      secondLegDirection: firstLegDirection === "up" ? "down" : "up",
+      secondLegCost: firstLegDirection === "up" ? down.cost : up.cost,
+    };
+    if (!best || (candidate.grossProfit ?? 0) > (best.grossProfit ?? 0)) best = candidate;
+  }
+
+  if (best) return best;
+  const topCostPct = ((upBook.topAsk || 0) + (downBook.topAsk || 0)) * 100;
+  return {
+    ...base,
+    status: "no_edge",
+    reason: topCostPct > 0 ? `top full-set cost=${topCostPct.toFixed(2)}%` : "no usable depth",
+    totalCostPct: topCostPct > 0 ? topCostPct : null,
+    grossProfitPct: topCostPct > 0 ? 100 - topCostPct : null,
+    netProfitPct: topCostPct > 0 ? 100 - topCostPct - S10_FULLSET_FEE_BUFFER_PCT : null,
+  };
+}
+
+async function refreshFullSetArbSnapshot(): Promise<void> {
+  if (!S10_FULLSET_SCANNER_ENABLED) {
+    fullSetArbSnapshot = { ...createEmptyFullSetArbSnapshot("scanner disabled"), status: "disabled" };
+    return;
+  }
+  if (fullSetRefreshRunning) return;
+  if (!state.windowStart || !state.upTokenId || !state.downTokenId) {
+    fullSetArbSnapshot = createEmptyFullSetArbSnapshot("waiting for window");
+    return;
+  }
+  fullSetRefreshRunning = true;
+  try {
+    const [upBook, downBook] = await Promise.all([
+      fetchBookSnapshot(state.upTokenId),
+      fetchBookSnapshot(state.downTokenId),
+    ]);
+    const budget = Math.max(S10_FULLSET_MIN_SHARES * 0.02, Number(strategyConfig.amount.s10) || 0);
+    fullSetArbSnapshot = buildFullSetOpportunity(upBook, downBook, budget);
+    if ((fullSetArbSnapshot.bookLatencyMs ?? 0) > S10_FULLSET_MAX_BOOK_AGE_MS) {
+      fullSetArbSnapshot = {
+        ...fullSetArbSnapshot,
+        ready: false,
+        status: "slow_book",
+        reason: `book latency ${fullSetArbSnapshot.bookLatencyMs}ms`,
+      };
+    }
+  } catch (err) {
+    fullSetArbSnapshot = {
+      ...createEmptyFullSetArbSnapshot(err instanceof Error ? err.message : String(err)),
+      status: "error",
+      windowStart: state.windowStart,
+      updatedAt: Date.now(),
+      maxBudget: Number(strategyConfig.amount.s10) || 0,
+    };
+  } finally {
+    fullSetRefreshRunning = false;
+  }
 }
 
 // ── Gamma API ─────────────────────────────────────────────────
@@ -1185,6 +2694,8 @@ async function fetchMarket(windowStart: number): Promise<{
   const startedAt = Date.now();
   try {
     const res = await fetch(`${GAMMA_URL}/events?slug=${slug}`);
+    const endedAt = Date.now();
+    updatePolymarketClockFromHeaders(res.headers, startedAt, endedAt, "gamma");
     const events = await res.json() as Record<string, unknown>[];
     if (!events?.length) {
       console.warn(`[Window] 市场未找到 slug=${slug} 耗时:${Date.now() - startedAt}ms`);
@@ -1199,14 +2710,17 @@ async function fetchMarket(windowStart: number): Promise<{
     const tokens   = JSON.parse(market.clobTokenIds as string || "[]") as string[];
     const outcomes = JSON.parse(market.outcomes     as string || "[]") as string[];
     const upIdx    = outcomes.findIndex((o) => o.toLowerCase() === "up");
+    const eventStartTime = market.eventStartTime as string || new Date(windowStart * 1000).toISOString();
+    const endDate = market.endDate as string || new Date((windowStart + 300) * 1000).toISOString();
+    const parsedEnd = Math.floor(Date.parse(endDate) / 1000);
     return {
       conditionId:    market.conditionId as string,
       upTokenId:      tokens[upIdx >= 0 ? upIdx : 0],
       downTokenId:    tokens[upIdx >= 0 ? 1 - upIdx : 1],
       windowStart,
-      windowEnd:      windowStart + 300,
-      eventStartTime: market.eventStartTime as string || new Date(windowStart * 1000).toISOString(),
-      endDate:        market.endDate        as string || new Date((windowStart + 300) * 1000).toISOString(),
+      windowEnd:      Number.isFinite(parsedEnd) && parsedEnd > windowStart ? parsedEnd : windowStart + 300,
+      eventStartTime,
+      endDate,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1216,10 +2730,23 @@ async function fetchMarket(windowStart: number): Promise<{
 }
 
 // ── 基准价 ────────────────────────────────────────────────────
+interface CryptoPricePayload {
+  openPrice?: number;
+  closePrice?: number;
+  timestamp?: number;
+  completed?: boolean;
+  incomplete?: boolean;
+  cached?: boolean;
+}
+
+async function fetchCryptoPricePayload(eventStartTime: string, endDate: string): Promise<CryptoPricePayload | null> {
+  const url = `https://polymarket.com/api/crypto/crypto-price?symbol=BTC&eventStartTime=${encodeURIComponent(eventStartTime)}&variant=fiveminute&endDate=${encodeURIComponent(endDate)}`;
+  return await fetch(url).then(r => r.json()) as CryptoPricePayload;
+}
+
 async function fetchCryptoPrice(eventStartTime: string, endDate: string): Promise<void> {
   try {
-    const url = `https://polymarket.com/api/crypto/crypto-price?symbol=BTC&eventStartTime=${encodeURIComponent(eventStartTime)}&variant=fiveminute&endDate=${encodeURIComponent(endDate)}`;
-    const data = await fetch(url).then(r => r.json()) as { openPrice?: number };
+    const data = await fetchCryptoPricePayload(eventStartTime, endDate);
     if (data.openPrice != null) state.priceToBeat = data.openPrice;
   } catch { /* 静默 */ }
 }
@@ -1355,9 +2882,9 @@ function startUserWs(): void {
           if (!assetId || !side || !Number.isFinite(size) || size <= 0) continue;
           const pendingMeta = consumePendingTradeMeta(evt);
           const direction = pendingMeta?.direction ?? getDirectionByAssetId(assetId);
-          const orderId = typeof evt.taker_order_id === "string" && evt.taker_order_id
-            ? evt.taker_order_id
-            : pendingMeta?.orderId;
+          const orderId = pendingMeta?.orderId ??
+            (typeof evt.taker_order_id === "string" && evt.taker_order_id ? evt.taker_order_id : undefined);
+          const liveMakerOrder = orderId ? liveMakerOrders.find((candidate) => candidate.orderId === orderId) : undefined;
           const txHash = typeof evt.transaction_hash === "string" && evt.transaction_hash
             ? evt.transaction_hash
             : undefined;
@@ -1375,6 +2902,7 @@ function startUserWs(): void {
               direction,
               amount: size,
               price,
+              avgPrice: price,
               worstPrice: pendingMeta?.worstPrice ?? null,
               status: "MINED",
               source: pendingMeta?.source ?? "manual",
@@ -1382,7 +2910,22 @@ function startUserWs(): void {
               orderId,
               exitReason: pendingMeta?.exitReason,
               roundEntry: pendingMeta?.roundEntry,
+              executionMode: "live",
+              requestedAmount: liveMakerOrder ? liveMakerOrder.price * liveMakerOrder.shares : null,
+              requestedShares: liveMakerOrder?.shares ?? null,
+              filledShares: size,
+              filledNotional: size * price,
+              makerOrderId: liveMakerOrder?.id ?? null,
+              makerLimitPrice: liveMakerOrder?.price ?? null,
+              makerTrigger: liveMakerOrder ? "user_ws_mined" : null,
+              makerActiveMs: liveMakerOrder ? Date.now() - liveMakerOrder.postedAt : null,
+              totalLatencyMs: liveMakerOrder ? Date.now() - liveMakerOrder.createdAt : null,
+              bookTokenId: assetId,
+              bookWindowStart: pendingMeta?.windowStart ?? state.windowStart,
             });
+          }
+          if (orderId && direction) {
+            noteLiveMakerFill(orderId, side, direction, size, Number.isFinite(price) ? price : 0, positions.lastTradeAt);
           }
           console.log(
             `[UserWS] MINED ${side.toUpperCase()} ${size} @ ${Number.isFinite(price) ? price : "-"}`
@@ -1444,6 +2987,7 @@ function isProbabilityReady(now = Date.now()): boolean {
   if (!wsStatus.market) return false;
   if (!marketBestReady) return false;
   if (now < bestBidAskPausedUntil) return false;
+  if (!state.bookUpdatedAt || now - state.bookUpdatedAt > MAX_BOOK_STALE_MS) return false;
   const bid = Number(state.bestBid);
   const ask = Number(state.bestAsk);
   return Number.isFinite(bid) && Number.isFinite(ask);
@@ -1451,7 +2995,14 @@ function isProbabilityReady(now = Date.now()): boolean {
 
 function parseEventTimestamp(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) ? n : 0;
+  if (Number.isFinite(n) && n > 0) {
+    return n < 1_000_000_000_000 ? n * 1000 : n;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function applyBestBidAskUpdate(
@@ -1466,9 +3017,29 @@ function applyBestBidAskUpdate(
   if (ts > 0) lastBestBidAskTimestamp = ts;
   state.bestBid = bestBid;
   state.bestAsk = bestAsk;
+  state.bookUpdatedAt = Date.now();
+  state.bookEventTs = ts;
+  state.bookSource = "ws";
+  recordWsLatencyUpdate(state.bookUpdatedAt);
   marketBestReady = true;
   scheduleStrategyTick();  // 盘口更新（概率变化）立即触发策略检查
   return true;
+}
+
+function applyBookSnapshot(book: BookSnapshot, source: "ws" | "rest", eventTs = 0): void {
+  state.bids.clear();
+  state.asks.clear();
+  for (const b of book.bids) state.bids.set(String(b.price), String(b.size));
+  for (const a of book.asks) state.asks.set(String(a.price), String(a.size));
+  state.bestBid = String(book.topBid > 0 ? book.topBid : 0);
+  state.bestAsk = String(book.topAsk > 0 ? book.topAsk : 1);
+  state.bookUpdatedAt = Date.now();
+  state.bookEventTs = eventTs;
+  state.bookSource = source;
+  if (source === "ws") recordWsLatencyUpdate(state.bookUpdatedAt);
+  state.updatedAt = Date.now();
+  marketBestReady = book.topBid > 0 || book.topAsk > 0;
+  scheduleStrategyTick();
 }
 
 function clearProbabilityForMs(ms: number, reason: string): void {
@@ -1476,8 +3047,15 @@ function clearProbabilityForMs(ms: number, reason: string): void {
   if (until > bestBidAskPausedUntil) bestBidAskPausedUntil = until;
   marketBestReady = false;
   lastBestBidAskTimestamp = 0;
+  lastWsBookUpdateAt = 0;
   state.bestBid = "-";
   state.bestAsk = "-";
+  state.bookUpdatedAt = 0;
+  state.bookEventTs = 0;
+  state.bookSource = "";
+  state.bookCheckAt = 0;
+  state.bookCheckLatencyMs = null;
+  state.bookCheckDiffPct = null;
   state.updatedAt = Date.now();
   console.warn(`[概率校验] ${reason}，清空概率 ${ms}ms`);
   broadcastState();
@@ -1505,17 +3083,49 @@ async function validateMarketProbability(expectedWindowStart: number, upTokenId:
   if (!marketWs || marketWs.readyState !== WebSocket.OPEN) return;
 
   try {
-    const { bestBid, bestAsk } = await fetchBookTopOfBook(upTokenId);
+    const book = await fetchBookSnapshot(upTokenId);
+    const bestBid = book.topBid;
+    const bestAsk = book.topAsk;
     if (subscribedWindow !== expectedWindowStart || upTokenId !== state.upTokenId) return;
     if (!(bestBid > 0) || !(bestAsk > 0)) return;
 
     const wsBid = Number(state.bestBid);
     const wsAsk = Number(state.bestAsk);
-    if (!Number.isFinite(wsBid) || !Number.isFinite(wsAsk)) return;
+    if (!Number.isFinite(wsBid) || !Number.isFinite(wsAsk) || wsBid <= 0 || wsAsk <= 0) {
+      applyBookSnapshot(book, "rest");
+      broadcastState();
+      marketValidationMismatchStreak = 0;
+      return;
+    }
 
     const restMid = (bestBid + bestAsk) / 2;
     const wsMid = (wsBid + wsAsk) / 2;
     const diffPct = Math.abs(restMid - wsMid) * 100;
+    const now = Date.now();
+    const bookAgeMs = state.bookUpdatedAt > 0 ? now - state.bookUpdatedAt : Infinity;
+
+    state.bookCheckAt = now;
+    state.bookCheckLatencyMs = book.latencyMs;
+    state.bookCheckDiffPct = diffPct;
+    recordLatencySample(restCheckLatencySamples, book.latencyMs);
+
+    if (bookAgeMs > 1200) {
+      applyBookSnapshot(book, "rest");
+      broadcastState();
+      marketValidationMismatchStreak = 0;
+      return;
+    }
+
+    if (diffPct > 3) {
+      marketValidationMismatchStreak++;
+      console.warn(`[MarketValidation] REST/WS diff ${diffPct.toFixed(2)}%, fallback to REST ${marketValidationMismatchStreak}/3`);
+      if (marketValidationMismatchStreak >= 3 || bookAgeMs > 300) {
+        applyBookSnapshot(book, "rest");
+        broadcastState();
+        marketValidationMismatchStreak = 0;
+      }
+      return;
+    }
 
     if (diffPct > 3) {
       marketValidationMismatchStreak++;
@@ -1567,16 +3177,26 @@ function startMarketWs(expectedWindowStart: number, upTokenId: string, downToken
     try {
       const events = Array.isArray(JSON.parse(msg)) ? JSON.parse(msg) : [JSON.parse(msg)];
       for (const evt of events) {
-        if (evt.bids !== undefined && evt.asks !== undefined) {
-          if (evt.asset_id && evt.asset_id !== upTokenId) continue;
-          state.bids.clear(); state.asks.clear();
-          for (const b of (evt.bids as { price: string; size: string }[])) {
-            if (Number(b.size) > 0) state.bids.set(b.price, b.size);
-          }
-          for (const a of (evt.asks as { price: string; size: string }[])) {
-            if (Number(a.size) > 0) state.asks.set(a.price, a.size);
-          }
-          state.updatedAt = Date.now();
+      if (evt.bids !== undefined && evt.asks !== undefined) {
+        if (evt.asset_id && evt.asset_id !== upTokenId) continue;
+          const eventTs = parseEventTimestamp(evt.timestamp);
+          const bids = ((evt.bids || []) as { price: string; size: string }[])
+            .map(b => ({ price: Number(b.price), size: Number(b.size) }))
+            .filter(b => b.price > 0 && b.size > 0)
+            .sort((a, b) => b.price - a.price);
+          const asks = ((evt.asks || []) as { price: string; size: string }[])
+            .map(a => ({ price: Number(a.price), size: Number(a.size) }))
+            .filter(a => a.price > 0 && a.size > 0)
+            .sort((a, b) => a.price - b.price);
+          applyBookSnapshot({
+            tokenId: upTokenId,
+            bids,
+            asks,
+            topBid: bids[0]?.price ?? 0,
+            topAsk: asks[0]?.price ?? 0,
+            fetchedAt: Date.now(),
+            latencyMs: 0,
+          }, "ws", eventTs);
           broadcastState();
         } else if (evt.event_type === "best_bid_ask") {
           if (evt.asset_id && evt.asset_id !== upTokenId) continue;
@@ -1589,6 +3209,7 @@ function startMarketWs(expectedWindowStart: number, upTokenId: string, downToken
             if (change.price && change.size !== undefined) {
               state.lastPrice = Number(change.price).toFixed(2);
               state.lastSide  = change.side;
+              state.lastPriceUpdatedAt = Date.now();
               // 同步更新盘口深度
               const size = Number(change.size);
               const map = change.side === 'BUY' ? state.bids : state.asks;
@@ -1596,6 +3217,10 @@ function startMarketWs(expectedWindowStart: number, upTokenId: string, downToken
               else map.delete(change.price);
             }
           }
+          state.bookUpdatedAt = Date.now();
+          state.bookEventTs = parseEventTimestamp(evt.timestamp);
+          state.bookSource = "ws";
+          recordWsLatencyUpdate(state.bookUpdatedAt);
           state.updatedAt = Date.now();
           broadcastState();
         }
@@ -1611,8 +3236,15 @@ function startMarketWs(expectedWindowStart: number, upTokenId: string, downToken
       marketValidationTimer = null;
     }
     marketBestReady = false;
+    lastWsBookUpdateAt = 0;
     state.bestBid = "-";
     state.bestAsk = "-";
+    state.bookUpdatedAt = 0;
+    state.bookEventTs = 0;
+    state.bookSource = "";
+    state.bookCheckAt = 0;
+    state.bookCheckLatencyMs = null;
+    state.bookCheckDiffPct = null;
     state.updatedAt = Date.now();
     console.log("[MarketWS] 连接断开，1秒后重连");
     wsStatus.market = false; broadcastWsStatus();
@@ -1650,6 +3282,7 @@ function startChainlinkWs(expectedWindowStart: number, eventSlug: string, onClos
         if (val != null) {
           state.currentPrice = val;
           const now = msg.payload?.timestamp ?? msg.timestamp ?? Date.now();
+          state.currentPriceUpdatedAt = Date.now();
           state.priceHistory.push({ t: now, price: val });
           trimHistory(state.priceHistory, now - HISTORY_RETENTION_MS, MAX_CHAINLINK_HISTORY_POINTS);
           maybeInitializeBinanceOffset();
@@ -1801,7 +3434,7 @@ function startBinanceWs(): void {
 }
 
 // ── 最近4轮结果查询 ───────────────────────────────────────────
-function parseResolvedOutcome(event: Record<string, unknown> | undefined): "up" | "down" | null {
+function parseOutcomeMarks(event: Record<string, unknown> | undefined): { up: number; down: number } | null {
   const market = ((event?.markets as Record<string, unknown>[] | undefined) || [])[0];
   if (!market) return null;
 
@@ -1820,10 +3453,143 @@ function parseResolvedOutcome(event: Record<string, unknown> | undefined): "up" 
   const upPrice = Number(outcomePrices[upIdx]);
   const downPrice = Number(outcomePrices[downIdx]);
   if (!Number.isFinite(upPrice) || !Number.isFinite(downPrice)) return null;
+  return { up: clampNumber(upPrice, 0, 1), down: clampNumber(downPrice, 0, 1) };
+}
 
-  if (upPrice >= 0.999 && downPrice <= 0.001) return "up";
-  if (downPrice >= 0.999 && upPrice <= 0.001) return "down";
+function parseResolvedOutcome(event: Record<string, unknown> | undefined): "up" | "down" | null {
+  const marks = parseOutcomeMarks(event);
+  if (!marks) return null;
+
+  if (marks.up >= 0.999 && marks.down <= 0.001) return "up";
+  if (marks.down >= 0.999 && marks.up <= 0.001) return "down";
   return null;
+}
+
+function hasOpenPaperPositionForWindow(windowStart: number): boolean {
+  const info = paperAccount.windows[String(windowStart)];
+  if (!info) return false;
+  return (paperAccount.localSize[info.upTokenId] ?? 0) > 1e-8 || (paperAccount.localSize[info.downTokenId] ?? 0) > 1e-8;
+}
+
+function capturePaperWindowCloseEstimate(windowStart: number): boolean {
+  const info = paperAccount.windows[String(windowStart)];
+  if (!info || info.settled) return false;
+  const priceToBeat = state.priceToBeat;
+  const closePrice = state.currentPrice;
+  const priceAgeMs = state.currentPriceUpdatedAt > 0 ? Date.now() - state.currentPriceUpdatedAt : Infinity;
+  if (
+    !Number.isFinite(priceToBeat) ||
+    !Number.isFinite(closePrice) ||
+    priceAgeMs > PAPER_FAST_SETTLE_MAX_PRICE_AGE_MS
+  ) {
+    return false;
+  }
+
+  const diff = closePrice - priceToBeat;
+  const localResult: StrategyDirection = diff > 0 ? "up" : "down";
+  info.localResult = localResult;
+  info.priceToBeat = priceToBeat;
+  info.closePrice = closePrice;
+  info.closeDiff = diff;
+  info.closeCapturedAt = Date.now();
+  info.upMark = localResult === "up" ? 1 : 0;
+  info.downMark = localResult === "down" ? 1 : 0;
+  info.markUpdatedAt = Date.now();
+
+  if (Math.abs(diff) >= PAPER_FAST_SETTLE_MIN_DIFF && hasOpenPaperPositionForWindow(windowStart)) {
+    console.log(`[Paper] 本地收盘预估 window=${windowStart} result=${localResult} diff=${diff.toFixed(2)} priceAge=${Math.round(priceAgeMs)}ms`);
+  }
+  persistPaperAccountState();
+  broadcastState();
+  return true;
+}
+
+function applyPaperWindowClose(
+  windowStart: number,
+  priceToBeat: number,
+  closePrice: number,
+  settlementSource: string,
+): boolean {
+  const info = paperAccount.windows[String(windowStart)];
+  if (!info || info.settled) return false;
+  if (!Number.isFinite(priceToBeat) || !Number.isFinite(closePrice)) return false;
+  const diff = closePrice - priceToBeat;
+  const localResult: StrategyDirection = diff > 0 ? "up" : "down";
+  info.localResult = localResult;
+  info.priceToBeat = priceToBeat;
+  info.closePrice = closePrice;
+  info.closeDiff = diff;
+  info.closeCapturedAt = Date.now();
+  info.upMark = localResult === "up" ? 1 : 0;
+  info.downMark = localResult === "down" ? 1 : 0;
+  info.markUpdatedAt = Date.now();
+
+  if (Math.abs(diff) >= PAPER_FAST_SETTLE_MIN_DIFF && hasOpenPaperPositionForWindow(windowStart)) {
+    console.log(`[Paper] ${settlementSource} 结算 window=${windowStart} result=${localResult} diff=${diff.toFixed(2)}`);
+    return settlePaperWindow(windowStart, localResult, settlementSource);
+  }
+
+  persistPaperAccountState();
+  broadcastState();
+  return true;
+}
+
+async function capturePaperWindowCloseFromCryptoApi(windowStart: number): Promise<boolean> {
+  const info = paperAccount.windows[String(windowStart)];
+  if (!info || info.settled) return false;
+  const eventStartTime = info.eventStartTime || new Date(windowStart * 1000).toISOString();
+  const endDate = info.endDate || new Date((windowStart + 300) * 1000).toISOString();
+  try {
+    const data = await fetchCryptoPricePayload(eventStartTime, endDate);
+    const openPrice = Number(data?.openPrice);
+    const closePrice = Number(data?.closePrice);
+    if (data?.completed !== true || !Number.isFinite(openPrice) || !Number.isFinite(closePrice)) return false;
+    return applyPaperWindowClose(windowStart, openPrice, closePrice, "crypto-close");
+  } catch (err) {
+    console.warn(`[Paper] 收盘价补结算失败 window=${windowStart}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+function updatePaperWindowOutcomeMark(
+  windowStart: number,
+  event: Record<string, unknown> | undefined,
+  result: StrategyDirection | null,
+): boolean {
+  const info = paperAccount.windows[String(windowStart)];
+  if (!info) return false;
+  const marks = parseOutcomeMarks(event);
+  let changed = false;
+  if (marks) {
+    if (info.upMark !== marks.up) {
+      info.upMark = marks.up;
+      changed = true;
+    }
+    if (info.downMark !== marks.down) {
+      info.downMark = marks.down;
+      changed = true;
+    }
+    info.markUpdatedAt = Date.now();
+  }
+  if (result && info.result !== result) {
+    if (info.localResult && info.localResult !== result) {
+      console.warn(`[Paper] 本地收盘结果与官方结果不一致 window=${windowStart} local=${info.localResult} official=${result}`);
+    }
+    info.result = result;
+    changed = true;
+  }
+  return changed;
+}
+
+let recentResultsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleRecentResultsRetry(currentWindow: number): void {
+  if (recentResultsRetryTimer) clearTimeout(recentResultsRetryTimer);
+  recentResultsRetryTimer = setTimeout(() => {
+    recentResultsRetryTimer = null;
+    if (stopped || subscribedWindow !== currentWindow) return;
+    fetchRecentResults(currentWindow, true);
+  }, PAPER_RESULT_RETRY_MS);
 }
 
 async function fetchRecentResults(currentWindow: number, immediate = false): Promise<void> {
@@ -1833,19 +3599,55 @@ async function fetchRecentResults(currentWindow: number, immediate = false): Pro
     const slugs = [1,2,3,4].map(i => `btc-updown-5m-${currentWindow - i * 300}`);
     const query = slugs.map(s => `slug=${s}`).join("&");
     const events = await fetch(`${GAMMA_URL}/events?${query}`).then(r => r.json()) as Record<string, unknown>[];
-    const results = slugs.map(slug => {
+    let paperMarkChanged = false;
+    let retryUnsettledPaper = false;
+    const results: Array<{
+      windowStart: number;
+      timeRange: string;
+      result: StrategyDirection | null;
+      localResult: StrategyDirection | null;
+      upMark: number | null;
+      downMark: number | null;
+    }> = [];
+    for (const slug of slugs) {
       const event = events.find((e: Record<string, unknown>) => e.slug === slug) as Record<string, unknown> | undefined;
       const ws = parseInt(slug.split("-").pop()!);
       const timeRange = `${new Date(ws*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}→${new Date((ws+300)*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
       const result = parseResolvedOutcome(event);
-      return { timeRange, result };
-    });
+      const marks = parseOutcomeMarks(event);
+      paperMarkChanged = updatePaperWindowOutcomeMark(ws, event, result) || paperMarkChanged;
+      if (result) {
+        const settled = settlePaperWindow(ws, result);
+        paperMarkChanged = settled || paperMarkChanged;
+      } else if (hasOpenPaperPositionForWindow(ws)) {
+        const closed = await capturePaperWindowCloseFromCryptoApi(ws);
+        paperMarkChanged = closed || paperMarkChanged;
+        if (hasOpenPaperPositionForWindow(ws)) retryUnsettledPaper = true;
+      }
+      const info = paperAccount.windows[String(ws)];
+      results.push({
+        windowStart: ws,
+        timeRange,
+        result,
+        localResult: info?.localResult === "up" || info?.localResult === "down" ? info.localResult : null,
+        upMark: marks?.up ?? null,
+        downMark: marks?.down ?? null,
+      });
+    }
     const summary = results
       .map((item) => `${item.timeRange}${item.result === "up" ? "涨赢" : item.result === "down" ? "跌赢" : "待确认"}`)
       .join(" | ");
     console.log(`[Result] ${summary}`);
+    if (paperMarkChanged) {
+      persistPaperAccountState();
+      broadcastState();
+    }
+    if (retryUnsettledPaper) scheduleRecentResultsRetry(currentWindow);
     broadcast("recentResults", { results });
-  } catch (e) { console.error(`[Result] 请求失败:`, (e as Error).message); }
+  } catch (e) {
+    console.error(`[Result] 请求失败:`, (e as Error).message);
+    scheduleRecentResultsRetry(currentWindow);
+  }
 }
 
 // ── 窗口切换 ──────────────────────────────────────────────────
@@ -1897,21 +3699,33 @@ function clearWindowRuntimeState(): void {
   state.asks.clear();
   state.bestBid = "-";
   state.bestAsk = "-";
+  state.bookUpdatedAt = 0;
+  state.bookEventTs = 0;
+  state.bookSource = "";
+  state.bookCheckAt = 0;
+  state.bookCheckLatencyMs = null;
+  state.bookCheckDiffPct = null;
   state.lastPrice = "-";
   state.lastSide = "";
+  state.lastPriceUpdatedAt = 0;
+  lastWsBookUpdateAt = 0;
   state.priceToBeat = null;
   state.currentPrice = null;
+  state.currentPriceUpdatedAt = 0;
   state.binanceOffset = null;
   state.updatedAt = Date.now();
   marketBestReady = false;
   marketValidationMismatchStreak = 0;
   bestBidAskPausedUntil = 0;
-  strategyRuntime.positionsReady = !PROXY_ADDRESS;
+  paperMakerOrders = [];
+  paperMakerLastFillAt = { up: 0, down: 0 };
+  paperMakerLastReason = "";
+  strategyRuntime.positionsReady = strategyConfig.executionMode === "paper" || !PROXY_ADDRESS;
   resetStrategyRuntime();
   broadcastState();
 }
 
-function getCurrentWindowStart(now = Date.now()): number {
+function getCurrentWindowStart(now = getPolymarketNowMs()): number {
   return Math.floor(now / 1000 / 300) * 300;
 }
 
@@ -1925,6 +3739,10 @@ async function advanceToLiveWindow(targetWindowStart: number): Promise<void> {
       console.log(`[Window] 切换开始 ${subscribedWindow || "-"} -> ${desiredWindow}`);
     }
     if (!clearedExpiredWindow && desiredWindow > subscribedWindow) {
+      if (subscribedWindow > 0) {
+        capturePaperWindowCloseEstimate(subscribedWindow);
+        void capturePaperWindowCloseFromCryptoApi(subscribedWindow);
+      }
       disconnectWindowStreams();
       clearWindowRuntimeState();
       clearedExpiredWindow = true;
@@ -1944,7 +3762,7 @@ async function advanceToLiveWindow(targetWindowStart: number): Promise<void> {
 
 function scheduleNextWindow(windowEnd: number): void {
   if (switchTimer) clearTimeout(switchTimer);
-  const msUntilEnd = windowEnd * 1000 - Date.now();
+  const msUntilEnd = windowEnd * 1000 - getPolymarketNowMs();
   switchTimer = setTimeout(async () => {
     if (stopped) return;
     await advanceToLiveWindow(windowEnd);
@@ -1967,12 +3785,23 @@ async function subscribeWindow(windowStart: number): Promise<void> {
   state.windowStart = info.windowStart; state.windowEnd   = info.windowEnd;
   state.upTokenId   = info.upTokenId;   state.downTokenId = info.downTokenId;
   state.conditionId = info.conditionId;
+  rememberPaperWindow({
+    windowStart: info.windowStart,
+    upTokenId: info.upTokenId,
+    downTokenId: info.downTokenId,
+    eventStartTime: info.eventStartTime,
+    endDate: info.endDate,
+  });
   state.bids.clear(); state.asks.clear();
   state.bestBid = "-"; state.bestAsk = "-";
-  state.lastPrice = "-"; state.lastSide = "";
+  state.bookUpdatedAt = 0; state.bookEventTs = 0;
+  state.bookSource = ""; state.bookCheckAt = 0; state.bookCheckLatencyMs = null; state.bookCheckDiffPct = null;
+  fullSetArbSnapshot = { ...createEmptyFullSetArbSnapshot("window switching"), status: "switching", windowStart: info.windowStart };
+  state.lastPrice = "-"; state.lastSide = ""; state.lastPriceUpdatedAt = 0;
   state.binanceOffset = null;
   state.updatedAt = Date.now();
   lastBestBidAskTimestamp = 0;
+  lastWsBookUpdateAt = 0;
   marketBestReady = false;
   bestBidAskPausedUntil = 0;
   marketValidationMismatchStreak = 0;
@@ -1981,7 +3810,7 @@ async function subscribeWindow(windowStart: number): Promise<void> {
   if (isNewWindow) {
     if (prevWindowStart > 0) fetchRecentResults(windowStart);
     state.priceToBeat = null; state.currentPrice = null;
-    strategyRuntime.positionsReady = !PROXY_ADDRESS;
+    strategyRuntime.positionsReady = strategyConfig.executionMode === "paper" || !PROXY_ADDRESS;
     resetStrategyRuntime(`切换到窗口 ${windowStart}`);
     prunePositionCaches([info.upTokenId, info.downTokenId]);
     positions.localSize[info.upTokenId]     = 0;
@@ -2005,6 +3834,11 @@ async function subscribeWindow(windowStart: number): Promise<void> {
   broadcast("window", {
     windowStart: info.windowStart, windowEnd: info.windowEnd,
     conditionId: info.conditionId, upTokenId: info.upTokenId, downTokenId: info.downTokenId,
+    ts: Date.now(),
+    exchangeTs: getPolymarketNowMs(),
+    polymarketClockOffsetMs,
+    polymarketClockAgeMs: getPolymarketClockAgeMs(),
+    polymarketClockSource: polymarketClockSource || null,
   });
 
   if (marketWs || chainlinkWs || reconnectTimer) {
@@ -2262,6 +4096,17 @@ function extractOrderError(result: unknown): string {
   return "";
 }
 
+function extractOrderId(result: unknown): string {
+  const obj = result && typeof result === "object" ? result as Record<string, unknown> : {};
+  const candidates = [obj.orderID, obj.orderId, obj.id];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  const nested = isRecord(obj.order) ? obj.order : null;
+  if (typeof nested?.id === "string" && nested.id.trim()) return nested.id.trim();
+  return "";
+}
+
 function fmtOrderField(value: unknown): string {
   if (value == null || value === "") return "-";
   return String(value);
@@ -2278,31 +4123,97 @@ function floorToDecimals(value: number, decimals: number): number {
   return Math.floor((value + Number.EPSILON) * factor) / factor;
 }
 
-function isOrderWindowStale(now = Date.now()): boolean {
+function isOrderWindowStale(now = getPolymarketNowMs()): boolean {
   if (!state.windowStart || !state.windowEnd) return true;
   if (state.windowEnd * 1000 <= now) return true;
   return state.windowStart < getCurrentWindowStart(now);
 }
 
-function getStrategyRemainingSeconds(now = Date.now()): number {
+function getStrategyRemainingSeconds(now = getPolymarketNowMs()): number {
   return state.windowEnd ? state.windowEnd - Math.floor(now / 1000) : 0;
 }
 
 function buildTickContext(rem: number, upPct: number | null, dnPct: number | null, diff: number | null, now: number): import("./strategies/types.js").StrategyTickContext {
+  const bestBid = Number(state.bestBid);
+  const bestAsk = Number(state.bestAsk);
+  const paperCostBasis = strategyConfig.executionMode === "paper" ? getPaperOpenCostBasis() : null;
+  const macd1m = buildMacdSnapshot(state.kline1m, {
+    fast: 12,
+    slow: 26,
+    signal: 9,
+    confirmBars: 3,
+    minHistBps: 0.02,
+    minSlopeBps: 0,
+  });
+  const macdFast1m = buildMacdSnapshot(state.kline1m, {
+    fast: 6,
+    slow: 13,
+    signal: 5,
+    confirmBars: 3,
+    minHistBps: 0.02,
+    minSlopeBps: 0,
+  });
   return {
     rem, upPct, dnPct, diff, now,
     prevUpPct: strategyRuntime.prevUpPct,
+    bestBid: Number.isFinite(bestBid) && bestBid >= 0 ? bestBid : null,
+    bestAsk: Number.isFinite(bestAsk) && bestAsk > 0 ? bestAsk : null,
     kline1m: state.kline1m,
     kline5m: state.kline5m,
+    macd1m,
+    macdFast1m,
+    fullSetArb: computeFullSetArbPayload(),
     marketHoursOnly: strategyConfig.marketHoursOnly,
+    position: {
+      upSize: getDirectionLocalSize("up"),
+      downSize: getDirectionLocalSize("down"),
+      upCostPct: getDirectionCostPctFromBasis(paperCostBasis, "up"),
+      downCostPct: getDirectionCostPctFromBasis(paperCostBasis, "down"),
+    },
   };
 }
 
-function checkEntry(ctx: import("./strategies/types.js").StrategyTickContext): { strategy: StrategyNumber; dir: StrategyDirection } | null {
+function getMacdEntryBlockReason(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+  direction: StrategyDirection,
+): string | null {
+  if (!MACD_FILTER_ENABLED) return null;
+  if (ctx.rem <= MACD_FILTER_MIN_REMAINING) return null;
+  if (ctx.diff != null && Math.abs(ctx.diff) >= MACD_FILTER_STRONG_DIFF_BYPASS) return null;
+  if (!ctx.macd1m.ready || ctx.macd1m.trend === "neutral") return null;
+  if (!isDirectionAgainstTrend(direction, ctx.macd1m.trend)) return null;
+
+  if (
+    MACD_FILTER_REQUIRE_FAST_AGREE &&
+    (!ctx.macdFast1m.ready || ctx.macdFast1m.trend !== ctx.macd1m.trend)
+  ) {
+    return null;
+  }
+
+  const trendText = ctx.macd1m.trend === "bullish" ? "上行" : "下行";
+  const dirText = direction === "up" ? "买涨" : "买跌";
+  return `MACD${trendText}过滤${dirText} hist=${ctx.macd1m.histogramBps?.toFixed(3) ?? "-"}bps fast=${ctx.macdFast1m.trend}`;
+}
+
+function checkEntry(ctx: import("./strategies/types.js").StrategyTickContext): { strategy: StrategyNumber; dir: StrategyDirection; amount?: number } | null {
+  macdFilterBlockedReason = "";
   for (const s of getAllStrategies()) {
     if (!strategyConfig.enabled[s.key]) continue;
+    if (s.key === "s10" && S10_MAKER_ENGINE_ENABLED && S10_MAKER_ONLY) continue;
     const signal = s.checkEntry(ctx);
-    if (signal) return { strategy: s.number, dir: signal.direction };
+    if (!signal) continue;
+    const macdBlockReason = s.key === "s10" ? null : getMacdEntryBlockReason(ctx, signal.direction);
+    if (macdBlockReason) {
+      const nextReason = `S${s.number} ${macdBlockReason}`;
+      const now = Date.now();
+      if (nextReason !== macdFilterBlockedReason || now - macdFilterBlockedAt > 5000) {
+        console.log(`[MACD] ${nextReason}`);
+      }
+      macdFilterBlockedReason = nextReason;
+      macdFilterBlockedAt = now;
+      continue;
+    }
+    return { strategy: s.number, dir: signal.direction, amount: signal.amount };
   }
   return null;
 }
@@ -2332,6 +4243,1373 @@ interface OrderExecutionResult {
   statusCode: number;
   body: Record<string, unknown>;
   errorMessage?: string;
+}
+
+function sampleFixedPaperLatencyMs(): number {
+  const min = Math.max(0, Math.min(PAPER_MIN_LATENCY_MS, PAPER_MAX_LATENCY_MS));
+  const max = Math.max(min, Math.max(PAPER_MIN_LATENCY_MS, PAPER_MAX_LATENCY_MS));
+  return Math.round(min + Math.random() * (max - min));
+}
+
+function getPaperLatencyModelSnapshot(now = Date.now()): PaperLatencyEstimate {
+  const minMs = Math.max(0, PAPER_MIN_LATENCY_MS);
+  const maxMs = Math.max(minMs, PAPER_LATENCY_MODE === "dynamic" ? PAPER_DYNAMIC_MAX_LATENCY_MS : PAPER_MAX_LATENCY_MS);
+  const fixedMid = Math.round((Math.max(minMs, PAPER_MAX_LATENCY_MS) + minMs) / 2);
+  const book = getLatencyStats(bookLatencySamples, fixedMid);
+  const rest = getLatencyStats(restCheckLatencySamples, book.p80);
+  const ws = getLatencyStats(wsUpdateIntervalSamples, 180);
+  const bookAgeMs = state.bookUpdatedAt > 0 ? now - state.bookUpdatedAt : 600;
+  const checkAgeMs = state.bookCheckAt > 0 ? now - state.bookCheckAt : 1200;
+  const networkMs = Math.max(book.p80, rest.p80);
+  const feedMs = Math.min(700, Math.max(ws.p80 * 0.45, bookAgeMs * 0.35));
+  const staleCheckPenalty = Math.min(500, Math.max(0, checkAgeMs - 1200) * 0.2);
+  const pressureMs = Math.round(Math.max(0, feedMs + staleCheckPenalty));
+  const estimatedMs = clampNumber(Math.round(networkMs + pressureMs), minMs, maxMs);
+  return {
+    delayMs: estimatedMs,
+    mode: PAPER_LATENCY_MODE,
+    minMs,
+    maxMs,
+    bookP80Ms: Math.round(book.p80),
+    restP80Ms: Math.round(rest.p80),
+    wsP80Ms: Math.round(ws.p80),
+    pressureMs,
+    jitterMs: 0,
+    bookSamples: book.count,
+    restSamples: rest.count,
+    wsSamples: ws.count,
+  };
+}
+
+function samplePaperLatency(): PaperLatencyEstimate {
+  if (PAPER_LATENCY_MODE === "fixed") {
+    const delayMs = sampleFixedPaperLatencyMs();
+    return {
+      delayMs,
+      mode: "fixed",
+      minMs: Math.max(0, PAPER_MIN_LATENCY_MS),
+      maxMs: Math.max(PAPER_MIN_LATENCY_MS, PAPER_MAX_LATENCY_MS),
+      bookP80Ms: 0,
+      restP80Ms: 0,
+      wsP80Ms: 0,
+      pressureMs: 0,
+      jitterMs: delayMs,
+      bookSamples: bookLatencySamples.length,
+      restSamples: restCheckLatencySamples.length,
+      wsSamples: wsUpdateIntervalSamples.length,
+    };
+  }
+
+  const estimate = getPaperLatencyModelSnapshot();
+  const jitterRange = Math.max(45, Math.min(450, estimate.delayMs * 0.35));
+  const jitterMs = Math.round((Math.random() - 0.35) * jitterRange);
+  return {
+    ...estimate,
+    jitterMs,
+    delayMs: clampNumber(Math.round(estimate.delayMs + jitterMs), estimate.minMs, estimate.maxMs),
+  };
+}
+
+function getStateTopBookForDirection(direction: StrategyDirection): { bid: number; ask: number; ageMs: number } | null {
+  const upBid = Number(state.bestBid);
+  const upAsk = Number(state.bestAsk);
+  if (!Number.isFinite(upBid) || !Number.isFinite(upAsk) || upBid < 0 || upAsk <= 0 || upAsk < upBid) return null;
+  const ageMs = state.bookUpdatedAt > 0 ? Date.now() - state.bookUpdatedAt : Infinity;
+  if (direction === "up") return { bid: upBid, ask: upAsk, ageMs };
+  return {
+    bid: clampNumber(1 - upAsk, 0.01, 0.99),
+    ask: clampNumber(1 - upBid, 0.01, 0.99),
+    ageMs,
+  };
+}
+
+function getStateBookLevelsForDirection(direction: StrategyDirection): { bids: BookLevel[]; asks: BookLevel[] } {
+  const upBids = [...state.bids.entries()]
+    .map(([price, size]) => ({ price: Number(price), size: Number(size) }))
+    .filter((level) => level.price > 0 && level.size > 0)
+    .sort((a, b) => b.price - a.price);
+  const upAsks = [...state.asks.entries()]
+    .map(([price, size]) => ({ price: Number(price), size: Number(size) }))
+    .filter((level) => level.price > 0 && level.size > 0)
+    .sort((a, b) => a.price - b.price);
+  if (direction === "up") return { bids: upBids, asks: upAsks };
+  return {
+    bids: upAsks.map((level) => ({ price: clampNumber(1 - level.price, 0.01, 0.99), size: level.size })).sort((a, b) => b.price - a.price),
+    asks: upBids.map((level) => ({ price: clampNumber(1 - level.price, 0.01, 0.99), size: level.size })).sort((a, b) => a.price - b.price),
+  };
+}
+
+function getLastObservedPriceForDirection(direction: StrategyDirection): number | null {
+  const last = Number(state.lastPrice);
+  if (!Number.isFinite(last) || last <= 0) return null;
+  return direction === "up" ? last : clampNumber(1 - last, 0.01, 0.99);
+}
+
+function getLastBookTouchForMakerDirection(direction: StrategyDirection): { price: number; touchedAt: number } | null {
+  const last = Number(state.lastPrice);
+  const side = String(state.lastSide || "").toUpperCase();
+  const touchedAt = Number(state.lastPriceUpdatedAt || 0);
+  if (!Number.isFinite(last) || last <= 0 || touchedAt <= 0) return null;
+  if (direction === "up") {
+    if (side !== "BUY") return null;
+    return { price: last, touchedAt };
+  }
+  if (side !== "SELL") return null;
+  return { price: clampNumber(1 - last, 0.01, 0.99), touchedAt };
+}
+
+function getBookSidePrice(book: BookSnapshot, side: "buy" | "sell"): number {
+  return side === "buy" ? book.topAsk : book.topBid;
+}
+
+function inspectBookSnapshot(
+  book: BookSnapshot,
+  direction: StrategyDirection,
+  side: "buy" | "sell",
+  maxBookStaleMs: number,
+  maxBookWsDiff: number,
+): {
+  ok: boolean;
+  status: string;
+  reason: string | null;
+  expectedBid: number | null;
+  expectedAsk: number | null;
+  diffPct: number | null;
+} {
+  const expected = getStateTopBookForDirection(direction);
+  if (!expected) {
+    return { ok: false, status: "rejected", reason: "missing_ws_book", expectedBid: null, expectedAsk: null, diffPct: null };
+  }
+  if (expected.ageMs > maxBookStaleMs) {
+    return { ok: false, status: "rejected", reason: "ws_book_stale", expectedBid: expected.bid, expectedAsk: expected.ask, diffPct: null };
+  }
+  const actual = getBookSidePrice(book, side);
+  const expectedSidePrice = side === "buy" ? expected.ask : expected.bid;
+  if (!(actual > 0) || !(expectedSidePrice > 0)) {
+    return { ok: false, status: "rejected", reason: "empty_book", expectedBid: expected.bid, expectedAsk: expected.ask, diffPct: null };
+  }
+  const diff = Math.abs(actual - expectedSidePrice);
+  const diffPct = diff * 100;
+  if (diff > maxBookWsDiff) {
+    return { ok: false, status: "rejected", reason: "book_ws_mismatch", expectedBid: expected.bid, expectedAsk: expected.ask, diffPct };
+  }
+  return { ok: true, status: "ok", reason: null, expectedBid: expected.bid, expectedAsk: expected.ask, diffPct };
+}
+
+function inspectPaperBookSnapshot(
+  book: BookSnapshot,
+  direction: StrategyDirection,
+  side: "buy" | "sell",
+) {
+  return inspectBookSnapshot(book, direction, side, MAX_BOOK_STALE_MS, PAPER_BOOK_WS_MAX_DIFF);
+}
+
+function inspectLiveBookSnapshot(
+  book: BookSnapshot,
+  direction: StrategyDirection,
+  side: "buy" | "sell",
+) {
+  return inspectBookSnapshot(book, direction, side, LIVE_MAX_BOOK_STALE_MS, LIVE_BOOK_WS_MAX_DIFF);
+}
+
+async function fetchCheckedPaperBookSnapshot(
+  tokenId: string,
+  direction: StrategyDirection,
+  side: "buy" | "sell",
+): Promise<{
+  book: BookSnapshot;
+  ok: boolean;
+  status: string;
+  reason: string | null;
+  expectedBid: number | null;
+  expectedAsk: number | null;
+  diffPct: number | null;
+}> {
+  const first = await fetchBookSnapshot(tokenId);
+  const firstCheck = inspectPaperBookSnapshot(first, direction, side);
+  if (firstCheck.ok || PAPER_BOOK_CONFIRM_DELAY_MS <= 0) {
+    return { book: first, ...firstCheck };
+  }
+
+  await new Promise(r => setTimeout(r, PAPER_BOOK_CONFIRM_DELAY_MS));
+  const second = await fetchBookSnapshot(tokenId);
+  const secondCheck = inspectPaperBookSnapshot(second, direction, side);
+  if (secondCheck.ok) {
+    return {
+      book: second,
+      ...secondCheck,
+      status: "confirmed",
+      reason: firstCheck.reason ? `confirmed_after_${firstCheck.reason}` : "confirmed_after_retry",
+    };
+  }
+
+  console.warn(
+    `[Paper] Reject suspicious book direction=${direction} side=${side} token=${tokenId.slice(0, 10)} reason=${secondCheck.reason || firstCheck.reason || "unknown"} diff=${secondCheck.diffPct == null ? "-" : secondCheck.diffPct.toFixed(2)}pct topBid=${second.topBid} topAsk=${second.topAsk}`,
+  );
+  return {
+    book: second,
+    ...secondCheck,
+    reason: secondCheck.reason || firstCheck.reason,
+  };
+}
+
+async function fetchCheckedLiveBookSnapshot(
+  tokenId: string,
+  direction: StrategyDirection,
+  side: "buy" | "sell",
+): Promise<{
+  book: BookSnapshot;
+  ok: boolean;
+  status: string;
+  reason: string | null;
+  expectedBid: number | null;
+  expectedAsk: number | null;
+  diffPct: number | null;
+}> {
+  const first = await fetchBookSnapshot(tokenId);
+  const firstCheck = inspectLiveBookSnapshot(first, direction, side);
+  if (firstCheck.ok || LIVE_BOOK_CONFIRM_DELAY_MS <= 0) {
+    return { book: first, ...firstCheck };
+  }
+
+  await new Promise(r => setTimeout(r, LIVE_BOOK_CONFIRM_DELAY_MS));
+  const second = await fetchBookSnapshot(tokenId);
+  const secondCheck = inspectLiveBookSnapshot(second, direction, side);
+  if (secondCheck.ok) {
+    return {
+      book: second,
+      ...secondCheck,
+      status: "confirmed",
+      reason: firstCheck.reason ? `confirmed_after_${firstCheck.reason}` : "confirmed_after_retry",
+    };
+  }
+
+  console.warn(
+    `[LiveGuard] Reject suspicious book direction=${direction} side=${side} token=${tokenId.slice(0, 10)} reason=${secondCheck.reason || firstCheck.reason || "unknown"} diff=${secondCheck.diffPct == null ? "-" : secondCheck.diffPct.toFixed(2)}pct topBid=${second.topBid} topAsk=${second.topAsk}`,
+  );
+  return {
+    book: second,
+    ...secondCheck,
+    reason: secondCheck.reason || firstCheck.reason,
+  };
+}
+
+function getAuditBookLevels(levels: BookLevel[]): BookLevel[] {
+  return levels.slice(0, PAPER_BOOK_AUDIT_LEVELS).map(level => ({
+    price: level.price,
+    size: level.size,
+  }));
+}
+
+function sumBookLiquidity(levels: BookLevel[], side: "buy" | "sell", worstPrice: number): number {
+  return levels.reduce((sum, level) => {
+    if (side === "buy" && level.price <= worstPrice) return sum + level.price * level.size;
+    if (side === "sell" && level.price >= worstPrice) return sum + level.size;
+    return sum;
+  }, 0);
+}
+
+function buildRejectedPaperFill(input: { side: "buy" | "sell"; amount: number; worstPrice: number; book: BookSnapshot; rejectReason: string }) {
+  const levels = input.side === "buy" ? input.book.asks : input.book.bids;
+  const topPrice = getBookSidePrice(input.book, input.side);
+  return {
+    success: false,
+    rejectReason: input.rejectReason,
+    requestedShares: input.side === "buy" && topPrice > 0 ? input.amount / topPrice : input.side === "sell" ? input.amount : 0,
+    filledShares: 0,
+    filledNotional: 0,
+    avgPrice: 0,
+    levelsUsed: 0,
+    availableLiquidity: sumBookLiquidity(levels, input.side, input.worstPrice),
+    priceImpactPct: 0,
+  };
+}
+
+function simulatePaperFill(input: { side: "buy" | "sell"; amount: number; worstPrice: number; book: BookSnapshot }) {
+  const levels = input.side === "buy" ? input.book.asks : input.book.bids;
+  const topPrice = input.side === "buy" ? input.book.topAsk : input.book.topBid;
+  const availableLiquidity = sumBookLiquidity(levels, input.side, input.worstPrice);
+  if (!(topPrice > 0)) {
+    return { success: false, rejectReason: "empty_book", requestedShares: 0, filledShares: 0, filledNotional: 0, avgPrice: 0, levelsUsed: 0, availableLiquidity, priceImpactPct: 0 };
+  }
+  let filledShares = 0;
+  let filledNotional = 0;
+  let levelsUsed = 0;
+  if (input.side === "buy") {
+    if (availableLiquidity + 1e-9 < input.amount) {
+      return { success: false, rejectReason: "insufficient_depth_fok", requestedShares: input.amount / topPrice, filledShares: 0, filledNotional: 0, avgPrice: 0, levelsUsed: 0, availableLiquidity, priceImpactPct: 0 };
+    }
+    let remainingNotional = input.amount;
+    for (const level of levels) {
+      if (level.price > input.worstPrice || remainingNotional <= 1e-9) break;
+      const levelNotional = level.price * level.size;
+      const takeNotional = Math.min(remainingNotional, levelNotional);
+      filledShares += takeNotional / level.price;
+      filledNotional += takeNotional;
+      remainingNotional -= takeNotional;
+      levelsUsed++;
+    }
+  } else {
+    if (availableLiquidity + 1e-9 < input.amount) {
+      return { success: false, rejectReason: "insufficient_depth_fok", requestedShares: input.amount, filledShares: 0, filledNotional: 0, avgPrice: 0, levelsUsed: 0, availableLiquidity, priceImpactPct: 0 };
+    }
+    let remainingShares = input.amount;
+    for (const level of levels) {
+      if (level.price < input.worstPrice || remainingShares <= 1e-9) break;
+      const takeShares = Math.min(remainingShares, level.size);
+      filledShares += takeShares;
+      filledNotional += takeShares * level.price;
+      remainingShares -= takeShares;
+      levelsUsed++;
+    }
+  }
+  const avgPrice = filledShares > 0 ? filledNotional / filledShares : 0;
+  const priceImpactPct = topPrice > 0 && avgPrice > 0 ? Math.abs(avgPrice - topPrice) * 100 : 0;
+  return { success: filledShares > 0, requestedShares: input.side === "buy" ? input.amount / topPrice : input.amount, filledShares, filledNotional, avgPrice, levelsUsed, availableLiquidity, priceImpactPct };
+}
+
+function buildMakerStatusSnapshot(_ctx: import("./strategies/types.js").StrategyTickContext): MakerStatusSnapshot {
+  const active = paperMakerOrders.filter((order) => order.windowStart === state.windowStart);
+  const upBid = active.filter((order) => order.direction === "up").reduce((max, order) => Math.max(max, order.price * 100), 0);
+  const downBid = active.filter((order) => order.direction === "down").reduce((max, order) => Math.max(max, order.price * 100), 0);
+  return {
+    activeOrders: active.length,
+    upOrders: active.filter((order) => order.direction === "up").length,
+    downOrders: active.filter((order) => order.direction === "down").length,
+    upBidPct: upBid > 0 ? upBid : null,
+    downBidPct: downBid > 0 ? downBid : null,
+    totalBidCostPct: upBid > 0 && downBid > 0 ? upBid + downBid : null,
+    targetEdgePct: null,
+    filledCount: paperMakerFilledCount,
+    mergedCount: paperMakerMergedCount,
+    lastFill: paperMakerLastFill,
+    lastReason: paperMakerLastReason,
+  };
+}
+
+function getPaperMakerWindowNotional(windowStart: number): number {
+  const filled = paperTradeHistory.reduce((sum, trade) => {
+    if (
+      trade.windowStart === windowStart &&
+      trade.ts >= paperMakerEpochTs &&
+      trade.side === "buy" &&
+      /^strategy10maker/.test(String(trade.source || "")) &&
+      String(trade.status || "").includes("FILLED")
+    ) {
+      return sum + (Number(trade.filledNotional ?? trade.requestedAmount ?? 0) || 0);
+    }
+    return sum;
+  }, 0);
+  const active = paperMakerOrders.reduce((sum, order) => (
+    order.windowStart === windowStart ? sum + order.remainingShares * order.price : sum
+  ), 0);
+  return filled + active;
+}
+
+function recordPaperMakerFill(
+  order: PaperMakerOrder,
+  filledShares: number,
+  trigger: string,
+  queueFillRatio: number,
+  quote: { bid: number; ask: number; ageMs: number } | null,
+): void {
+  const tokenId = getDirectionTokenId(order.direction);
+  if (!tokenId || filledShares <= 0) return;
+  const notional = roundMoney(filledShares * order.price);
+  if (paperAccount.usdc + 1e-9 < notional) {
+    paperMakerLastReason = "maker fill skipped: insufficient paper USDC";
+    return;
+  }
+  const currentSize = paperAccount.localSize[tokenId] ?? 0;
+  paperAccount.usdc = roundMoney(paperAccount.usdc - notional);
+  paperAccount.localSize[tokenId] = currentSize + filledShares;
+  paperAccount.lastTradeAt = Date.now();
+  order.remainingShares = Math.max(0, order.remainingShares - filledShares);
+  paperMakerFilledCount++;
+  paperMakerLastFillAt[order.direction] = Date.now();
+  paperMakerLastFill = {
+    direction: order.direction,
+    price: order.price,
+    shares: filledShares,
+    trigger,
+    ts: Date.now(),
+  };
+  paperMakerLastReason = `maker filled ${order.direction} ${(order.price * 100).toFixed(1)}% ${trigger}`;
+  const auditBook = getStateBookLevelsForDirection(order.direction);
+  const latencySnapshot = getPaperLatencyModelSnapshot();
+  recordPaperTradeHistory({
+    ts: Date.now(),
+    windowStart: order.windowStart,
+    side: "buy",
+    direction: order.direction,
+    amount: filledShares,
+    price: order.price,
+    avgPrice: order.price,
+    worstPrice: order.price,
+    status: "SIM_MAKER_FILLED",
+    source: "strategy10maker",
+    exitReason: `${trigger}; ${order.reason}`,
+    requestedAmount: notional,
+    requestedShares: order.shares,
+    filledShares,
+    filledNotional: notional,
+    topBid: quote?.bid ?? null,
+    topAsk: quote?.ask ?? null,
+    spread: quote ? quote.ask - quote.bid : null,
+    levelsUsed: 1,
+    availableLiquidity: auditBook.bids.find((level) => Math.abs(level.price - order.price) < 0.0001)?.size ?? null,
+    priceImpactPct: 0,
+    simLatencyMs: Math.max(0, order.activeAt - order.createdAt),
+    simLatencyMode: "maker",
+    simLatencyBookP80Ms: latencySnapshot.bookP80Ms,
+    simLatencyRestP80Ms: latencySnapshot.restP80Ms,
+    simLatencyWsP80Ms: latencySnapshot.wsP80Ms,
+    simLatencyPressureMs: latencySnapshot.pressureMs,
+    simLatencyJitterMs: 0,
+    bookLatencyMs: quote?.ageMs ?? null,
+    totalLatencyMs: Date.now() - order.createdAt,
+    partial: order.remainingShares > 0.01,
+    makerOrderId: order.id,
+    makerLimitPrice: order.price,
+    makerTrigger: trigger,
+    makerQueueFillRatio: queueFillRatio,
+    makerActiveMs: Date.now() - order.activeAt,
+    bookTokenId: tokenId,
+    bookWindowStart: state.windowStart,
+    bookFetchedAt: state.bookUpdatedAt || Date.now(),
+    bookBids: getAuditBookLevels(auditBook.bids),
+    bookAsks: getAuditBookLevels(auditBook.asks),
+    paperBookExpectedBid: quote?.bid ?? null,
+    paperBookExpectedAsk: quote?.ask ?? null,
+    paperBookDiffPct: null,
+    paperBookCheckStatus: "maker_ws_touch",
+    paperBookCheckReason: trigger,
+  });
+  persistPaperAccountState();
+  broadcastState();
+}
+
+function makerOrderFillProbe(order: PaperMakerOrder, now: number): {
+  fillShares: number;
+  trigger: string;
+  ratio: number;
+  quote: { bid: number; ask: number; ageMs: number } | null;
+} | null {
+  const quote = getStateTopBookForDirection(order.direction);
+  if (!quote || quote.ageMs > S10_MAKER_MAX_BOOK_AGE_MS) return null;
+  if (now < order.activeAt || now - order.activeAt < S10_MAKER_MIN_ACTIVE_MS) {
+    order.lastSeenBid = quote.bid;
+    order.lastSeenAsk = quote.ask;
+    return null;
+  }
+
+  const crossed = quote.ask > 0 && quote.ask <= order.price;
+  const sweptThrough = order.lastSeenBid != null && order.lastSeenBid >= order.price && quote.bid < order.price - 0.0001;
+  const touch = getLastBookTouchForMakerDirection(order.direction);
+  const activeMs = Math.max(0, now - order.activeAt);
+  const pinnedAtLimit = activeMs >= S10_MAKER_BOOK_TOUCH_MIN_ACTIVE_MS &&
+    Math.abs(quote.bid - order.price) <= S10_MAKER_BOOK_TOUCH_PRICE_EPS;
+  const touchedOwnBid =
+    touch != null &&
+    touch.touchedAt > order.lastTouchAt &&
+    touch.touchedAt >= order.createdAt &&
+    activeMs >= S10_MAKER_BOOK_TOUCH_MIN_ACTIVE_MS &&
+    Math.abs(touch.price - order.price) <= S10_MAKER_BOOK_TOUCH_PRICE_EPS;
+  if (touchedOwnBid || pinnedAtLimit || crossed || sweptThrough) {
+    if (!order.touchStartedAt) order.touchStartedAt = touchedOwnBid && touch ? touch.touchedAt : now;
+  } else if (quote.bid < order.price - S10_MAKER_BOOK_TOUCH_PRICE_EPS) {
+    order.touchStartedAt = 0;
+  }
+  order.lastSeenBid = quote.bid;
+  order.lastSeenAsk = quote.ask;
+  if (!crossed && !sweptThrough && !touchedOwnBid && !pinnedAtLimit) return null;
+  if (now - paperMakerLastFillAt[order.direction] < S10_MAKER_FILL_COOLDOWN_MS) return null;
+  if (touchedOwnBid && touch) {
+    order.lastTouchAt = touch.touchedAt;
+    order.touchCount += 1;
+  } else if (pinnedAtLimit) {
+    order.touchCount += 1;
+  }
+
+  const orderNotional = order.remainingShares * order.price;
+  const smallOrderBoost =
+    orderNotional <= 6 ? 0.48 :
+    orderNotional <= S10_MAKER_SMALL_TOUCH_NOTIONAL ? 0.34 :
+    orderNotional <= S10_MAKER_SMALL_TOUCH_NOTIONAL * 2 ? 0.18 :
+    0;
+  const holdMs = order.touchStartedAt ? Math.max(0, now - order.touchStartedAt) : 0;
+  const holdBoost = clampNumber(holdMs / S10_MAKER_TOUCH_HOLD_FULL_MS, 0, 1) * 0.35;
+  const ageRatio = clampNumber(activeMs / 9000, 0.06, 0.45);
+  const touchRepeatBoost = clampNumber((order.touchCount - 1) * 0.08, 0, 0.24);
+  const triggerBoost = crossed ? 0.78 : sweptThrough ? 0.62 : touchedOwnBid ? 0.22 : 0.14;
+  const priceDepthBoost = crossed || sweptThrough ? Math.max(0, (order.price - quote.bid) * 2.2) : 0;
+  const touchMaxRatio = orderNotional <= S10_MAKER_SMALL_TOUCH_NOTIONAL
+    ? 1
+    : S10_MAKER_BOOK_TOUCH_MAX_RATIO;
+  const ratio = crossed || sweptThrough
+    ? 1
+    : clampNumber(
+        triggerBoost + ageRatio + priceDepthBoost + smallOrderBoost + holdBoost + touchRepeatBoost,
+        orderNotional <= S10_MAKER_SMALL_TOUCH_NOTIONAL ? 0.35 : 0.12,
+        touchMaxRatio,
+      );
+  const rawFillShares = Math.min(order.remainingShares, Math.max(S10_MAKER_PARTIAL_MIN_SHARES, order.remainingShares * ratio));
+  const ownSize = getDirectionLocalSize(order.direction);
+  const otherSize = getDirectionLocalSize(oppositeDirection(order.direction));
+  const tailRoom = Math.max(0, otherSize + S10_MAKER_MAX_TAIL_AFTER_FILL_SHARES - ownSize);
+  const fillShares = Math.min(rawFillShares, tailRoom);
+  if (fillShares < S10_MAKER_PARTIAL_MIN_SHARES) return null;
+  const actualRatio = order.remainingShares > 0 ? fillShares / order.remainingShares : ratio;
+  const trigger = crossed ? "crossed_ask" : sweptThrough ? "bid_swept" : pinnedAtLimit && !touchedOwnBid ? "book_hold" : "book_touch";
+  return { fillShares, trigger, ratio: actualRatio, quote };
+}
+
+function cancelOverexposedPaperMakerOrders(ctx: import("./strategies/types.js").StrategyTickContext): void {
+  const imbalance = ctx.position.upSize - ctx.position.downSize;
+  const overDirection: StrategyDirection | null =
+    imbalance >= S10_MAKER_SOFT_IMBALANCE_SHARES ? "up" :
+    imbalance <= -S10_MAKER_SOFT_IMBALANCE_SHARES ? "down" :
+    null;
+  if (!overDirection) return;
+  const before = paperMakerOrders.length;
+  paperMakerOrders = paperMakerOrders.filter((order) =>
+    !(order.windowStart === state.windowStart && order.direction === overDirection)
+  );
+  const canceled = before - paperMakerOrders.length;
+  if (canceled > 0) {
+    paperMakerLastReason = `maker cancel ${canceled} ${overDirection} orders; inv=${imbalance.toFixed(1)}`;
+  }
+}
+
+function cancelStalePaperMakerOrders(quotes: MakerQuoteSignal[]): void {
+  const current = paperMakerOrders.filter((order) => order.windowStart === state.windowStart);
+  if (!current.length) return;
+  const desiredMaxPrice: Record<StrategyDirection, number | null> = { up: null, down: null };
+  for (const quote of quotes) {
+    desiredMaxPrice[quote.direction] = Math.max(desiredMaxPrice[quote.direction] ?? 0, quote.price);
+  }
+  const before = paperMakerOrders.length;
+  paperMakerOrders = paperMakerOrders.filter((order) => {
+    if (order.windowStart !== state.windowStart) return true;
+    const allowedPrice = desiredMaxPrice[order.direction];
+    if (allowedPrice == null) return false;
+    return order.price <= allowedPrice + 0.0025;
+  });
+  const canceled = before - paperMakerOrders.length;
+  if (canceled > 0) {
+    const quoteText = quotes.length
+      ? quotes.map((q) => `${q.direction}@${(q.price * 100).toFixed(1)}%`).join(",")
+      : "none";
+    paperMakerLastReason = `maker cancel ${canceled} stale/risk orders; desired=${quoteText}`;
+  }
+}
+
+function reconcilePaperMakerOrders(ctx: import("./strategies/types.js").StrategyTickContext): void {
+  if (strategyConfig.executionMode !== "paper" || !S10_MAKER_ENGINE_ENABLED || !strategyConfig.enabled.s10) {
+    paperMakerOrders = [];
+    return;
+  }
+  const s10 = getStrategy("s10");
+  const now = Date.now();
+  paperMakerOrders = paperMakerOrders.filter((order) =>
+    order.windowStart === state.windowStart &&
+    order.remainingShares > 0.01 &&
+    order.expiresAt > now
+  );
+  cancelOverexposedPaperMakerOrders(ctx);
+
+  const quotes = s10?.getMakerQuotes?.(ctx) ?? [];
+  cancelStalePaperMakerOrders(quotes);
+  for (const quote of quotes) {
+    const usedWindowNotional = getPaperMakerWindowNotional(state.windowStart);
+    const quoteNotional = quote.price * quote.shares;
+    if (usedWindowNotional + quoteNotional > S10_MAKER_MAX_WINDOW_NOTIONAL) {
+      paperMakerLastReason = `maker window cap ${usedWindowNotional.toFixed(1)}/${S10_MAKER_MAX_WINDOW_NOTIONAL}`;
+      break;
+    }
+    const activeSameSide = paperMakerOrders
+      .filter((order) => order.windowStart === state.windowStart && order.direction === quote.direction)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    if (activeSameSide.length >= S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE) continue;
+    const duplicate = activeSameSide.some((order) => Math.abs(order.price - quote.price) < S10_MAKER_DUPLICATE_PRICE_EPS);
+    if (duplicate) continue;
+    const top = getStateTopBookForDirection(quote.direction);
+    if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS || quote.price > top.bid + 0.0001) continue;
+    const latency = samplePaperLatency();
+    paperMakerOrders.push({
+      id: `pmk-${state.windowStart}-${quote.direction}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      strategy: 10,
+      windowStart: state.windowStart,
+      direction: quote.direction,
+      price: clampNumber(quote.price, 0.01, 0.99),
+      shares: quote.shares,
+      remainingShares: quote.shares,
+      createdAt: now,
+      activeAt: now + latency.delayMs,
+      expiresAt: now + Math.max(800, quote.ttlMs ?? 2500),
+      reason: quote.reason || "",
+      lastSeenBid: top.bid,
+      lastSeenAsk: top.ask,
+      lastTouchAt: 0,
+      touchStartedAt: 0,
+      touchCount: 0,
+    });
+  }
+
+  for (const order of [...paperMakerOrders]) {
+    const probe = makerOrderFillProbe(order, now);
+    if (!probe) continue;
+    recordPaperMakerFill(order, probe.fillShares, probe.trigger, probe.ratio, probe.quote);
+  }
+  paperMakerOrders = paperMakerOrders.filter((order) => order.remainingShares > 0.01 && order.expiresAt > now);
+
+  if (PAPER_PRE_SETTLEMENT_MERGE_ENABLED && state.windowStart) {
+    const merged = mergePaperFullSet(state.windowStart, "strategy10maker-merge", "maker dual inventory merge");
+    if (merged > 0) {
+      paperMakerMergedCount++;
+      paperMakerLastReason = `maker merged ${merged.toFixed(4)} shares`;
+    }
+  } else if (!PAPER_PRE_SETTLEMENT_MERGE_ENABLED && state.windowStart) {
+    const upLocked = state.upTokenId ? (paperAccount.localSize[state.upTokenId] ?? 0) : 0;
+    const downLocked = state.downTokenId ? (paperAccount.localSize[state.downTokenId] ?? 0) : 0;
+    const lockedShares = Math.min(upLocked, downLocked);
+    const imbalance = upLocked - downLocked;
+    if (lockedShares > 0.01) {
+      paperMakerLastReason = `locked full-set ${lockedShares.toFixed(4)} shares; merge disabled; inv=${imbalance.toFixed(1)}`;
+    }
+  }
+
+  s10?.onMakerStatus?.(ctx, buildMakerStatusSnapshot(ctx));
+}
+
+function buildLiveMakerStatusSnapshot(lastReason = liveMakerLastReason): MakerStatusSnapshot {
+  const active = liveMakerOrders.filter((order) =>
+    order.windowStart === state.windowStart &&
+    (order.status === "open" || order.status === "unknown")
+  );
+  const upBid = active.filter((order) => order.direction === "up").reduce((max, order) => Math.max(max, order.price * 100), 0);
+  const downBid = active.filter((order) => order.direction === "down").reduce((max, order) => Math.max(max, order.price * 100), 0);
+  return {
+    activeOrders: active.length,
+    upOrders: active.filter((order) => order.direction === "up").length,
+    downOrders: active.filter((order) => order.direction === "down").length,
+    upBidPct: upBid > 0 ? upBid : null,
+    downBidPct: downBid > 0 ? downBid : null,
+    totalBidCostPct: upBid > 0 && downBid > 0 ? upBid + downBid : null,
+    targetEdgePct: null,
+    filledCount: liveMakerFilledCount,
+    mergedCount: 0,
+    lastFill: liveMakerLastFill,
+    lastReason,
+  };
+}
+
+function publishLiveMakerStatus(ctx: import("./strategies/types.js").StrategyTickContext, reason?: string): void {
+  const s10 = getStrategy("s10");
+  if (reason) liveMakerLastReason = reason;
+  s10?.onMakerStatus?.(ctx, buildLiveMakerStatusSnapshot(reason ?? liveMakerLastReason));
+}
+
+function recordLiveMakerExecutionEvent(
+  event: ExecutionEventType,
+  input: {
+    quote?: MakerQuoteSignal;
+    order?: LiveMakerOrder;
+    tokenId?: string | null;
+    orderId?: string | null;
+    status?: string | null;
+    reason?: string | null;
+    top?: { bid: number; ask: number; ageMs: number } | null;
+    checkedBook?: { book?: BookSnapshot; status?: string; reason?: string; diffPct?: number | null } | null;
+    filledShares?: number | null;
+    filledNotional?: number | null;
+    latencyMs?: number | null;
+  },
+): void {
+  const direction = input.order?.direction ?? input.quote?.direction ?? null;
+  const price = input.order?.price ?? input.quote?.price ?? null;
+  const shares = input.order?.remainingShares ?? input.quote?.shares ?? null;
+  const orderId = input.order?.orderId ?? input.orderId ?? null;
+  const tokenId = input.order?.tokenId ?? input.tokenId ?? (direction ? getDirectionTokenId(direction) : null);
+  const topBid = input.top?.bid ?? input.checkedBook?.book?.topBid ?? null;
+  const topAsk = input.top?.ask ?? input.checkedBook?.book?.topAsk ?? null;
+  recordExecutionEvent({
+    ts: Date.now(),
+    executionMode: "live",
+    event,
+    windowStart: input.order?.windowStart ?? state.windowStart,
+    source: "strategy10maker",
+    strategy: 10,
+    side: "buy",
+    direction,
+    orderId,
+    makerOrderId: input.order?.id ?? null,
+    tokenId,
+    status: input.status ?? null,
+    reason: input.reason ?? input.order?.reason ?? input.quote?.reason ?? null,
+    price: finiteOrNull(price),
+    worstPrice: finiteOrNull(price),
+    shares: finiteOrNull(shares),
+    requestedShares: finiteOrNull(input.order?.shares ?? input.quote?.shares),
+    filledShares: finiteOrNull(input.filledShares),
+    remainingShares: finiteOrNull(input.order?.remainingShares),
+    notional: finiteOrNull(price != null && shares != null ? price * shares : null),
+    requestedNotional: finiteOrNull(
+      price != null && (input.order?.shares ?? input.quote?.shares) != null
+        ? price * (input.order?.shares ?? input.quote?.shares ?? 0)
+        : null,
+    ),
+    filledNotional: finiteOrNull(input.filledNotional),
+    topBid: finiteOrNull(topBid),
+    topAsk: finiteOrNull(topAsk),
+    spread: finiteOrNull(topBid != null && topAsk != null ? topAsk - topBid : null),
+    bookAgeMs: finiteOrNull(input.top?.ageMs),
+    bookSource: "ws/rest",
+    bookCheckStatus: input.checkedBook?.status ?? null,
+    bookCheckReason: input.checkedBook?.reason ?? null,
+    bookCheckDiffPct: finiteOrNull(input.checkedBook?.diffPct),
+    bookLatencyMs: finiteOrNull(input.checkedBook?.book?.latencyMs),
+    latencyMs: finiteOrNull(input.latencyMs),
+  });
+}
+
+function rejectLiveMakerQuote(
+  quote: MakerQuoteSignal,
+  reason: string,
+  extra: {
+    tokenId?: string | null;
+    top?: { bid: number; ask: number; ageMs: number } | null;
+    checkedBook?: { book?: BookSnapshot; status?: string; reason?: string; diffPct?: number | null } | null;
+  } = {},
+): void {
+  liveMakerLastReason = `live maker skip ${quote.direction}: ${reason}`;
+  recordLiveMakerExecutionEvent("live_maker_rejected", {
+    quote,
+    tokenId: extra.tokenId ?? null,
+    reason,
+    status: "REJECTED",
+    top: extra.top ?? null,
+    checkedBook: extra.checkedBook ?? null,
+  });
+}
+
+function getLiveMakerWindowNotional(windowStart: number): number {
+  const filled = tradeHistory.reduce((sum, trade) => {
+    if (
+      trade.windowStart === windowStart &&
+      trade.ts >= liveMakerEpochTs &&
+      trade.side === "buy" &&
+      /^strategy10maker/.test(String(trade.source || "")) &&
+      String(trade.status || "").includes("MINED")
+    ) {
+      return sum + (Number(trade.filledNotional ?? trade.requestedAmount ?? ((trade.amount || 0) * (trade.price || 0))) || 0);
+    }
+    return sum;
+  }, 0);
+  const active = liveMakerOrders.reduce((sum, order) => (
+    order.windowStart === windowStart && (order.status === "open" || order.status === "unknown")
+      ? sum + order.remainingShares * order.price
+      : sum
+  ), 0);
+  return filled + active;
+}
+
+function noteLiveMakerFill(
+  orderId: string,
+  side: "buy" | "sell",
+  direction: StrategyDirection,
+  size: number,
+  price: number,
+  ts: number,
+): void {
+  const order = liveMakerOrders.find((candidate) => candidate.orderId === orderId);
+  if (!order || side !== "buy" || order.direction !== direction || !(size > 0)) return;
+  order.remainingShares = Math.max(0, order.remainingShares - size);
+  order.lastSeenMatchedShares = Math.max(order.lastSeenMatchedShares, order.shares - order.remainingShares);
+  order.lastSyncAt = Date.now();
+  if (Date.now() - liveMakerLastFillAt[direction] >= 0) {
+    liveMakerFilledCount++;
+  }
+  liveMakerLastFillAt[direction] = Date.now();
+  liveMakerLastFill = { direction, price: price > 0 ? price : order.price, shares: size, trigger: "user_ws_mined", ts };
+  liveMakerLastReason = `live maker filled ${direction} ${(order.price * 100).toFixed(1)}% user_ws`;
+  if (order.remainingShares <= 0.01) {
+    order.status = "filled";
+    forgetPendingTradeMeta(order.orderId);
+    liveMakerOrders = liveMakerOrders.filter((candidate) => candidate.orderId !== order.orderId);
+  }
+}
+
+async function cancelLiveMakerOrder(order: LiveMakerOrder, reason: string): Promise<boolean> {
+  if (order.status === "canceling" || order.status === "canceled" || order.status === "filled") return true;
+  order.status = "canceling";
+  try {
+    if (!(await ensureClobClient())) throw new Error("clob_client_unavailable");
+    const result = await clobClient!.cancelOrder({ orderID: order.orderId });
+    const error = extractOrderError(result);
+    if (error) throw new Error(error);
+    order.status = "canceled";
+    liveMakerCanceledCount++;
+    liveMakerLastReason = `live maker cancel ${order.direction} ${(order.price * 100).toFixed(1)}% ${reason}`;
+    recordLiveMakerExecutionEvent("live_maker_canceled", { order, reason, status: "CANCELED" });
+    forgetPendingTradeMeta(order.orderId);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const lower = msg.toLowerCase();
+    if (lower.includes("not found") || lower.includes("already") || lower.includes("closed") || lower.includes("canceled")) {
+      order.status = "canceled";
+      liveMakerLastReason = `live maker cancel assumed ${order.direction} ${reason}`;
+      recordLiveMakerExecutionEvent("live_maker_canceled", { order, reason: `assumed:${reason}`, status: "CANCELED_ASSUMED" });
+      forgetPendingTradeMeta(order.orderId);
+      return true;
+    }
+    order.status = "unknown";
+    liveMakerLastReason = `live maker cancel failed ${order.direction}: ${msg}`;
+    recordLiveMakerExecutionEvent("live_maker_cancel_failed", { order, reason: msg, status: "CANCEL_FAILED" });
+    console.warn(`[S10LiveMaker] cancel failed order=${order.orderId} reason=${reason}: ${msg}`);
+    return false;
+  }
+}
+
+async function cancelLiveMakerOrders(
+  predicate: (order: LiveMakerOrder) => boolean,
+  reason: string,
+): Promise<number> {
+  const targets = liveMakerOrders.filter((order) =>
+    (order.status === "open" || order.status === "unknown") && predicate(order)
+  );
+  let canceled = 0;
+  for (const order of targets) {
+    if (await cancelLiveMakerOrder(order, reason)) canceled++;
+  }
+  liveMakerOrders = liveMakerOrders.filter((order) =>
+    order.status !== "canceled" &&
+    order.status !== "filled" &&
+    order.remainingShares > 0.01
+  );
+  return canceled;
+}
+
+async function cancelOverexposedLiveMakerOrders(ctx: import("./strategies/types.js").StrategyTickContext): Promise<void> {
+  const imbalance = ctx.position.upSize - ctx.position.downSize;
+  const overDirection: StrategyDirection | null =
+    imbalance >= S10_MAKER_SOFT_IMBALANCE_SHARES ? "up" :
+    imbalance <= -S10_MAKER_SOFT_IMBALANCE_SHARES ? "down" :
+    null;
+  if (!overDirection) return;
+  const canceled = await cancelLiveMakerOrders(
+    (order) => order.windowStart === state.windowStart && order.direction === overDirection,
+    `overexposed inv=${imbalance.toFixed(1)}`,
+  );
+  if (canceled > 0) liveMakerLastReason = `live maker cancel ${canceled} ${overDirection} orders; inv=${imbalance.toFixed(1)}`;
+}
+
+async function cancelStaleLiveMakerOrders(quotes: MakerQuoteSignal[]): Promise<void> {
+  const desiredMaxPrice: Record<StrategyDirection, number | null> = { up: null, down: null };
+  for (const quote of quotes) {
+    desiredMaxPrice[quote.direction] = Math.max(desiredMaxPrice[quote.direction] ?? 0, quote.price);
+  }
+  const canceled = await cancelLiveMakerOrders((order) => {
+    if (order.windowStart !== state.windowStart) return true;
+    if (order.expiresAt <= Date.now()) return true;
+    const allowedPrice = desiredMaxPrice[order.direction];
+    if (allowedPrice == null) return true;
+    return order.price > allowedPrice + 0.0025;
+  }, "stale/risk");
+  if (canceled > 0) {
+    const quoteText = quotes.length
+      ? quotes.map((q) => `${q.direction}@${(q.price * 100).toFixed(1)}%`).join(",")
+      : "none";
+    liveMakerLastReason = `live maker cancel ${canceled} stale/risk orders; desired=${quoteText}`;
+  }
+}
+
+async function syncLiveMakerOrdersFromRest(): Promise<void> {
+  if (Date.now() - liveMakerLastSyncAt < S10_LIVE_MAKER_ORDER_SYNC_MS) return;
+  liveMakerLastSyncAt = Date.now();
+  if (!liveMakerOrders.length || !(await ensureClobClient())) return;
+  const tokenIds = [state.upTokenId, state.downTokenId].filter(Boolean);
+  const openById = new Map<string, Record<string, unknown>>();
+  for (const tokenId of tokenIds) {
+    try {
+      const orders = await clobClient!.getOpenOrders({ asset_id: tokenId }, true) as unknown;
+      if (!Array.isArray(orders)) continue;
+      for (const order of orders) {
+        if (!isRecord(order) || typeof order.id !== "string") continue;
+        openById.set(order.id, order);
+      }
+    } catch (err) {
+      console.warn(`[S10LiveMaker] open order sync failed token=${tokenId.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  for (const order of liveMakerOrders) {
+    const open = openById.get(order.orderId);
+    if (!open) {
+      if (Date.now() - order.postedAt > 1500) order.status = "unknown";
+      continue;
+    }
+    const originalSize = Number(open.original_size);
+    const matchedSize = Number(open.size_matched);
+    if (Number.isFinite(originalSize) && originalSize > 0) order.shares = originalSize;
+    if (Number.isFinite(matchedSize) && matchedSize >= 0) {
+      order.lastSeenMatchedShares = matchedSize;
+      order.remainingShares = Math.max(0, order.shares - matchedSize);
+    }
+    if (typeof open.status === "string") order.status = open.status.toLowerCase().includes("open") ? "open" : "unknown";
+    order.lastSyncAt = Date.now();
+  }
+  liveMakerOrders = liveMakerOrders.filter((order) => {
+    if (order.status === "filled" || order.status === "canceled") return false;
+    if (order.remainingShares <= 0.01) {
+      forgetPendingTradeMeta(order.orderId);
+      return false;
+    }
+    return true;
+  });
+}
+
+async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
+  const tokenId = getDirectionTokenId(quote.direction);
+  if (!tokenId) {
+    rejectLiveMakerQuote(quote, "no token");
+    return;
+  }
+  if (!(await ensureClobClient())) {
+    rejectLiveMakerQuote(quote, "clob unavailable", { tokenId });
+    return;
+  }
+  const top = getStateTopBookForDirection(quote.direction);
+  if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS) {
+    rejectLiveMakerQuote(quote, "stale ws book", { tokenId, top });
+    return;
+  }
+  if (quote.price > top.bid + 0.0001) {
+    rejectLiveMakerQuote(quote, "quote above ws bid", { tokenId, top });
+    return;
+  }
+
+  const checkedBook = await fetchCheckedLiveBookSnapshot(tokenId, quote.direction, "buy");
+  if (!checkedBook.ok) {
+    rejectLiveMakerQuote(quote, checkedBook.reason || "book_check_failed", { tokenId, top, checkedBook });
+    return;
+  }
+  if (quote.price > checkedBook.book.topBid + 0.0001) {
+    rejectLiveMakerQuote(quote, "quote above rest bid", { tokenId, top, checkedBook });
+    return;
+  }
+  if (checkedBook.book.topAsk > 0 && quote.price >= checkedBook.book.topAsk - 0.0001) {
+    rejectLiveMakerQuote(quote, "post-only would cross", { tokenId, top, checkedBook });
+    return;
+  }
+
+  const maxConfiguredNotional = Math.min(
+    Number(strategyConfig.amount.s10) || LIVE_STRATEGY_MAX_ORDER_USDC,
+    LIVE_STRATEGY_MAX_ORDER_USDC,
+    LIVE_MAX_ORDER_USDC,
+  );
+  const cappedShares = Math.min(
+    quote.shares,
+    Math.floor((maxConfiguredNotional / Math.max(quote.price, 0.01)) * 10000) / 10000,
+  );
+  const effectiveQuote: MakerQuoteSignal = {
+    ...quote,
+    shares: cappedShares,
+    reason: quote.shares !== cappedShares
+      ? `${quote.reason || ""} live_cap=$${maxConfiguredNotional.toFixed(2)}`.trim()
+      : quote.reason,
+  };
+  if (!(effectiveQuote.shares > 0.01)) {
+    rejectLiveMakerQuote(effectiveQuote, `live_order_notional_cap_too_small:${maxConfiguredNotional.toFixed(2)}`, { tokenId, top, checkedBook });
+    return;
+  }
+
+  const notional = effectiveQuote.price * effectiveQuote.shares;
+  const guard = getLiveOrderGuardReason({
+    direction: effectiveQuote.direction,
+    side: "buy",
+    amount: notional,
+    slippage: 0,
+    source: "strategy10maker",
+  }, checkedBook.book);
+  if (guard) {
+    rejectLiveMakerQuote(effectiveQuote, guard, { tokenId, top, checkedBook });
+    return;
+  }
+
+  try {
+    const tickSize = await clobClient!.getTickSize(tokenId);
+    const priceDecimals = getDecimalPlaces(tickSize);
+    const normalizedPrice = floorToDecimals(effectiveQuote.price, priceDecimals);
+    const normalizedShares = floorToDecimals(effectiveQuote.shares, 2);
+    if (normalizedPrice <= 0 || normalizedShares <= 0 || normalizedPrice >= 1) {
+      rejectLiveMakerQuote(effectiveQuote, "normalized invalid", { tokenId, top, checkedBook });
+      return;
+    }
+    if (normalizedPrice * normalizedShares > maxConfiguredNotional + 1e-6) {
+      rejectLiveMakerQuote(effectiveQuote, `live_order_notional_cap:${(normalizedPrice * normalizedShares).toFixed(2)}>${maxConfiguredNotional.toFixed(2)}`, { tokenId, top, checkedBook });
+      return;
+    }
+    const localTtlMs = Math.max(800, effectiveQuote.ttlMs ?? 2500);
+    const expiration = Math.ceil((getPolymarketNowMs() + Math.max(75_000, localTtlMs + 75_000)) / 1000);
+    const result = await clobClient!.createAndPostOrder(
+      {
+        tokenID: tokenId,
+        price: normalizedPrice,
+        side: Side.BUY,
+        size: normalizedShares,
+        expiration,
+      },
+      { tickSize, negRisk: false },
+      OrderType.GTD,
+      true,
+    );
+    const error = extractOrderError(result);
+    if (error) throw new Error(error);
+    const orderId = extractOrderId(result);
+    if (!orderId) throw new Error("post_order_missing_order_id");
+    const now = Date.now();
+    const order: LiveMakerOrder = {
+      id: `lmk-${state.windowStart}-${quote.direction}-${now}-${Math.random().toString(36).slice(2, 7)}`,
+      orderId,
+      strategy: 10,
+      windowStart: state.windowStart,
+      tokenId,
+      direction: quote.direction,
+      price: normalizedPrice,
+      shares: normalizedShares,
+      remainingShares: normalizedShares,
+      createdAt: now,
+      postedAt: now,
+      expiresAt: now + localTtlMs,
+      reason: effectiveQuote.reason || "",
+      status: "open",
+      lastSeenMatchedShares: 0,
+      lastSyncAt: 0,
+    };
+    liveMakerOrders.push(order);
+    rememberPendingTradeMeta({
+      orderId,
+      ts: now,
+      windowStart: state.windowStart,
+      side: "buy",
+      direction: quote.direction,
+      amount: normalizedShares,
+      worstPrice: normalizedPrice,
+      source: "strategy10maker",
+      exitReason: effectiveQuote.reason || "",
+    });
+    liveMakerLastReason = `live maker posted ${quote.direction} ${(normalizedPrice * 100).toFixed(1)}%/${normalizedShares.toFixed(2)}`;
+    recordLiveMakerExecutionEvent("live_maker_posted", {
+      order,
+      quote: effectiveQuote,
+      tokenId,
+      orderId,
+      status: "POSTED",
+      reason: effectiveQuote.reason || "",
+      top,
+      checkedBook,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    liveMakerLastReason = `live maker post failed ${quote.direction}: ${msg}`;
+    recordLiveMakerExecutionEvent("live_maker_rejected", {
+      quote: effectiveQuote,
+      tokenId,
+      status: "POST_FAILED",
+      reason: msg,
+      top,
+      checkedBook,
+    });
+    console.warn(`[S10LiveMaker] post failed ${effectiveQuote.direction} ${(effectiveQuote.price * 100).toFixed(2)}%: ${msg}`);
+  }
+}
+
+async function reconcileLiveMakerOrders(ctx: import("./strategies/types.js").StrategyTickContext): Promise<void> {
+  if (liveMakerReconciling) return;
+  if (strategyConfig.executionMode !== "live" || !S10_MAKER_ENGINE_ENABLED || !strategyConfig.enabled.s10 || !S10_MAKER_ONLY) {
+    return;
+  }
+  liveMakerReconciling = true;
+  try {
+    const s10 = getStrategy("s10");
+    const quotes = s10?.getMakerQuotes?.(ctx) ?? [];
+    const quoteText = quotes.length
+      ? quotes.map((quote) => `${quote.direction}@${(quote.price * 100).toFixed(1)}%/${quote.shares.toFixed(1)}`).join(",")
+      : "none";
+
+    if (!liveTradingEnabled || !s10LiveMakerEnabled) {
+      await cancelLiveMakerOrders((order) => order.windowStart === state.windowStart, "live disabled");
+      publishLiveMakerStatus(ctx, `${!liveTradingEnabled ? "live trading disabled" : "s10 live maker disabled"}; decision=${quoteText}`);
+      return;
+    }
+
+    await syncLiveMakerOrdersFromRest();
+    await cancelLiveMakerOrders((order) => order.windowStart !== state.windowStart || order.expiresAt <= Date.now(), "expired/window");
+    await cancelOverexposedLiveMakerOrders(ctx);
+    await cancelStaleLiveMakerOrders(quotes);
+
+    for (const quote of quotes) {
+      const usedWindowNotional = getLiveMakerWindowNotional(state.windowStart);
+      const quoteNotional = quote.price * quote.shares;
+      if (usedWindowNotional + quoteNotional > S10_MAKER_MAX_WINDOW_NOTIONAL) {
+        liveMakerLastReason = `live maker window cap ${usedWindowNotional.toFixed(1)}/${S10_MAKER_MAX_WINDOW_NOTIONAL}`;
+        break;
+      }
+      const activeSameSide = liveMakerOrders
+        .filter((order) =>
+          order.windowStart === state.windowStart &&
+          order.direction === quote.direction &&
+          (order.status === "open" || order.status === "unknown")
+        )
+        .sort((a, b) => b.createdAt - a.createdAt);
+      if (activeSameSide.length >= S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE) continue;
+      const duplicate = activeSameSide.some((order) => Math.abs(order.price - quote.price) < S10_MAKER_DUPLICATE_PRICE_EPS);
+      if (duplicate) continue;
+      await placeLiveMakerQuote(quote);
+    }
+
+    liveMakerOrders = liveMakerOrders.filter((order) =>
+      order.remainingShares > 0.01 &&
+      order.status !== "canceled" &&
+      order.status !== "filled"
+    );
+    publishLiveMakerStatus(ctx, liveMakerLastReason || `live maker decision=${quoteText}`);
+  } finally {
+    liveMakerReconciling = false;
+  }
+}
+
+function publishS10LiveMakerStatus(ctx: import("./strategies/types.js").StrategyTickContext): void {
+  if (strategyConfig.executionMode !== "live" || !S10_MAKER_ENGINE_ENABLED || !strategyConfig.enabled.s10 || !S10_MAKER_ONLY) {
+    return;
+  }
+  const s10 = getStrategy("s10");
+  const quotes = s10?.getMakerQuotes?.(ctx) ?? [];
+  const upBid = quotes
+    .filter((quote) => quote.direction === "up")
+    .reduce((max, quote) => Math.max(max, quote.price * 100), 0);
+  const downBid = quotes
+    .filter((quote) => quote.direction === "down")
+    .reduce((max, quote) => Math.max(max, quote.price * 100), 0);
+  const quoteText = quotes.length
+    ? quotes.map((quote) => `${quote.direction}@${(quote.price * 100).toFixed(1)}%/${quote.shares.toFixed(1)}`).join(",")
+    : "none";
+  const reason = s10LiveMakerEnabled
+    ? `live maker engine active; decision=${quoteText}`
+    : `live maker disabled; decision=${quoteText}`;
+  s10?.onMakerStatus?.(ctx, {
+    ...buildLiveMakerStatusSnapshot(reason),
+    upBidPct: upBid > 0 ? upBid : null,
+    downBidPct: downBid > 0 ? downBid : null,
+    totalBidCostPct: upBid > 0 && downBid > 0 ? upBid + downBid : null,
+  });
+  void reconcileLiveMakerOrders(ctx);
+}
+
+async function placePaperOrder(input: PlaceOrderInput): Promise<OrderExecutionResult> {
+  const { direction, side, amount, source = "manual" } = input;
+  const startedAt = Date.now();
+  const slippageVal = typeof input.slippage === "number" && input.slippage >= 0 ? input.slippage : strategyConfig.slippage;
+  if (!direction || !side || !amount || amount <= 0) return { success: false, statusCode: 400, body: { error: "参数错误", executionMode: "paper" }, errorMessage: "参数错误" };
+  if (isOrderWindowStale()) return { success: false, statusCode: 409, body: { error: "当前市场窗口已过期", executionMode: "paper" }, errorMessage: "当前市场窗口已过期" };
+  if (!isProbabilityReady()) return { success: false, statusCode: 409, body: { error: "盘口概率暂不可用", executionMode: "paper" }, errorMessage: "盘口概率暂不可用" };
+  const tokenId = getDirectionTokenId(direction);
+  if (!tokenId) return { success: false, statusCode: 400, body: { error: "当前窗口市场未就绪", executionMode: "paper" }, errorMessage: "当前窗口市场未就绪" };
+  if (side === "buy" && paperAccount.usdc + 1e-9 < amount) return { success: false, statusCode: 409, body: { error: "模拟盘余额不足", executionMode: "paper" }, errorMessage: "模拟盘余额不足" };
+  if (side === "sell" && getPaperDirectionSize(direction) + 1e-9 < amount) return { success: false, statusCode: 409, body: { error: "模拟盘仓位不足", executionMode: "paper" }, errorMessage: "模拟盘仓位不足" };
+
+  const latencyEstimate = samplePaperLatency();
+  const simLatencyMs = latencyEstimate.delayMs;
+  if (simLatencyMs > 0) await new Promise(r => setTimeout(r, simLatencyMs));
+  const checkedBook = await fetchCheckedPaperBookSnapshot(tokenId, direction, side);
+  const book = checkedBook.book;
+  const worstPrice = side === "buy" ? Math.min(book.topAsk + slippageVal, 0.99) : Math.max(book.topBid - slippageVal, 0.01);
+  const fill = checkedBook.ok
+    ? simulatePaperFill({ side, amount, worstPrice, book })
+    : buildRejectedPaperFill({ side, amount, worstPrice, book, rejectReason: checkedBook.reason || "book_check_failed" });
+  const totalLatencyMs = Date.now() - startedAt;
+  const spread = book.topBid > 0 && book.topAsk > 0 ? book.topAsk - book.topBid : null;
+  const status = fill.success ? "SIM_FILLED" : "SIM_REJECTED";
+  const tradeTs = Date.now();
+  const recordBase = {
+    ts: tradeTs,
+    windowStart: state.windowStart,
+    side,
+    direction,
+    amount: fill.success ? fill.filledShares : 0,
+    price: fill.success ? fill.avgPrice : null,
+    avgPrice: fill.success ? fill.avgPrice : null,
+    worstPrice,
+    status,
+    source,
+    exitReason: input.exitReason ?? fill.rejectReason,
+    roundEntry: input.roundEntry,
+    requestedAmount: side === "buy" ? amount : null,
+    requestedShares: fill.requestedShares,
+    filledShares: fill.filledShares,
+    filledNotional: fill.filledNotional,
+    topBid: book.topBid || null,
+    topAsk: book.topAsk || null,
+    spread,
+    levelsUsed: fill.levelsUsed,
+    availableLiquidity: fill.availableLiquidity,
+    priceImpactPct: fill.priceImpactPct,
+    simLatencyMs,
+    simLatencyMode: latencyEstimate.mode,
+    simLatencyBookP80Ms: latencyEstimate.bookP80Ms,
+    simLatencyRestP80Ms: latencyEstimate.restP80Ms,
+    simLatencyWsP80Ms: latencyEstimate.wsP80Ms,
+    simLatencyPressureMs: latencyEstimate.pressureMs,
+    simLatencyJitterMs: latencyEstimate.jitterMs,
+    bookLatencyMs: book.latencyMs,
+    totalLatencyMs,
+    partial: false,
+    rejectReason: fill.rejectReason,
+    bookTokenId: tokenId,
+    bookWindowStart: state.windowStart,
+    bookFetchedAt: book.fetchedAt,
+    bookBids: getAuditBookLevels(book.bids),
+    bookAsks: getAuditBookLevels(book.asks),
+    paperBookExpectedBid: checkedBook.expectedBid,
+    paperBookExpectedAsk: checkedBook.expectedAsk,
+    paperBookDiffPct: checkedBook.diffPct,
+    paperBookCheckStatus: checkedBook.status,
+    paperBookCheckReason: checkedBook.reason,
+  } satisfies Omit<TradeHistoryItem, "id">;
+  if (!fill.success) {
+    recordPaperTradeHistory(recordBase);
+    const paperRejectBody = {
+      error: fill.rejectReason || "paper FOK not filled",
+      executionMode: "paper",
+      result: {
+        status,
+        bookCheckStatus: checkedBook.status,
+        bookCheckReason: checkedBook.reason,
+        bookDiffPct: checkedBook.diffPct,
+      },
+      bestBid: book.topBid,
+      bestAsk: book.topAsk,
+      worstPrice,
+      fill,
+    };
+    return {
+      success: false,
+      statusCode: 409,
+      body: paperRejectBody,
+      errorMessage: fill.rejectReason || "paper FOK not filled",
+    };
+  }
+  const currentSize = paperAccount.localSize[tokenId] ?? 0;
+  if (side === "buy") {
+    paperAccount.usdc = roundMoney(paperAccount.usdc - fill.filledNotional);
+    paperAccount.localSize[tokenId] = currentSize + fill.filledShares;
+  } else {
+    paperAccount.usdc = roundMoney(paperAccount.usdc + fill.filledNotional);
+    paperAccount.localSize[tokenId] = Math.max(0, currentSize - fill.filledShares);
+  }
+  paperAccount.lastTradeAt = tradeTs;
+  persistPaperAccountState();
+  recordPaperTradeHistory(recordBase);
+  broadcastState();
+  return {
+    success: true,
+    statusCode: 200,
+    body: {
+      success: true,
+      executionMode: "paper",
+      result: {
+        status,
+        filledShares: fill.filledShares,
+        filledNotional: fill.filledNotional,
+        avgPrice: fill.avgPrice,
+        levelsUsed: fill.levelsUsed,
+        simLatencyMs,
+        simLatencyMode: latencyEstimate.mode,
+        simLatencyBookP80Ms: latencyEstimate.bookP80Ms,
+        simLatencyRestP80Ms: latencyEstimate.restP80Ms,
+        simLatencyWsP80Ms: latencyEstimate.wsP80Ms,
+        bookLatencyMs: book.latencyMs,
+        totalLatencyMs,
+        bookCheckStatus: checkedBook.status,
+        bookCheckReason: checkedBook.reason,
+        bookDiffPct: checkedBook.diffPct,
+      },
+      bestBid: book.topBid,
+      bestAsk: book.topAsk,
+      worstPrice,
+    },
+  };
+}
+
+async function executeOrder(input: PlaceOrderInput): Promise<OrderExecutionResult> {
+  const dislocationReason = getTerminalBookDislocationReason(input.direction, input.side);
+  if (dislocationReason) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: {
+        error: dislocationReason,
+        executionMode: strategyConfig.executionMode,
+      },
+      errorMessage: dislocationReason,
+    };
+  }
+  const liveGuardReason = getLiveOrderGuardReason(input);
+  if (liveGuardReason) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: {
+        error: liveGuardReason,
+        executionMode: strategyConfig.executionMode,
+      },
+      errorMessage: liveGuardReason,
+    };
+  }
+  return strategyConfig.executionMode === "paper" ? placePaperOrder(input) : placeOrder(input);
+}
+
+function isRetryableOrderFailure(result: OrderExecutionResult): boolean {
+  const msg = String(result.errorMessage || (isRecord(result.body) ? result.body.error : "") || "").toLowerCase();
+  if (!msg) return false;
+  if (
+    msg.includes("insufficient_depth") ||
+    msg.includes("terminal_book_dislocation") ||
+    msg.includes("live_trading_disabled") ||
+    msg.includes("s10_live_maker_disabled") ||
+    msg.includes("live_order_notional_cap") ||
+    msg.includes("live_price_impact") ||
+    msg.includes("live_too_late") ||
+    msg.includes("余额不足") ||
+    msg.includes("insufficient")
+  ) {
+    return false;
+  }
+  return result.statusCode >= 500 ||
+    msg.includes("timeout") ||
+    msg.includes("network") ||
+    msg.includes("fetch") ||
+    msg.includes("book_stale") ||
+    msg.includes("missing_ws_book") ||
+    msg.includes("book_ws_mismatch") ||
+    msg.includes("429");
+}
+
+async function executeStrategyOrder(input: PlaceOrderInput): Promise<OrderExecutionResult> {
+  const attempts = strategyConfig.executionMode === "live" ? LIVE_STRATEGY_ORDER_RETRIES + 1 : 1;
+  let last: OrderExecutionResult | null = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = await executeOrder(input);
+    if (result.success || attempt >= attempts || !isRetryableOrderFailure(result)) return result;
+    last = result;
+    console.warn(`[OrderRetry:${input.source || "strategy"}] attempt ${attempt}/${attempts} failed: ${result.errorMessage || "unknown"}, retrying`);
+    if (LIVE_STRATEGY_RETRY_DELAY_MS > 0) {
+      await new Promise(r => setTimeout(r, LIVE_STRATEGY_RETRY_DELAY_MS));
+    }
+  }
+  return last ?? executeOrder(input);
 }
 
 async function placeOrder(input: PlaceOrderInput): Promise<OrderExecutionResult> {
@@ -2379,10 +5657,9 @@ async function placeOrder(input: PlaceOrderInput): Promise<OrderExecutionResult>
     };
   }
 
-  let bestBid = 0;
-  let bestAsk = 0;
+  let checkedBook: Awaited<ReturnType<typeof fetchCheckedLiveBookSnapshot>>;
   try {
-    ({ bestBid, bestAsk } = await fetchBookTopOfBook(tokenId));
+    checkedBook = await fetchCheckedLiveBookSnapshot(tokenId, direction, side);
   } catch {
     return {
       success: false,
@@ -2391,10 +5668,63 @@ async function placeOrder(input: PlaceOrderInput): Promise<OrderExecutionResult>
       errorMessage: "无法获取盘口价格",
     };
   }
+  const book = checkedBook.book;
+  const bestBid = book.topBid;
+  const bestAsk = book.topAsk;
+  if (!checkedBook.ok) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: {
+        error: checkedBook.reason || "live_book_check_failed",
+        bestBid,
+        bestAsk,
+        bookCheckStatus: checkedBook.status,
+        bookCheckReason: checkedBook.reason,
+        bookDiffPct: checkedBook.diffPct,
+      },
+      errorMessage: checkedBook.reason || "live_book_check_failed",
+    };
+  }
 
   const worstPrice = side === "buy"
     ? Math.min(bestAsk + slippageVal, 0.99)
     : Math.max(bestBid - slippageVal, 0.01);
+  const liveGuardAfterBook = getLiveOrderGuardReason(input, book);
+  if (liveGuardAfterBook) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: liveGuardAfterBook, bestBid, bestAsk, worstPrice },
+      errorMessage: liveGuardAfterBook,
+    };
+  }
+  const depthCheck = simulatePaperFill({ side, amount, worstPrice, book });
+  if (!depthCheck.success) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: {
+        error: depthCheck.rejectReason || "live_depth_rejected",
+        bestBid,
+        bestAsk,
+        worstPrice,
+        availableLiquidity: depthCheck.availableLiquidity,
+        requestedShares: depthCheck.requestedShares,
+        bookCheckStatus: checkedBook.status,
+      },
+      errorMessage: depthCheck.rejectReason || "live_depth_rejected",
+    };
+  }
+  if (depthCheck.priceImpactPct > LIVE_MAX_PRICE_IMPACT_PCT) {
+    const reason = `live_price_impact:${depthCheck.priceImpactPct.toFixed(3)}>${LIVE_MAX_PRICE_IMPACT_PCT.toFixed(3)}`;
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: reason, bestBid, bestAsk, worstPrice, fillPreview: depthCheck },
+      errorMessage: reason,
+    };
+  }
 
   try {
     const tickSize = await clobClient!.getTickSize(tokenId);
@@ -2453,7 +5783,18 @@ async function placeOrder(input: PlaceOrderInput): Promise<OrderExecutionResult>
     return {
       success: true,
       statusCode: 200,
-      body: { success: true, result, bestBid, bestAsk, worstPrice: normalizedWorstPrice },
+      body: {
+        success: true,
+        executionMode: "live",
+        result,
+        bestBid,
+        bestAsk,
+        worstPrice: normalizedWorstPrice,
+        liveBookCheckStatus: checkedBook.status,
+        liveBookCheckReason: checkedBook.reason,
+        liveBookDiffPct: checkedBook.diffPct,
+        fillPreview: depthCheck,
+      },
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2474,7 +5815,7 @@ async function strategyBuy(direction: StrategyDirection, amount: number): Promis
   strategyRuntime.state = "WAIT_FILL";
   broadcastState();
 
-  const orderResult = await placeOrder({
+  const orderResult = await executeStrategyOrder({
     direction,
     side: "buy",
     amount,
@@ -2488,6 +5829,60 @@ async function strategyBuy(direction: StrategyDirection, amount: number): Promis
     strategyRuntime.buyLockUntil = 0;
     strategyRuntime.state = "SCANNING";
     strategyRuntime.activeStrategy = null;
+    broadcastState();
+  }
+}
+
+async function strategyLockBuy(direction: StrategyDirection, targetShares: number, reason?: string): Promise<void> {
+  if (targetShares <= 0) {
+    strategyRuntime.state = "HOLDING";
+    broadcastState();
+    return;
+  }
+  const tokenId = getDirectionTokenId(direction);
+  if (!tokenId) {
+    strategyRuntime.state = "HOLDING";
+    broadcastState();
+    return;
+  }
+  let bestAsk = 0;
+  try {
+    ({ bestAsk } = await fetchBookTopOfBook(tokenId));
+  } catch (err) {
+    console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] 锁仓盘口获取失败: ${err instanceof Error ? err.message : String(err)}`);
+    strategyRuntime.state = "HOLDING";
+    broadcastState();
+    return;
+  }
+  const worstPrice = Math.min(bestAsk + strategyConfig.slippage, 0.99);
+  const buyAmount = Math.ceil(targetShares * worstPrice * 100) / 100;
+  strategyRuntime.lockDirection = direction;
+  strategyRuntime.lockPosBeforeBuy = getDirectionLocalSize(direction);
+  strategyRuntime.lockTargetShares = targetShares;
+  strategyRuntime.lockReason = reason || "";
+  strategyRuntime.actionTs = Date.now();
+  strategyRuntime.buyLockUntil = Date.now() + STRAT_BUY_LOCK_MS;
+  strategyRuntime.state = "WAIT_LOCK_FILL";
+  broadcastState();
+
+  const orderResult = await executeStrategyOrder({
+    direction,
+    side: "buy",
+    amount: buyAmount,
+    slippage: strategyConfig.slippage,
+    source: `strategy${strategyRuntime.activeStrategy ?? ""}lock`,
+    exitReason: reason,
+    roundEntry: `${strategyRuntime.roundEntryCount}/${strategyConfig.maxRoundEntries}`,
+  });
+
+  if (!orderResult.success) {
+    console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] 锁仓买入失败: ${orderResult.errorMessage || "下单失败"}`);
+    strategyRuntime.lockDirection = null;
+    strategyRuntime.lockPosBeforeBuy = 0;
+    strategyRuntime.lockTargetShares = 0;
+    strategyRuntime.lockReason = "";
+    strategyRuntime.buyLockUntil = 0;
+    strategyRuntime.state = "HOLDING";
     broadcastState();
   }
 }
@@ -2506,7 +5901,7 @@ async function strategySell(direction: StrategyDirection, exitReason?: string): 
   strategyRuntime.state = "WAIT_SELL_FILL";
   broadcastState();
 
-  const orderResult = await placeOrder({
+  const orderResult = await executeStrategyOrder({
     direction,
     side: "sell",
     amount: shares,
@@ -2608,7 +6003,7 @@ function backtestTick(): void {
 
   const snapshot = getProbabilitySnapshot();
   const diff = getStrategyDiff();
-  const rem = getStrategyRemainingSeconds(now);
+  const rem = getStrategyRemainingSeconds(getPolymarketNowMs());
   if (snapshot == null || diff == null || !state.windowStart) return;
 
   // 每天首次写入时清理旧文件（超过保留天数的）
@@ -2661,7 +6056,8 @@ function runStrategyTick(): void {
   const dnPct = snapshot?.dnPct ?? null;
   const diff = getStrategyDiff();
   const now = Date.now();
-  const rem = getStrategyRemainingSeconds(now);
+  const marketNow = getPolymarketNowMs();
+  const rem = getStrategyRemainingSeconds(marketNow);
   const currentPosition = getDirectionLocalSize(strategyRuntime.direction);
   const ctx = buildTickContext(rem, upPct, dnPct, diff, now);
   const finalize = () => {
@@ -2674,7 +6070,7 @@ function runStrategyTick(): void {
     }
   };
 
-  if (isOrderWindowStale(now)) {
+  if (isOrderWindowStale(marketNow)) {
     finalize();
     return;
   }
@@ -2692,6 +6088,9 @@ function runStrategyTick(): void {
       (s as any).computeFactors(ctx);
     }
   }
+
+  reconcilePaperMakerOrders(ctx);
+  publishS10LiveMakerStatus(ctx);
 
   if (strategyRuntime.cleanupAfterVerify && strategyRuntime.direction) {
     if (!isDirectionVerified(strategyRuntime.direction)) {
@@ -2733,6 +6132,20 @@ function runStrategyTick(): void {
       finalize();
       return;
     }
+    if (hasOpenPosition() && !strategyRuntime.activeStrategy && strategyConfig.enabled.s10) {
+      const resumeDirection = getSingleOpenPositionDirection();
+      if (resumeDirection) {
+        strategyRuntime.activeStrategy = 10;
+        strategyRuntime.direction = resumeDirection;
+        strategyRuntime.roundEntryCount = Math.max(strategyRuntime.roundEntryCount, 1);
+        strategyRuntime.buyAmount = 0;
+        strategyRuntime.state = "HOLDING";
+        console.log(`[Strategy10] 恢复当前窗口模拟持仓 ${resumeDirection} size=${getDirectionLocalSize(resumeDirection).toFixed(4)}`);
+        broadcastState();
+      }
+      finalize();
+      return;
+    }
     if (hasOpenPosition() || hasPendingStrategyBuyLock(now) || upPct == null || dnPct == null || diff == null) {
       finalize();
       return;
@@ -2746,7 +6159,10 @@ function runStrategyTick(): void {
       finalize();
       return;
     }
-    const buyAmount = strategyConfig.amount[strategyKeyOf(entry.strategy)];
+    const configuredAmount = strategyConfig.amount[strategyKeyOf(entry.strategy)];
+    const buyAmount = entry.amount != null && Number.isFinite(entry.amount) && entry.amount > 0
+      ? entry.amount
+      : configuredAmount;
     if (!hasEnoughUsdcForBuy(buyAmount)) {
       finalize();
       return;
@@ -2824,12 +6240,87 @@ function runStrategyTick(): void {
       finalize();
       return;
     }
-    const exit = checkExit(ctx);
+    if (
+      strategyRuntime.activeStrategy &&
+      strategyRuntime.direction &&
+      strategyRuntime.roundEntryCount < strategyConfig.maxRoundEntries &&
+      !hasPendingStrategyBuyLock(now) &&
+      !(strategyRuntime.activeStrategy === 10 && S10_MAKER_ENGINE_ENABLED && S10_MAKER_ONLY)
+    ) {
+      const activeStrat = getStrategy(strategyKeyOf(strategyRuntime.activeStrategy));
+      const scaleIn = activeStrat?.checkScaleIn?.(ctx, strategyRuntime.direction, currentPosition);
+      if (scaleIn && scaleIn.direction === strategyRuntime.direction) {
+        const configuredAmount = strategyConfig.amount[strategyKeyOf(strategyRuntime.activeStrategy)];
+        const buyAmount = scaleIn.amount != null && Number.isFinite(scaleIn.amount) && scaleIn.amount > 0
+          ? scaleIn.amount
+          : configuredAmount;
+        if (hasEnoughUsdcForBuy(buyAmount)) {
+          strategyRuntime.roundEntryCount++;
+          strategyRuntime.buyAmount = buyAmount;
+          strategyRuntime.state = "BUYING";
+          console.log(`[Strategy${strategyRuntime.activeStrategy}] 分批加仓(${strategyRuntime.roundEntryCount}/${strategyConfig.maxRoundEntries}) ${strategyRuntime.direction === "up" ? "买涨" : "买跌"} 金额:${buyAmount} ${scaleIn.reason || ""}`);
+          broadcastState();
+          void strategyBuy(strategyRuntime.direction, buyAmount);
+          finalize();
+          return;
+        }
+      }
+    }
+    const skipLegacyS10Exit =
+      strategyRuntime.activeStrategy === 10 &&
+      S10_MAKER_ENGINE_ENABLED &&
+      S10_MAKER_ONLY;
+    const exit = skipLegacyS10Exit ? null : checkExit(ctx);
     if (exit && strategyRuntime.direction) {
+      if (exit.signal === "lock") {
+        const lockDir = oppositeDirection(strategyRuntime.direction);
+        const targetShares = currentPosition;
+        console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] 锁仓触发: ${exit.reason} 反边:${lockDir} 数量:${targetShares.toFixed(2)}`);
+        strategyRuntime.state = "LOCKING";
+        broadcastState();
+        void strategyLockBuy(lockDir, targetShares, exit.reason);
+        finalize();
+        return;
+      }
       console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] ${exit.signal === "tp" ? "止盈" : "止损"}触发: ${exit.reason}`);
       strategyRuntime.state = "SELLING";
       broadcastState();
       void strategySell(strategyRuntime.direction, exit.reason);
+    }
+    finalize();
+    return;
+  }
+
+  if (strategyRuntime.state === "WAIT_LOCK_FILL") {
+    if (hasConfirmedLockPosition()) {
+      const lockedDirection = strategyRuntime.lockDirection;
+      strategyRuntime.buyLockUntil = 0;
+      strategyRuntime.locked = true;
+      strategyRuntime.state = "DONE";
+      console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] 锁仓确认，完整套已建立`);
+      if (strategyRuntime.activeStrategy && lockedDirection) {
+        const activeStrat = getStrategy(strategyKeyOf(strategyRuntime.activeStrategy));
+        if (activeStrat?.onLockFilled) activeStrat.onLockFilled(ctx, lockedDirection);
+      }
+      if (strategyRuntime.activeStrategy === 10 && strategyConfig.executionMode === "paper" && PAPER_PRE_SETTLEMENT_MERGE_ENABLED) {
+        const mergedShares = mergePaperFullSet(state.windowStart, "strategy10merge", strategyRuntime.lockReason || "full-set paper merge");
+        if (mergedShares > 0) console.log(`[Strategy10] 模拟 merge 完成 shares=${mergedShares.toFixed(4)}`);
+      }
+      broadcastState();
+      finalize();
+      return;
+    }
+    if (now - strategyRuntime.actionTs > WAIT_FILL_TIMEOUT_MS) {
+      console.log(`[Strategy${strategyRuntime.activeStrategy ?? ""}] 锁仓买入超时，恢复持仓管理`);
+      strategyRuntime.lockDirection = null;
+      strategyRuntime.lockPosBeforeBuy = 0;
+      strategyRuntime.lockTargetShares = 0;
+      strategyRuntime.lockReason = "";
+      strategyRuntime.buyLockUntil = 0;
+      strategyRuntime.state = "HOLDING";
+      broadcastState();
+      finalize();
+      return;
     }
     finalize();
     return;
@@ -2890,6 +6381,8 @@ function buildApiStatePayload(): Record<string, unknown> {
   return {
     ...buildStatePayload(true),
     tradeHistory,
+    paperTradeHistory,
+    executionEvents: executionEvents.slice(0, 500),
     wsStatus,
     claimable: {
       total: claimableTotal,
@@ -2908,6 +6401,27 @@ app.get("/api/state", (_req, res) => {
   res.json(buildApiStatePayload());
 });
 
+app.get("/api/execution-log", (req, res) => {
+  const mode = typeof req.query.mode === "string" ? req.query.mode : "";
+  const event = typeof req.query.event === "string" ? req.query.event : "";
+  const source = typeof req.query.source === "string" ? req.query.source : "";
+  const windowStart = typeof req.query.windowStart === "string" ? Number(req.query.windowStart) : NaN;
+  const strategy = typeof req.query.strategy === "string" ? Number(req.query.strategy) : NaN;
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : 500;
+  const limit = Math.round(clampNumber(Number.isFinite(limitRaw) ? limitRaw : 500, 1, 2000));
+  let rows = executionEvents;
+  if (mode === "paper" || mode === "live") rows = rows.filter((row) => row.executionMode === mode);
+  if (event) rows = rows.filter((row) => row.event === event);
+  if (source) rows = rows.filter((row) => row.source === source);
+  if (Number.isFinite(windowStart)) rows = rows.filter((row) => row.windowStart === windowStart);
+  if (Number.isFinite(strategy)) rows = rows.filter((row) => row.strategy === strategy);
+  res.json({ count: rows.length, events: rows.slice(0, limit), latest: executionEvents[0] ?? null });
+});
+
+app.get("/api/bonereaper", (_req, res) => {
+  res.json(getBonereaperMonitorPayload().bonereaperMonitor);
+});
+
 app.get("/api/strategy/descriptions", (_req, res) => {
   res.json(getAllDescriptions());
 });
@@ -2921,7 +6435,22 @@ app.post("/api/backtest/toggle", (_req, res) => {
   res.json({ collecting: backtestCollecting });
 });
 
+app.post("/api/paper/reset", (_req, res) => {
+  paperAccount = createPaperAccountState();
+  paperTradeHistory = [];
+  if (state.windowStart && state.upTokenId && state.downTokenId) {
+    rememberPaperWindow({ windowStart: state.windowStart, upTokenId: state.upTokenId, downTokenId: state.downTokenId });
+  }
+  persistPaperAccountState();
+  persistPaperTradeHistory();
+  resetStrategyRuntime("模拟盘重置");
+  broadcastState();
+  broadcastPaperTradeHistory();
+  res.json({ success: true, paper: getPaperSummary(), paperTradeHistory });
+});
+
 app.post("/api/strategy/config", (req, res) => {
+  const prevExecutionMode = strategyConfig.executionMode;
   const { config, error } = applyStrategyConfigUpdate(strategyConfig, req.body);
   if (!config) {
     res.status(400).json({ error: error || "配置错误" });
@@ -2929,9 +6458,14 @@ app.post("/api/strategy/config", (req, res) => {
   }
 
   strategyConfig = config;
+  setLiveRuntimeSwitches(config.executionMode === "live", `execution mode ${config.executionMode}`);
+  if (prevExecutionMode !== config.executionMode) {
+    strategyRuntime.positionsReady = config.executionMode === "paper" || !PROXY_ADDRESS;
+    resetStrategyRuntime(`执行模式切换为 ${config.executionMode}`);
+  }
   savePersistedStrategyConfig(config);
   const configSummary = ALL_STRATEGY_KEYS.map((k) => `${k}:${config.enabled[k] ? "on" : "off"}(${config.amount[k]})`).join(" ");
-  console.log(`[StrategyConfig] 已更新 ${configSummary} maxRound:${config.maxRoundEntries} 当前进程生效`);
+  console.log(`[StrategyConfig] 已更新 ${configSummary} mode:${config.executionMode} maxRound:${config.maxRoundEntries} 当前进程生效`);
   broadcastState();
   res.json({ success: true, strategyConfig });
 });
@@ -2953,7 +6487,7 @@ app.post("/api/order", async (req, res) => {
     amount: number;
     slippage?: number;
   };
-  const result = await placeOrder({ direction, side, amount, slippage, source: "manual" });
+  const result = await executeOrder({ direction, side, amount, slippage, source: "manual" });
   res.status(result.statusCode).json(result.body);
 });
 
@@ -2966,7 +6500,10 @@ if (wss) {
     send(ws, "clientConfig", { dataMode });
     sendStateToClient(ws, { includeHistory: true });
     sendTradeHistoryToClient(ws);
+    sendPaperTradeHistoryToClient(ws);
+    sendExecutionEventsToClient(ws);
     sendPmPnlToClient(ws);
+    sendBonereaperMonitorToClient(ws);
     send(ws, "wsStatus", wsStatus as unknown as Record<string, unknown>);
     send(ws, "claimable", { total: claimableTotal, positions: claimablePositions });
     send(ws, "claimCooldown", { running: claimCycleRunning || claimInProgress, nextCheckAt: claimNextCheckAt, cooldownUntil: claimCooldownUntil, reason: claimLastReason });
@@ -3007,9 +6544,19 @@ server.listen(PORT, async () => {
   await syncPositionsFromApi();
   await syncUsdcBalance();
 
+  if (BONEREAPER_MONITOR_ENABLED) {
+    bonereaperMonitor.start(() => broadcastBonereaperMonitor());
+    setInterval(() => {
+      const sample = buildBonereaperMarketSample();
+      if (sample) bonereaperMonitor.observeMarket(sample);
+    }, BONEREAPER_MARKET_SAMPLE_MS);
+    console.log(`[Bonereaper] monitor enabled address=${BONEREAPER_MONITOR_ADDRESS} poll=${BONEREAPER_MONITOR_POLL_MS}ms`);
+  }
+
   setInterval(async () => { await syncPositionsFromApi(); broadcastState(); }, 2000);
   setInterval(async () => { await syncUsdcBalance(); broadcastState(); }, 5000);
   setInterval(() => { refreshBinanceOffset("定时", { allowLatestFallback: false }); }, BINANCE_ALIGN_REFRESH_MS);
+  setInterval(() => { void refreshFullSetArbSnapshot(); }, S10_FULLSET_REFRESH_MS);
   setInterval(() => { runStrategyTick(); backtestTick(); }, STRATEGY_TICK_MS);
   // Claim 功能已移至 Polymarket 官网（Settings → Auto Redeem），本地不再自动执行
 
@@ -3033,7 +6580,8 @@ server.listen(PORT, async () => {
 
   const currentWindow = getCurrentWindowStart();
   fetchRecentResults(currentWindow, true);
-  await subscribeWindow(currentWindow);
+  await advanceToLiveWindow(currentWindow);
+  void refreshFullSetArbSnapshot();
 });
 
 process.on("SIGINT", () => {
