@@ -152,6 +152,7 @@ interface TradeHistoryItem {
 type ExecutionEventType =
   | "paper_order_filled"
   | "paper_order_rejected"
+  | "paper_maker_rejected"
   | "paper_settled"
   | "paper_merged"
   | "live_order_submitted"
@@ -216,6 +217,15 @@ interface BookSnapshot {
   latencyMs: number;
 }
 
+interface LiveMarketRules {
+  conditionId: string;
+  minimumOrderSize: number | null;
+  minimumTickSize: number | null;
+  fetchedAt: number;
+  source: "clob" | "fallback";
+  error?: string | null;
+}
+
 interface LatencyStats {
   count: number;
   last: number | null;
@@ -278,6 +288,12 @@ interface PendingTradeMeta {
   source: string;
   exitReason?: string;
   roundEntry?: string;
+}
+
+interface ConsumedPendingTradeMeta extends PendingTradeMeta {
+  fillSize?: number | null;
+  fillPrice?: number | null;
+  fillAssetId?: string | null;
 }
 
 interface PaperMakerOrder {
@@ -410,7 +426,8 @@ const STRATEGY_CONFIG_FILE = resolve(__dirname, ".strategy-config.json");
 const BACKTEST_DATA_DIR = resolve(__dirname, "backtest-data");
 const BONEREAPER_MONITOR_FILE = resolve(BACKTEST_DATA_DIR, "bonereaper-btc5m-monitor.json");
 const TRADE_HISTORY_MAX = 200;
-const PAPER_TRADE_HISTORY_MAX = 1000;
+const PAPER_TRADE_HISTORY_MAX = 5000;
+const PAPER_WINDOW_SUMMARY_MAX = 288;
 const EXECUTION_EVENTS_MAX = 5000;
 const PENDING_TRADE_META_MAX_AGE_MS = 15 * 60 * 1000;
 
@@ -453,6 +470,7 @@ const S10_MAKER_MIN_ACTIVE_MS = parseNumberEnv("S10_MAKER_MIN_ACTIVE_MS", 250, 0
 const S10_MAKER_MAX_BOOK_AGE_MS = parseNumberEnv("S10_MAKER_MAX_BOOK_AGE_MS", 1800, 100);
 const S10_MAKER_PARTIAL_MIN_SHARES = parseNumberEnv("S10_MAKER_PARTIAL_MIN_SHARES", 0.5, 0.01);
 const S10_MAKER_MAX_WINDOW_NOTIONAL = parseNumberEnv("S10_MAKER_MAX_WINDOW_NOTIONAL", 420, 1);
+const S10_LIVE_MAKER_MAX_WINDOW_BALANCE_RATIO = parseNumberEnv("S10_LIVE_MAKER_MAX_WINDOW_BALANCE_RATIO", 0.6, 0.05);
 const S10_MAKER_FILL_COOLDOWN_MS = parseNumberEnv("S10_MAKER_FILL_COOLDOWN_MS", 1500, 0);
 const S10_MAKER_SOFT_IMBALANCE_SHARES = parseNumberEnv("S10_MAKER_SOFT_IMBALANCE_SHARES", 60, 1);
 const S10_MAKER_MAX_TAIL_AFTER_FILL_SHARES = parseNumberEnv("S10_MAKER_MAX_TAIL_AFTER_FILL_SHARES", 45, 1);
@@ -462,6 +480,9 @@ const S10_MAKER_DUPLICATE_PRICE_EPS = parseNumberEnv("S10_MAKER_DUPLICATE_PRICE_
 const S10_MAKER_BOOK_TOUCH_MAX_RATIO = parseNumberEnv("S10_MAKER_BOOK_TOUCH_MAX_RATIO", 0.85, 0.01);
 const S10_MAKER_SMALL_TOUCH_NOTIONAL = parseNumberEnv("S10_MAKER_SMALL_TOUCH_NOTIONAL", 15, 1);
 const S10_MAKER_TOUCH_HOLD_FULL_MS = parseNumberEnv("S10_MAKER_TOUCH_HOLD_FULL_MS", 2200, 200);
+const PAPER_S10_LIVE_PARITY_ENABLED = parseBooleanEnv("PAPER_S10_LIVE_PARITY_ENABLED", true);
+const PAPER_S10_LIVE_PARITY_USE_LIVE_CAP = parseBooleanEnv("PAPER_S10_LIVE_PARITY_USE_LIVE_CAP", true);
+const PAPER_S10_LIVE_PARITY_TICK_SIZE = parseNumberEnv("PAPER_S10_LIVE_PARITY_TICK_SIZE", 0.01, 0.0001);
 let liveTradingEnabled = parseBooleanEnv("LIVE_TRADING_ENABLED", false);
 const LIVE_MAX_BOOK_STALE_MS = parseNumberEnv("LIVE_MAX_BOOK_STALE_MS", 900, 100);
 const LIVE_BOOK_WS_MAX_DIFF = parseNumberEnv("LIVE_BOOK_WS_MAX_DIFF", 0.025, 0);
@@ -469,6 +490,8 @@ const LIVE_BOOK_CONFIRM_DELAY_MS = parseNumberEnv("LIVE_BOOK_CONFIRM_DELAY_MS", 
 const LIVE_MIN_BUY_REMAINING_SEC = parseNumberEnv("LIVE_MIN_BUY_REMAINING_SEC", 12, 0);
 const LIVE_MAX_ORDER_USDC = parseNumberEnv("LIVE_MAX_ORDER_USDC", 25, 1);
 const LIVE_STRATEGY_MAX_ORDER_USDC = parseNumberEnv("LIVE_STRATEGY_MAX_ORDER_USDC", 12, 1);
+const LIVE_MIN_ORDER_SHARES_FALLBACK = parseNumberEnv("LIVE_MIN_ORDER_SHARES_FALLBACK", 5, 0);
+const LIVE_MARKET_RULES_CACHE_MS = parseNumberEnv("LIVE_MARKET_RULES_CACHE_MS", 60000, 5000);
 const LIVE_MAX_PRICE_IMPACT_PCT = parseNumberEnv("LIVE_MAX_PRICE_IMPACT_PCT", 0.35, 0);
 const LIVE_STRATEGY_ORDER_RETRIES = Math.max(0, Math.round(parseNumberEnv("LIVE_STRATEGY_ORDER_RETRIES", 1, 0)));
 const LIVE_STRATEGY_RETRY_DELAY_MS = parseNumberEnv("LIVE_STRATEGY_RETRY_DELAY_MS", 350, 0);
@@ -492,6 +515,7 @@ const wsUpdateIntervalSamples: number[] = [];
 let lastWsBookUpdateAt = 0;
 let fullSetArbSnapshot: FullSetArbSnapshot = createEmptyFullSetArbSnapshot("init");
 let fullSetRefreshRunning = false;
+let liveMarketRulesCache: LiveMarketRules | null = null;
 const bonereaperMonitor = new BonereaperMonitor({
   file: BONEREAPER_MONITOR_FILE,
   address: BONEREAPER_MONITOR_ADDRESS,
@@ -607,6 +631,23 @@ function loadPersistedStrategyConfig(config: StrategyConfig): void {
     if (typeof raw.autoClaimEnabled === "boolean") {
       config.autoClaimEnabled = raw.autoClaimEnabled;
     }
+    if (typeof raw.slippage === "number" && raw.slippage >= 0) {
+      config.slippage = raw.slippage;
+    }
+    if (isRecord(raw.enabled)) {
+      for (const key of ALL_STRATEGY_KEYS) {
+        if (!(key in raw.enabled)) continue;
+        const parsed = parseBooleanLike(raw.enabled[key]);
+        if (parsed != null) config.enabled[key] = parsed;
+      }
+    }
+    if (isRecord(raw.amount)) {
+      for (const key of ALL_STRATEGY_KEYS) {
+        if (!(key in raw.amount)) continue;
+        const parsed = parseNumberLike(raw.amount[key], 0.01);
+        if (parsed != null) config.amount[key] = parsed;
+      }
+    }
     if (raw.executionMode === "paper" || raw.executionMode === "live") {
       config.executionMode = raw.executionMode;
     }
@@ -621,6 +662,9 @@ function savePersistedStrategyConfig(config: StrategyConfig): void {
       maxRoundEntries: config.maxRoundEntries,
       marketHoursOnly: config.marketHoursOnly,
       autoClaimEnabled: config.autoClaimEnabled,
+      slippage: config.slippage,
+      enabled: config.enabled,
+      amount: config.amount,
       executionMode: config.executionMode,
     }, null, 2));
   } catch (err) {
@@ -698,7 +742,6 @@ let paperMakerMergedCount = 0;
 let paperMakerLastFill: MakerStatusSnapshot["lastFill"] = null;
 let paperMakerLastReason = "";
 let paperMakerLastFillAt: Record<StrategyDirection, number> = { up: 0, down: 0 };
-const paperMakerEpochTs = Date.now();
 let liveMakerOrders: LiveMakerOrder[] = [];
 let liveMakerFilledCount = 0;
 let liveMakerCanceledCount = 0;
@@ -707,7 +750,6 @@ let liveMakerLastReason = "";
 let liveMakerLastFillAt: Record<StrategyDirection, number> = { up: 0, down: 0 };
 let liveMakerLastSyncAt = 0;
 let liveMakerReconciling = false;
-const liveMakerEpochTs = Date.now();
 
 function loadTradeHistory(): TradeHistoryItem[] {
   if (!existsSync(TRADE_HISTORY_FILE)) return [];
@@ -1237,7 +1279,7 @@ function getPaperSummary(): Record<string, unknown> {
     }))
     .filter((item) => Number.isFinite(item.windowStart))
     .sort((a, b) => b.windowStart - a.windowStart)
-    .slice(0, 240);
+    .slice(0, PAPER_WINDOW_SUMMARY_MAX);
   const positionSummaries = openPositions.map((pos) => {
     const valuation = getPaperPositionValuation(pos, currentUpMark, currentDownMark, costs);
     const value = pos.size * valuation.equityPrice;
@@ -1454,23 +1496,47 @@ function parseTradeEventTimestamp(evt: Record<string, unknown>): number {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
-function consumePendingTradeMeta(evt: Record<string, unknown>): PendingTradeMeta | null {
+function readEventNumber(raw: unknown): number | null {
+  const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildConsumedMakerMeta(meta: PendingTradeMeta, makerOrder: Record<string, unknown>): ConsumedPendingTradeMeta {
+  const fillSize =
+    readEventNumber(makerOrder.matched_amount) ??
+    readEventNumber(makerOrder.matchedAmount) ??
+    readEventNumber(makerOrder.size_matched) ??
+    readEventNumber(makerOrder.matched_size) ??
+    null;
+  const fillPrice = readEventNumber(makerOrder.price);
+  const fillAssetId = typeof makerOrder.asset_id === "string" && makerOrder.asset_id
+    ? makerOrder.asset_id
+    : null;
+  return {
+    ...meta,
+    fillSize,
+    fillPrice,
+    fillAssetId,
+  };
+}
+
+function consumePendingTradeMeta(evt: Record<string, unknown>): ConsumedPendingTradeMeta | null {
   cleanupPendingTradeMeta();
-  const candidateIds: string[] = [];
   if (typeof evt.taker_order_id === "string" && evt.taker_order_id) {
-    candidateIds.push(evt.taker_order_id);
+    const meta = pendingTradeMeta.get(evt.taker_order_id);
+    if (meta) {
+      if (meta.source !== "strategy10maker") pendingTradeMeta.delete(evt.taker_order_id);
+      return meta;
+    }
   }
   if (Array.isArray(evt.maker_orders)) {
     for (const makerOrder of evt.maker_orders) {
       if (!isRecord(makerOrder) || typeof makerOrder.order_id !== "string" || !makerOrder.order_id) continue;
-      candidateIds.push(makerOrder.order_id);
+      const meta = pendingTradeMeta.get(makerOrder.order_id);
+      if (!meta) continue;
+      if (meta.source !== "strategy10maker") pendingTradeMeta.delete(makerOrder.order_id);
+      return buildConsumedMakerMeta(meta, makerOrder);
     }
-  }
-  for (const id of candidateIds) {
-    const meta = pendingTradeMeta.get(id);
-    if (!meta) continue;
-    if (meta.source !== "strategy10maker") pendingTradeMeta.delete(id);
-    return meta;
   }
 
   const side = normalizeTradeSide(evt.side);
@@ -1483,6 +1549,9 @@ function consumePendingTradeMeta(evt: Record<string, unknown>): PendingTradeMeta
   for (const [key, meta] of pendingTradeMeta) {
     const directionTokenId = meta.direction === "up" ? state.upTokenId : state.downTokenId;
     if (directionTokenId !== assetId || meta.side !== side) continue;
+    if (Date.now() - meta.ts > 60_000) continue;
+    const tolerance = Math.max(0.01, meta.amount * 0.05);
+    if (Math.abs(meta.amount - size) > tolerance) continue;
     const score = Math.abs(meta.amount - size) * 1000 + Math.abs(Date.now() - meta.ts) / 1000;
     if (score < bestScore) {
       bestScore = score;
@@ -2185,6 +2254,9 @@ function canReleaseUnconfirmedBuy(now = Date.now()): boolean {
 function buildLiveSafetyPayload(): Record<string, unknown> {
   const bookAgeMs = state.bookUpdatedAt > 0 ? Date.now() - state.bookUpdatedAt : null;
   const clockAgeMs = getPolymarketClockAgeMs();
+  const cachedRules = liveMarketRulesCache && liveMarketRulesCache.conditionId === state.conditionId
+    ? liveMarketRulesCache
+    : null;
   const s10MakerMode = S10_MAKER_ENGINE_ENABLED
     ? (s10LiveMakerEnabled ? "live-enabled" : "paper-only")
     : "disabled";
@@ -2211,6 +2283,20 @@ function buildLiveSafetyPayload(): Record<string, unknown> {
     bookWsMaxDiffPct: LIVE_BOOK_WS_MAX_DIFF * 100,
     maxOrderUsdc: LIVE_MAX_ORDER_USDC,
     strategyMaxOrderUsdc: LIVE_STRATEGY_MAX_ORDER_USDC,
+    s10MakerOrderCap: getS10ConfiguredOrderCap(),
+    s10MakerWindowCapConfigured: S10_MAKER_MAX_WINDOW_NOTIONAL,
+    s10LiveMakerWindowCap: getS10MakerWindowNotionalCap("live"),
+    s10PaperMakerLiveParityEnabled: PAPER_S10_LIVE_PARITY_ENABLED,
+    s10PaperMakerLiveParityUseLiveCap: PAPER_S10_LIVE_PARITY_USE_LIVE_CAP,
+    s10PaperMakerWindowCap: getS10MakerWindowNotionalCap("paper"),
+    s10PaperMakerTickSize: getCachedOrFallbackLiveTickSize(),
+    s10LiveMakerWindowBalanceRatio: S10_LIVE_MAKER_MAX_WINDOW_BALANCE_RATIO,
+    s10MakerMinOrderNotionalFloor: getS10MakerMinimumOrderNotionalFloor(),
+    minimumOrderSize: cachedRules?.minimumOrderSize ?? (LIVE_MIN_ORDER_SHARES_FALLBACK > 0 ? LIVE_MIN_ORDER_SHARES_FALLBACK : null),
+    minimumOrderSizeSource: cachedRules?.source ?? "fallback",
+    minimumTickSize: cachedRules?.minimumTickSize ?? null,
+    marketRulesAgeMs: cachedRules ? Date.now() - cachedRules.fetchedAt : null,
+    marketRulesError: cachedRules?.error ?? null,
     maxPriceImpactPct: LIVE_MAX_PRICE_IMPACT_PCT,
     minBuyRemainingSec: LIVE_MIN_BUY_REMAINING_SEC,
     s10MakerMinBuyRemainingSec: S10_LIVE_MAKER_MIN_REMAINING_SEC,
@@ -2482,6 +2568,95 @@ async function fetchBookSnapshot(tokenId: string): Promise<BookSnapshot> {
     fetchedAt: Date.now(),
     latencyMs: endedAt - startedAt,
   };
+}
+
+function readLiveMarketRuleNumber(raw: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = raw[key];
+    const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function buildFallbackLiveMarketRules(conditionId = state.conditionId, error?: string): LiveMarketRules {
+  return {
+    conditionId,
+    minimumOrderSize: LIVE_MIN_ORDER_SHARES_FALLBACK > 0 ? LIVE_MIN_ORDER_SHARES_FALLBACK : null,
+    minimumTickSize: null,
+    fetchedAt: Date.now(),
+    source: "fallback",
+    error: error || null,
+  };
+}
+
+async function fetchLiveMarketRules(): Promise<LiveMarketRules> {
+  const conditionId = state.conditionId || "";
+  const now = Date.now();
+  if (
+    liveMarketRulesCache &&
+    liveMarketRulesCache.conditionId === conditionId &&
+    now - liveMarketRulesCache.fetchedAt <= LIVE_MARKET_RULES_CACHE_MS
+  ) {
+    return liveMarketRulesCache;
+  }
+
+  if (!conditionId) {
+    liveMarketRulesCache = buildFallbackLiveMarketRules(conditionId, "missing_condition_id");
+    return liveMarketRulesCache;
+  }
+
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(`${CLOB_URL}/markets/${conditionId}`);
+    const endedAt = Date.now();
+    updatePolymarketClockFromHeaders(res.headers, startedAt, endedAt, "clob-market");
+    if (!res.ok) throw new Error(`market_rules_http_${res.status}`);
+    const raw = await res.json() as unknown;
+    if (!isRecord(raw)) throw new Error("market_rules_invalid_payload");
+    const minimumOrderSize = readLiveMarketRuleNumber(raw, ["minimum_order_size", "minimumOrderSize", "min_order_size"]);
+    const minimumTickSize = readLiveMarketRuleNumber(raw, ["minimum_tick_size", "minimumTickSize", "min_tick_size"]);
+    liveMarketRulesCache = {
+      conditionId,
+      minimumOrderSize: minimumOrderSize ?? (LIVE_MIN_ORDER_SHARES_FALLBACK > 0 ? LIVE_MIN_ORDER_SHARES_FALLBACK : null),
+      minimumTickSize,
+      fetchedAt: Date.now(),
+      source: "clob",
+      error: null,
+    };
+    return liveMarketRulesCache;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (liveMarketRulesCache && liveMarketRulesCache.conditionId === conditionId) {
+      liveMarketRulesCache = { ...liveMarketRulesCache, fetchedAt: Date.now(), error: message };
+      return liveMarketRulesCache;
+    }
+    liveMarketRulesCache = buildFallbackLiveMarketRules(conditionId, message);
+    return liveMarketRulesCache;
+  }
+}
+
+function getLiveMinOrderSizeReason(shares: number, rules: LiveMarketRules): string | null {
+  const minShares = rules.minimumOrderSize;
+  if (minShares != null && minShares > 0 && shares + 1e-9 < minShares) {
+    return `live_min_order_size:${shares.toFixed(2)}<${minShares.toFixed(2)}`;
+  }
+  return null;
+}
+
+function estimateLiveOrderSharesForMinSize(
+  side: "buy" | "sell",
+  amount: number,
+  worstPrice: number,
+  fillPreview?: { filledShares?: number; requestedShares?: number } | null,
+): number {
+  if (side === "sell") return amount;
+  const byLimitPrice = worstPrice > 0 ? amount / worstPrice : 0;
+  const byFill = Number(fillPreview?.filledShares);
+  if (Number.isFinite(byFill) && byFill > 0) return Math.min(byLimitPrice, byFill);
+  const requested = Number(fillPreview?.requestedShares);
+  if (Number.isFinite(requested) && requested > 0) return Math.min(byLimitPrice, requested);
+  return byLimitPrice;
 }
 
 function createEmptyFullSetArbSnapshot(reason: string): FullSetArbSnapshot {
@@ -2875,16 +3050,26 @@ function startUserWs(): void {
         if ((evt.type === "TRADE" || evt.event_type === "trade") && evt.status === "MINED") {
           const tradeId = evt.id as string;
           if (!rememberBounded(positions.confirmedIds, positions.confirmedIdOrder, tradeId, MAX_CONFIRMED_TRADE_IDS)) continue;
-          const assetId = typeof evt.asset_id === "string" ? evt.asset_id : "";
-          const size = typeof evt.size === "number" ? evt.size : parseFloat(String(evt.size ?? ""));
-          const side = normalizeTradeSide(evt.side);
-          const price = typeof evt.price === "number" ? evt.price : parseFloat(String(evt.price ?? ""));
-          if (!assetId || !side || !Number.isFinite(size) || size <= 0) continue;
+          const eventAssetId = typeof evt.asset_id === "string" ? evt.asset_id : "";
+          const eventSize = typeof evt.size === "number" ? evt.size : parseFloat(String(evt.size ?? ""));
+          const eventSide = normalizeTradeSide(evt.side);
+          const eventPrice = typeof evt.price === "number" ? evt.price : parseFloat(String(evt.price ?? ""));
+          if (!eventAssetId || !eventSide || !Number.isFinite(eventSize) || eventSize <= 0) continue;
           const pendingMeta = consumePendingTradeMeta(evt);
+          const assetId = pendingMeta?.fillAssetId || eventAssetId;
+          const size = pendingMeta?.fillSize != null && pendingMeta.fillSize > 0 ? pendingMeta.fillSize : eventSize;
+          const price = pendingMeta?.fillPrice != null && pendingMeta.fillPrice > 0 ? pendingMeta.fillPrice : eventPrice;
+          if (!assetId || !Number.isFinite(size) || size <= 0) continue;
+          const side = pendingMeta?.side ?? eventSide;
           const direction = pendingMeta?.direction ?? getDirectionByAssetId(assetId);
           const orderId = pendingMeta?.orderId ??
             (typeof evt.taker_order_id === "string" && evt.taker_order_id ? evt.taker_order_id : undefined);
           const liveMakerOrder = orderId ? liveMakerOrders.find((candidate) => candidate.orderId === orderId) : undefined;
+          const requestedShares = liveMakerOrder?.shares ?? pendingMeta?.amount ?? null;
+          const makerLimitPrice = liveMakerOrder?.price ?? pendingMeta?.worstPrice ?? null;
+          const requestedAmount = requestedShares != null && makerLimitPrice != null
+            ? requestedShares * makerLimitPrice
+            : null;
           const txHash = typeof evt.transaction_hash === "string" && evt.transaction_hash
             ? evt.transaction_hash
             : undefined;
@@ -2911,12 +3096,12 @@ function startUserWs(): void {
               exitReason: pendingMeta?.exitReason,
               roundEntry: pendingMeta?.roundEntry,
               executionMode: "live",
-              requestedAmount: liveMakerOrder ? liveMakerOrder.price * liveMakerOrder.shares : null,
-              requestedShares: liveMakerOrder?.shares ?? null,
+              requestedAmount,
+              requestedShares,
               filledShares: size,
               filledNotional: size * price,
               makerOrderId: liveMakerOrder?.id ?? null,
-              makerLimitPrice: liveMakerOrder?.price ?? null,
+              makerLimitPrice,
               makerTrigger: liveMakerOrder ? "user_ws_mined" : null,
               makerActiveMs: liveMakerOrder ? Date.now() - liveMakerOrder.postedAt : null,
               totalLatencyMs: liveMakerOrder ? Date.now() - liveMakerOrder.createdAt : null,
@@ -2926,6 +3111,7 @@ function startUserWs(): void {
           }
           if (orderId && direction) {
             noteLiveMakerFill(orderId, side, direction, size, Number.isFinite(price) ? price : 0, positions.lastTradeAt);
+            if (pendingMeta && size >= pendingMeta.amount - 0.01) forgetPendingTradeMeta(orderId);
           }
           console.log(
             `[UserWS] MINED ${side.toUpperCase()} ${size} @ ${Number.isFinite(price) ? price : "-"}`
@@ -4173,6 +4359,56 @@ function buildTickContext(rem: number, upPct: number | null, dnPct: number | nul
   };
 }
 
+function getS10MakerOwnedPosition(mode: ExecutionMode, windowStart: number): import("./strategies/types.js").StrategyTickContext["position"] {
+  const sourceHistory = mode === "paper" ? paperTradeHistory : tradeHistory;
+  const inventory: Record<StrategyDirection, { shares: number; cost: number }> = {
+    up: { shares: 0, cost: 0 },
+    down: { shares: 0, cost: 0 },
+  };
+
+  for (const trade of sourceHistory) {
+    if (trade.windowStart !== windowStart) continue;
+    if (!/^strategy10maker/.test(String(trade.source || ""))) continue;
+    const status = String(trade.status || "");
+    if (!status.includes("MINED") && !status.includes("FILLED")) continue;
+    const direction = trade.direction;
+    const side = trade.side;
+    const shares = Number(trade.filledShares ?? trade.amount);
+    const price = Number(trade.avgPrice ?? trade.price);
+    if ((direction !== "up" && direction !== "down") || (side !== "buy" && side !== "sell")) continue;
+    if (!Number.isFinite(shares) || shares <= 0 || !Number.isFinite(price) || price < 0) continue;
+
+    const bucket = inventory[direction];
+    if (side === "buy") {
+      bucket.shares += shares;
+      bucket.cost += shares * price;
+    } else {
+      const reduce = Math.min(bucket.shares, shares);
+      const avgCost = bucket.shares > 0 ? bucket.cost / bucket.shares : 0;
+      bucket.shares = Math.max(0, bucket.shares - reduce);
+      bucket.cost = Math.max(0, bucket.cost - reduce * avgCost);
+    }
+  }
+
+  const costPct = (item: { shares: number; cost: number }) =>
+    item.shares > 0 ? clampNumber((item.cost / item.shares) * 100, 0, 100) : null;
+  return {
+    upSize: Math.round(inventory.up.shares * 10000) / 10000,
+    downSize: Math.round(inventory.down.shares * 10000) / 10000,
+    upCostPct: costPct(inventory.up),
+    downCostPct: costPct(inventory.down),
+  };
+}
+
+function withS10MakerOwnedPosition(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+): import("./strategies/types.js").StrategyTickContext {
+  return {
+    ...ctx,
+    position: getS10MakerOwnedPosition(strategyConfig.executionMode, state.windowStart),
+  };
+}
+
 function getMacdEntryBlockReason(
   ctx: import("./strategies/types.js").StrategyTickContext,
   direction: StrategyDirection,
@@ -4591,7 +4827,6 @@ function getPaperMakerWindowNotional(windowStart: number): number {
   const filled = paperTradeHistory.reduce((sum, trade) => {
     if (
       trade.windowStart === windowStart &&
-      trade.ts >= paperMakerEpochTs &&
       trade.side === "buy" &&
       /^strategy10maker/.test(String(trade.source || "")) &&
       String(trade.status || "").includes("FILLED")
@@ -4754,8 +4989,9 @@ function makerOrderFillProbe(order: PaperMakerOrder, now: number): {
         touchMaxRatio,
       );
   const rawFillShares = Math.min(order.remainingShares, Math.max(S10_MAKER_PARTIAL_MIN_SHARES, order.remainingShares * ratio));
-  const ownSize = getDirectionLocalSize(order.direction);
-  const otherSize = getDirectionLocalSize(oppositeDirection(order.direction));
+  const ownedPosition = getS10MakerOwnedPosition("paper", order.windowStart);
+  const ownSize = order.direction === "up" ? ownedPosition.upSize : ownedPosition.downSize;
+  const otherSize = order.direction === "up" ? ownedPosition.downSize : ownedPosition.upSize;
   const tailRoom = Math.max(0, otherSize + S10_MAKER_MAX_TAIL_AFTER_FILL_SHARES - ownSize);
   const fillShares = Math.min(rawFillShares, tailRoom);
   if (fillShares < S10_MAKER_PARTIAL_MIN_SHARES) return null;
@@ -4810,44 +5046,57 @@ function reconcilePaperMakerOrders(ctx: import("./strategies/types.js").Strategy
     return;
   }
   const s10 = getStrategy("s10");
+  const makerCtx = withS10MakerOwnedPosition(ctx);
   const now = Date.now();
   paperMakerOrders = paperMakerOrders.filter((order) =>
     order.windowStart === state.windowStart &&
     order.remainingShares > 0.01 &&
     order.expiresAt > now
   );
-  cancelOverexposedPaperMakerOrders(ctx);
+  cancelOverexposedPaperMakerOrders(makerCtx);
 
-  const quotes = s10?.getMakerQuotes?.(ctx) ?? [];
-  cancelStalePaperMakerOrders(quotes);
+  const quotes = s10?.getMakerQuotes?.(makerCtx) ?? [];
+  const placeableQuotes: MakerQuoteSignal[] = [];
   for (const quote of quotes) {
+    const top = getStateTopBookForDirection(quote.direction);
+    if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS) {
+      if (PAPER_S10_LIVE_PARITY_ENABLED) recordPaperMakerParityReject(quote, "stale ws book", top);
+      continue;
+    }
+    const effectiveQuote = normalizePaperMakerQuoteForLiveParity(quote, top);
+    if (effectiveQuote) placeableQuotes.push(effectiveQuote);
+  }
+  cancelStalePaperMakerOrders(placeableQuotes);
+  for (const effectiveQuote of placeableQuotes) {
+    const top = getStateTopBookForDirection(effectiveQuote.direction);
+    if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS || effectiveQuote.price > top.bid + 0.0001) continue;
     const usedWindowNotional = getPaperMakerWindowNotional(state.windowStart);
-    const quoteNotional = quote.price * quote.shares;
-    if (usedWindowNotional + quoteNotional > S10_MAKER_MAX_WINDOW_NOTIONAL) {
-      paperMakerLastReason = `maker window cap ${usedWindowNotional.toFixed(1)}/${S10_MAKER_MAX_WINDOW_NOTIONAL}`;
+    const quoteNotional = effectiveQuote.price * effectiveQuote.shares;
+    const windowCap = getS10MakerWindowNotionalCap("paper");
+    if (usedWindowNotional + quoteNotional > windowCap) {
+      paperMakerLastReason = `maker window cap ${usedWindowNotional.toFixed(1)}/${windowCap.toFixed(1)}`;
       break;
     }
     const activeSameSide = paperMakerOrders
-      .filter((order) => order.windowStart === state.windowStart && order.direction === quote.direction)
+      .filter((order) => order.windowStart === state.windowStart && order.direction === effectiveQuote.direction)
       .sort((a, b) => b.createdAt - a.createdAt);
     if (activeSameSide.length >= S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE) continue;
-    const duplicate = activeSameSide.some((order) => Math.abs(order.price - quote.price) < S10_MAKER_DUPLICATE_PRICE_EPS);
+    const duplicate = activeSameSide.some((order) => Math.abs(order.price - effectiveQuote.price) < S10_MAKER_DUPLICATE_PRICE_EPS);
     if (duplicate) continue;
-    const top = getStateTopBookForDirection(quote.direction);
-    if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS || quote.price > top.bid + 0.0001) continue;
     const latency = samplePaperLatency();
+    const activeAt = now + latency.delayMs;
     paperMakerOrders.push({
-      id: `pmk-${state.windowStart}-${quote.direction}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: `pmk-${state.windowStart}-${effectiveQuote.direction}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       strategy: 10,
       windowStart: state.windowStart,
-      direction: quote.direction,
-      price: clampNumber(quote.price, 0.01, 0.99),
-      shares: quote.shares,
-      remainingShares: quote.shares,
+      direction: effectiveQuote.direction,
+      price: clampNumber(effectiveQuote.price, 0.01, 0.99),
+      shares: effectiveQuote.shares,
+      remainingShares: effectiveQuote.shares,
       createdAt: now,
-      activeAt: now + latency.delayMs,
-      expiresAt: now + Math.max(800, quote.ttlMs ?? 2500),
-      reason: quote.reason || "",
+      activeAt,
+      expiresAt: activeAt + Math.max(800, effectiveQuote.ttlMs ?? 2500),
+      reason: effectiveQuote.reason || "",
       lastSeenBid: top.bid,
       lastSeenAsk: top.ask,
       lastTouchAt: 0,
@@ -4879,7 +5128,7 @@ function reconcilePaperMakerOrders(ctx: import("./strategies/types.js").Strategy
     }
   }
 
-  s10?.onMakerStatus?.(ctx, buildMakerStatusSnapshot(ctx));
+  s10?.onMakerStatus?.(makerCtx, buildMakerStatusSnapshot(makerCtx));
 }
 
 function buildLiveMakerStatusSnapshot(lastReason = liveMakerLastReason): MakerStatusSnapshot {
@@ -4997,7 +5246,6 @@ function getLiveMakerWindowNotional(windowStart: number): number {
   const filled = tradeHistory.reduce((sum, trade) => {
     if (
       trade.windowStart === windowStart &&
-      trade.ts >= liveMakerEpochTs &&
       trade.side === "buy" &&
       /^strategy10maker/.test(String(trade.source || "")) &&
       String(trade.status || "").includes("MINED")
@@ -5012,6 +5260,145 @@ function getLiveMakerWindowNotional(windowStart: number): number {
       : sum
   ), 0);
   return filled + active;
+}
+
+function getS10ConfiguredOrderCap(): number {
+  const configuredCap = Math.min(
+    Number(strategyConfig.amount.s10) || LIVE_STRATEGY_MAX_ORDER_USDC,
+    LIVE_STRATEGY_MAX_ORDER_USDC,
+    LIVE_MAX_ORDER_USDC,
+  );
+  const minLiveOrderNotional = getS10MakerMinimumOrderNotionalFloor();
+  return Math.min(
+    Math.max(configuredCap, minLiveOrderNotional),
+    LIVE_STRATEGY_MAX_ORDER_USDC,
+    LIVE_MAX_ORDER_USDC,
+  );
+}
+
+function getS10MakerMinimumOrderNotionalFloor(): number {
+  const minShares = getCachedOrFallbackLiveMinimumOrderSize();
+  if (minShares == null || !(minShares > 0)) return 0;
+  return Math.ceil(minShares * 0.99 * 100) / 100;
+}
+
+function getS10MakerWindowNotionalCap(mode: ExecutionMode): number {
+  if (mode !== "live" && !(PAPER_S10_LIVE_PARITY_ENABLED && PAPER_S10_LIVE_PARITY_USE_LIVE_CAP)) {
+    return S10_MAKER_MAX_WINDOW_NOTIONAL;
+  }
+  const configuredOrderCap = getS10ConfiguredOrderCap();
+  const liveUsdc = positions.usdc != null && Number.isFinite(positions.usdc) && positions.usdc > 0
+    ? positions.usdc
+    : null;
+  const balance =
+    mode === "live"
+      ? liveUsdc
+      : (liveUsdc ?? (paperAccount.usdc > 0 ? paperAccount.usdc : null));
+  const fallbackCap = Math.max(configuredOrderCap, configuredOrderCap * S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE);
+  const balanceCap = balance != null
+    ? Math.max(configuredOrderCap, balance * S10_LIVE_MAKER_MAX_WINDOW_BALANCE_RATIO)
+    : fallbackCap;
+  return Math.max(configuredOrderCap, Math.min(S10_MAKER_MAX_WINDOW_NOTIONAL, balanceCap));
+}
+
+function getCachedOrFallbackLiveMinimumOrderSize(): number | null {
+  const cachedRules = liveMarketRulesCache && liveMarketRulesCache.conditionId === state.conditionId
+    ? liveMarketRulesCache
+    : null;
+  return cachedRules?.minimumOrderSize ?? (LIVE_MIN_ORDER_SHARES_FALLBACK > 0 ? LIVE_MIN_ORDER_SHARES_FALLBACK : null);
+}
+
+function getCachedOrFallbackLiveTickSize(): number {
+  const cachedRules = liveMarketRulesCache && liveMarketRulesCache.conditionId === state.conditionId
+    ? liveMarketRulesCache
+    : null;
+  const tick = cachedRules?.minimumTickSize ?? PAPER_S10_LIVE_PARITY_TICK_SIZE;
+  return Number.isFinite(tick) && tick > 0 ? tick : 0.01;
+}
+
+function recordPaperMakerParityReject(
+  quote: MakerQuoteSignal,
+  reason: string,
+  top?: { bid: number; ask: number; ageMs: number } | null,
+): void {
+  paperMakerLastReason = `paper parity skip ${quote.direction}: ${reason}`;
+  recordExecutionEvent({
+    ts: Date.now(),
+    executionMode: "paper",
+    event: "paper_maker_rejected",
+    windowStart: state.windowStart,
+    source: "strategy10maker",
+    strategy: 10,
+    side: "buy",
+    direction: quote.direction,
+    status: "PAPER_PARITY_REJECTED",
+    reason,
+    price: finiteOrNull(quote.price),
+    worstPrice: finiteOrNull(quote.price),
+    shares: finiteOrNull(quote.shares),
+    requestedShares: finiteOrNull(quote.shares),
+    notional: finiteOrNull(quote.price * quote.shares),
+    requestedNotional: finiteOrNull(quote.price * quote.shares),
+    topBid: finiteOrNull(top?.bid),
+    topAsk: finiteOrNull(top?.ask),
+    spread: finiteOrNull(top ? top.ask - top.bid : null),
+    bookAgeMs: finiteOrNull(top?.ageMs),
+    bookSource: "ws",
+    bookCheckStatus: "paper_live_parity",
+    bookCheckReason: reason,
+  });
+}
+
+function normalizePaperMakerQuoteForLiveParity(
+  quote: MakerQuoteSignal,
+  top: { bid: number; ask: number; ageMs: number },
+): MakerQuoteSignal | null {
+  if (!PAPER_S10_LIVE_PARITY_ENABLED) return quote;
+  if (quote.price > top.bid + 0.0001) {
+    recordPaperMakerParityReject(quote, "quote above ws bid", top);
+    return null;
+  }
+  if (top.ask > 0 && quote.price >= top.ask - 0.0001) {
+    recordPaperMakerParityReject(quote, "post-only would cross", top);
+    return null;
+  }
+
+  const priceDecimals = getDecimalPlaces(getCachedOrFallbackLiveTickSize());
+  const normalizedPrice = floorToDecimals(clampNumber(quote.price, 0.01, 0.99), priceDecimals);
+  if (normalizedPrice <= 0 || normalizedPrice >= 1) {
+    recordPaperMakerParityReject(quote, "normalized invalid", top);
+    return null;
+  }
+
+  const maxConfiguredNotional = getS10ConfiguredOrderCap();
+  const cappedShares = Math.min(
+    quote.shares,
+    Math.floor((maxConfiguredNotional / Math.max(normalizedPrice, 0.01)) * 100) / 100,
+  );
+  const normalizedShares = floorToDecimals(cappedShares, 2);
+  const minShares = getCachedOrFallbackLiveMinimumOrderSize();
+  if (minShares != null && normalizedShares + 1e-9 < minShares) {
+    recordPaperMakerParityReject(quote, `live_min_order_size:${normalizedShares.toFixed(2)}<${minShares.toFixed(2)}`, top);
+    return null;
+  }
+  if (normalizedPrice * normalizedShares > maxConfiguredNotional + 1e-6) {
+    recordPaperMakerParityReject(quote, `live_order_notional_cap:${(normalizedPrice * normalizedShares).toFixed(2)}>${maxConfiguredNotional.toFixed(2)}`, top);
+    return null;
+  }
+  if (normalizedShares <= 0.01) {
+    recordPaperMakerParityReject(quote, "live_order_notional_cap_too_small", top);
+    return null;
+  }
+
+  const reasonParts = [quote.reason || ""];
+  if (Math.abs(normalizedPrice - quote.price) > 1e-9) reasonParts.push(`paper_live_tick=${normalizedPrice.toFixed(priceDecimals)}`);
+  if (Math.abs(normalizedShares - quote.shares) > 1e-9) reasonParts.push(`paper_live_cap=$${maxConfiguredNotional.toFixed(2)}`);
+  return {
+    ...quote,
+    price: normalizedPrice,
+    shares: normalizedShares,
+    reason: reasonParts.filter(Boolean).join(" "),
+  };
 }
 
 function noteLiveMakerFill(
@@ -5052,7 +5439,6 @@ async function cancelLiveMakerOrder(order: LiveMakerOrder, reason: string): Prom
     liveMakerCanceledCount++;
     liveMakerLastReason = `live maker cancel ${order.direction} ${(order.price * 100).toFixed(1)}% ${reason}`;
     recordLiveMakerExecutionEvent("live_maker_canceled", { order, reason, status: "CANCELED" });
-    forgetPendingTradeMeta(order.orderId);
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -5061,7 +5447,6 @@ async function cancelLiveMakerOrder(order: LiveMakerOrder, reason: string): Prom
       order.status = "canceled";
       liveMakerLastReason = `live maker cancel assumed ${order.direction} ${reason}`;
       recordLiveMakerExecutionEvent("live_maker_canceled", { order, reason: `assumed:${reason}`, status: "CANCELED_ASSUMED" });
-      forgetPendingTradeMeta(order.orderId);
       return true;
     }
     order.status = "unknown";
@@ -5204,11 +5589,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
     return;
   }
 
-  const maxConfiguredNotional = Math.min(
-    Number(strategyConfig.amount.s10) || LIVE_STRATEGY_MAX_ORDER_USDC,
-    LIVE_STRATEGY_MAX_ORDER_USDC,
-    LIVE_MAX_ORDER_USDC,
-  );
+  const maxConfiguredNotional = getS10ConfiguredOrderCap();
   const cappedShares = Math.min(
     quote.shares,
     Math.floor((maxConfiguredNotional / Math.max(quote.price, 0.01)) * 10000) / 10000,
@@ -5245,6 +5626,12 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
     const normalizedShares = floorToDecimals(effectiveQuote.shares, 2);
     if (normalizedPrice <= 0 || normalizedShares <= 0 || normalizedPrice >= 1) {
       rejectLiveMakerQuote(effectiveQuote, "normalized invalid", { tokenId, top, checkedBook });
+      return;
+    }
+    const marketRules = await fetchLiveMarketRules();
+    const minSizeReason = getLiveMinOrderSizeReason(normalizedShares, marketRules);
+    if (minSizeReason) {
+      rejectLiveMakerQuote(effectiveQuote, minSizeReason, { tokenId, top, checkedBook });
       return;
     }
     if (normalizedPrice * normalizedShares > maxConfiguredNotional + 1e-6) {
@@ -5334,7 +5721,8 @@ async function reconcileLiveMakerOrders(ctx: import("./strategies/types.js").Str
   liveMakerReconciling = true;
   try {
     const s10 = getStrategy("s10");
-    const quotes = s10?.getMakerQuotes?.(ctx) ?? [];
+    const makerCtx = withS10MakerOwnedPosition(ctx);
+    const quotes = s10?.getMakerQuotes?.(makerCtx) ?? [];
     const quoteText = quotes.length
       ? quotes.map((quote) => `${quote.direction}@${(quote.price * 100).toFixed(1)}%/${quote.shares.toFixed(1)}`).join(",")
       : "none";
@@ -5347,14 +5735,15 @@ async function reconcileLiveMakerOrders(ctx: import("./strategies/types.js").Str
 
     await syncLiveMakerOrdersFromRest();
     await cancelLiveMakerOrders((order) => order.windowStart !== state.windowStart || order.expiresAt <= Date.now(), "expired/window");
-    await cancelOverexposedLiveMakerOrders(ctx);
+    await cancelOverexposedLiveMakerOrders(makerCtx);
     await cancelStaleLiveMakerOrders(quotes);
 
     for (const quote of quotes) {
       const usedWindowNotional = getLiveMakerWindowNotional(state.windowStart);
       const quoteNotional = quote.price * quote.shares;
-      if (usedWindowNotional + quoteNotional > S10_MAKER_MAX_WINDOW_NOTIONAL) {
-        liveMakerLastReason = `live maker window cap ${usedWindowNotional.toFixed(1)}/${S10_MAKER_MAX_WINDOW_NOTIONAL}`;
+      const windowCap = getS10MakerWindowNotionalCap("live");
+      if (usedWindowNotional + quoteNotional > windowCap) {
+        liveMakerLastReason = `live maker window cap ${usedWindowNotional.toFixed(1)}/${windowCap.toFixed(1)}`;
         break;
       }
       const activeSameSide = liveMakerOrders
@@ -5375,7 +5764,7 @@ async function reconcileLiveMakerOrders(ctx: import("./strategies/types.js").Str
       order.status !== "canceled" &&
       order.status !== "filled"
     );
-    publishLiveMakerStatus(ctx, liveMakerLastReason || `live maker decision=${quoteText}`);
+    publishLiveMakerStatus(makerCtx, liveMakerLastReason || `live maker decision=${quoteText}`);
   } finally {
     liveMakerReconciling = false;
   }
@@ -5386,7 +5775,8 @@ function publishS10LiveMakerStatus(ctx: import("./strategies/types.js").Strategy
     return;
   }
   const s10 = getStrategy("s10");
-  const quotes = s10?.getMakerQuotes?.(ctx) ?? [];
+  const makerCtx = withS10MakerOwnedPosition(ctx);
+  const quotes = s10?.getMakerQuotes?.(makerCtx) ?? [];
   const upBid = quotes
     .filter((quote) => quote.direction === "up")
     .reduce((max, quote) => Math.max(max, quote.price * 100), 0);
@@ -5399,7 +5789,7 @@ function publishS10LiveMakerStatus(ctx: import("./strategies/types.js").Strategy
   const reason = s10LiveMakerEnabled
     ? `live maker engine active; decision=${quoteText}`
     : `live maker disabled; decision=${quoteText}`;
-  s10?.onMakerStatus?.(ctx, {
+  s10?.onMakerStatus?.(makerCtx, {
     ...buildLiveMakerStatusSnapshot(reason),
     upBidPct: upBid > 0 ? upBid : null,
     downBidPct: downBid > 0 ? downBid : null,
@@ -5580,6 +5970,7 @@ function isRetryableOrderFailure(result: OrderExecutionResult): boolean {
     msg.includes("live_trading_disabled") ||
     msg.includes("s10_live_maker_disabled") ||
     msg.includes("live_order_notional_cap") ||
+    msg.includes("live_min_order_size") ||
     msg.includes("live_price_impact") ||
     msg.includes("live_too_late") ||
     msg.includes("余额不足") ||
@@ -5714,6 +6105,26 @@ async function placeOrder(input: PlaceOrderInput): Promise<OrderExecutionResult>
         bookCheckStatus: checkedBook.status,
       },
       errorMessage: depthCheck.rejectReason || "live_depth_rejected",
+    };
+  }
+  const marketRules = await fetchLiveMarketRules();
+  const estimatedSharesForMinSize = estimateLiveOrderSharesForMinSize(side, amount, worstPrice, depthCheck);
+  const minSizeReason = getLiveMinOrderSizeReason(estimatedSharesForMinSize, marketRules);
+  if (minSizeReason) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: {
+        error: minSizeReason,
+        bestBid,
+        bestAsk,
+        worstPrice,
+        requestedShares: estimatedSharesForMinSize,
+        minimumOrderSize: marketRules.minimumOrderSize,
+        marketRulesSource: marketRules.source,
+        fillPreview: depthCheck,
+      },
+      errorMessage: minSizeReason,
     };
   }
   if (depthCheck.priceImpactPct > LIVE_MAX_PRICE_IMPACT_PCT) {

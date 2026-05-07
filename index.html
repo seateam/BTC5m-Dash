@@ -2763,6 +2763,8 @@
     let paperTradeHistory = [];
     let executionEvents = [];
     let paperActiveTab = 'windows';
+    const PAPER_WINDOW_SUMMARY_LIMIT = 288;
+    const PAPER_TRADE_ROW_LIMIT = 500;
     let liveActiveTab = 'windows';
     let bonereaperMonitor = null;
     let brBodyLastKey = '';
@@ -3285,7 +3287,7 @@
 
     function renderPaperWindowSummary() {
       if (!$paperWindowSummaryList) return;
-      const rows = buildPaperWindowRows().slice(0, 80);
+      const rows = buildPaperWindowRows().slice(0, PAPER_WINDOW_SUMMARY_LIMIT);
       if (!rows.length) {
         $paperWindowSummaryList.innerHTML = '<div style="color:#444;font-size:12px">暂无盘口汇总</div>';
         return;
@@ -3359,7 +3361,7 @@
         $paperHistoryList.innerHTML = '<div style="color:#444;font-size:12px">暂无模拟记录</div>';
         return;
       }
-      $paperHistoryList.innerHTML = paperTradeHistory.slice(0, 120).map((r) => {
+      $paperHistoryList.innerHTML = paperTradeHistory.slice(0, PAPER_TRADE_ROW_LIMIT).map((r) => {
         const source = getTradeSourceLabel(r.source);
         const action = getTradeActionLabel(r);
         const sideText = action.text;

@@ -62,7 +62,7 @@ const MAKER_MAX_SHARES_PER_SIDE = 75;
 const MAKER_SOFT_IMBALANCE_SHARES = 45;
 const MAKER_HARD_IMBALANCE_SHARES = 110;
 const MAKER_REBALANCE_SIZE_MULT = 1.35;
-const MAKER_MIN_QUOTE_SHARES = 3;
+const MAKER_MIN_QUOTE_SHARES = 5;
 const MAKER_MIN_PROJECTED_INV_EV_ROI_PCT = 0.25;
 const MAKER_SOFT_PROJECTED_PAIR_LOSS_PCT = 4;
 const MAKER_MAX_PROJECTED_PAIR_LOSS_PCT = 10;
@@ -78,8 +78,18 @@ const MAKER_TERMINAL_PANIC_MAX_SHARES = 5;
 const MAKER_LOW_FAIR_TAIL_BLOCK_PCT = 35;
 const MAKER_MAX_LOW_FAIR_TAIL_SHARES = 8;
 const MAKER_MIN_INSURANCE_TAIL_SHARES = 6;
-const MAKER_MAX_INSURANCE_SHARES = 18;
+const MAKER_MAX_INSURANCE_SHARES = 28;
+const MAKER_WEAK_SIDE_BLOCK_REM_SEC = 180;
+const MAKER_WEAK_SIDE_BLOCK_GAP_PCT = 30;
+const MAKER_LATE_WEAK_SIDE_BLOCK_REM_SEC = 120;
+const MAKER_LATE_WEAK_SIDE_BLOCK_GAP_PCT = 12;
+const MAKER_CONVICTION_WEAK_SIDE_BLOCK_REM_SEC = 45;
+const MAKER_CONVICTION_WEAK_SIDE_BLOCK_GAP_PCT = 5;
+const MAKER_WEAK_SIDE_LOCK_MIN_PAIR_PROFIT_PCT = 1.0;
 const MAKER_MIN_HEDGE_PAIR_PROFIT_PCT = 0.35;
+const MAKER_MIN_BALANCED_REPAIR_PAIR_PROFIT_PCT = 0.05;
+const MAKER_BALANCED_REPAIR_MIN_TAIL_SHARES = 8;
+const MAKER_BALANCED_REPAIR_INV_ROI_FLOOR_PCT = -1.5;
 
 type S10Phase = "opening" | "inventory" | "conviction" | "terminal";
 type S10MakerModule = "idle" | "seed" | "balance" | "conviction" | "terminal";
@@ -495,6 +505,28 @@ function getMakerModule(rem: number): S10MakerModule {
   return "seed";
 }
 
+function getMakerWeakSideBlockReason(
+  ctx: StrategyTickContext,
+  direction: StrategyDirection,
+  fairPct: number,
+  module: S10MakerModule,
+): string | null {
+  if (module === "terminal") return null;
+  const weakGapPct = 50 - fairPct;
+  if (weakGapPct <= 0) return null;
+  const strictBlock =
+    ctx.rem <= MAKER_CONVICTION_WEAK_SIDE_BLOCK_REM_SEC &&
+    weakGapPct >= MAKER_CONVICTION_WEAK_SIDE_BLOCK_GAP_PCT;
+  const lateBlock =
+    ctx.rem <= MAKER_LATE_WEAK_SIDE_BLOCK_REM_SEC &&
+    weakGapPct >= MAKER_LATE_WEAK_SIDE_BLOCK_GAP_PCT;
+  const broadBlock =
+    ctx.rem <= MAKER_WEAK_SIDE_BLOCK_REM_SEC &&
+    weakGapPct >= MAKER_WEAK_SIDE_BLOCK_GAP_PCT;
+  if (!strictBlock && !lateBlock && !broadBlock) return null;
+  return `weak-side ${direction} fair ${fairPct.toFixed(1)}% rem ${ctx.rem.toFixed(0)}s`;
+}
+
 function makerModuleToPhase(module: S10MakerModule): S10Phase | "none" {
   if (module === "seed") return "opening";
   if (module === "balance") return "inventory";
@@ -562,10 +594,29 @@ function getTerminalMinDiff(rem: number): number {
 }
 
 function getMakerInsuranceEdgeFloorPct(module: S10MakerModule, pairProfitPct: number | null): number {
-  if (pairProfitPct != null && pairProfitPct >= MAKER_MIN_HEDGE_PAIR_PROFIT_PCT) return -2.5;
+  if (pairProfitPct != null && pairProfitPct >= MAKER_MIN_HEDGE_PAIR_PROFIT_PCT) {
+    if (module === "seed") return -0.75;
+    if (module === "balance") return -0.5;
+    if (module === "conviction") return -0.25;
+    return 0;
+  }
   if (module === "balance") return -0.8;
   if (module === "conviction") return -0.25;
   return -0.35;
+}
+
+function getMakerBalancedRepairPairFloorPct(module: S10MakerModule): number {
+  if (module === "seed" || module === "balance" || module === "conviction") {
+    return MAKER_MIN_BALANCED_REPAIR_PAIR_PROFIT_PCT;
+  }
+  return MAKER_MIN_HEDGE_PAIR_PROFIT_PCT;
+}
+
+function getMakerBalancedRepairEdgeFloorPct(module: S10MakerModule): number {
+  if (module === "seed") return -1.0;
+  if (module === "balance") return -0.75;
+  if (module === "conviction") return -0.25;
+  return 0;
 }
 
 function getCurrentTail(ctx: StrategyTickContext): { direction: StrategyDirection | null; shares: number } {
@@ -584,7 +635,9 @@ function getMakerTailRoom(ctx: StrategyTickContext, direction: StrategyDirection
 function getMakerInsuranceMaxShares(ctx: StrategyTickContext, direction: StrategyDirection, module: S10MakerModule): number {
   const tail = getCurrentTail(ctx);
   if (!tail.direction || tail.direction === direction || module === "terminal") return MAKER_MAX_SHARES_PER_SIDE;
-  const targetCoverRatio = module === "balance" ? 0.55 : module === "conviction" ? 0.45 : 0.35;
+  const baseRatio = module === "balance" ? 0.65 : module === "conviction" ? 0.55 : 0.5;
+  const tailBoost = tail.shares >= 20 ? 0.12 : tail.shares >= 12 ? 0.06 : 0;
+  const targetCoverRatio = clamp(baseRatio + tailBoost, 0.45, 0.78);
   return clamp(tail.shares * targetCoverRatio, MAKER_MIN_QUOTE_SHARES, MAKER_MAX_INSURANCE_SHARES);
 }
 
@@ -662,6 +715,48 @@ interface InventoryProjection {
   tailEvPct: number | null;
   inventoryEvUsd: number | null;
   inventoryEvRoiPct: number | null;
+}
+
+function isWeakSideLockException(
+  ctx: StrategyTickContext,
+  direction: StrategyDirection,
+  projection: InventoryProjection,
+): boolean {
+  const currentTail = getCurrentTail(ctx);
+  if (!currentTail.direction || currentTail.direction === direction) return false;
+  if (projection.tailDirection === direction) return false;
+  if (projection.tailShares >= currentTail.shares - 0.0001) return false;
+  return (
+    projection.pairedProfitPct != null &&
+    projection.pairedProfitPct >= MAKER_WEAK_SIDE_LOCK_MIN_PAIR_PROFIT_PCT
+  );
+}
+
+function isBalancedRepairQuote(
+  ctx: StrategyTickContext,
+  direction: StrategyDirection,
+  module: S10MakerModule,
+  projection: InventoryProjection,
+): boolean {
+  if (module === "terminal") return false;
+  const currentTail = getCurrentTail(ctx);
+  if (!currentTail.direction || currentTail.direction === direction) return false;
+  if (currentTail.shares < MAKER_BALANCED_REPAIR_MIN_TAIL_SHARES) return false;
+  if (projection.tailDirection === direction) return false;
+  if (projection.tailShares >= currentTail.shares - 0.0001) return false;
+  if (
+    projection.pairedProfitPct == null ||
+    projection.pairedProfitPct < getMakerBalancedRepairPairFloorPct(module)
+  ) {
+    return false;
+  }
+  if (
+    projection.inventoryEvRoiPct != null &&
+    projection.inventoryEvRoiPct < MAKER_BALANCED_REPAIR_INV_ROI_FLOOR_PCT
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function getMakerShares(
@@ -857,13 +952,20 @@ function getMakerProjectionBlock(
   const pairSafeForHedge =
     projection.pairedProfitPct == null ||
     projection.pairedProfitPct >= MAKER_MIN_HEDGE_PAIR_PROFIT_PCT;
+  const balancedRepair = isBalancedRepairQuote(ctx, direction, module, projection);
   const riskReducing =
     (reducesTail &&
       (improvesInventoryRoi || improvesPair) &&
       pairSafeForHedge) ||
-    insuranceReducing;
+    insuranceReducing ||
+    balancedRepair;
   const maxTailShares = getMakerMaxTailShares(module) || MAKER_MAX_PROJECTED_TAIL_SHARES;
   const maxPairLossPct = getMakerMaxPairLossPct(module);
+  const pairFloorPct = balancedRepair
+    ? getMakerBalancedRepairPairFloorPct(module)
+    : module === "terminal"
+      ? -maxPairLossPct
+      : 0;
   const softPairLossPct = getMakerSoftPairLossPct(module);
   const minTailEvForPairLossPct = getMakerTailEvForPairLossPct(module);
   const terminalChase =
@@ -872,7 +974,7 @@ function getMakerProjectionBlock(
     directionFairPct >= getTerminalMinConfidencePct(ctx.rem, pricePct) &&
     projection.tailEvPct != null &&
     projection.tailEvPct >= MAKER_MIN_TERMINAL_TAIL_EV_PCT;
-  const summary = `${module} ${formatProjection(projection)}${terminalChase ? " terminal_chase" : insuranceReducing ? " insurance" : riskReducing ? " repair" : ""}`;
+  const summary = `${module} ${formatProjection(projection)}${terminalChase ? " terminal_chase" : insuranceReducing ? " insurance" : balancedRepair ? " balanced_repair" : riskReducing ? " repair" : ""}`;
 
   if (
     quoteAddsTail &&
@@ -893,6 +995,7 @@ function getMakerProjectionBlock(
 
   if (
     !terminalChase &&
+    !balancedRepair &&
     reducesTail &&
     projection.pairedProfitPct != null &&
     projection.pairedProfitPct < MAKER_MIN_HEDGE_PAIR_PROFIT_PCT
@@ -903,7 +1006,7 @@ function getMakerProjectionBlock(
   if (
     !terminalChase &&
     projection.pairedProfitPct != null &&
-    projection.pairedProfitPct < -maxPairLossPct
+    projection.pairedProfitPct < pairFloorPct
   ) {
     return { block: `pair floor ${projection.pairedProfitPct.toFixed(1)}%`, projection, summary };
   }
@@ -1307,14 +1410,25 @@ export class S10FullSetArb implements IStrategy {
         return;
       }
       const insuranceQuote = isMakerInsuranceQuote(ctx, direction, module, guard.projection);
-      const edgeFloorPct = insuranceQuote
-        ? getMakerInsuranceEdgeFloorPct(module, guard.projection.pairedProfitPct)
-        : requiredEdgePct;
-      if (edgePct < edgeFloorPct) {
-        blockedReasons.push(`${direction}:edge ${edgePct.toFixed(1)}%${insuranceQuote ? " insurance" : ""}`);
+      const balancedRepair = isBalancedRepairQuote(ctx, direction, module, guard.projection);
+      const weakSideBlock = getMakerWeakSideBlockReason(ctx, direction, fairPct, module);
+      const weakSideLock = weakSideBlock ? isWeakSideLockException(ctx, direction, guard.projection) : false;
+      if (weakSideBlock && !weakSideLock && !balancedRepair) {
+        blockedReasons.push(`${direction}:${weakSideBlock}`);
         return;
       }
-      if (module !== "terminal" && !insuranceQuote && edgePct < 0.4 && totalBidCostPct > maxSetCostPct) {
+      const edgeFloorPct = insuranceQuote
+        ? getMakerInsuranceEdgeFloorPct(module, guard.projection.pairedProfitPct)
+        : balancedRepair
+          ? getMakerBalancedRepairEdgeFloorPct(module)
+        : weakSideLock
+          ? getMakerInsuranceEdgeFloorPct(module, guard.projection.pairedProfitPct)
+        : requiredEdgePct;
+      if (edgePct < edgeFloorPct) {
+        blockedReasons.push(`${direction}:edge ${edgePct.toFixed(1)}%${insuranceQuote ? " insurance" : balancedRepair ? " balanced" : weakSideLock ? " lock" : ""}`);
+        return;
+      }
+      if (module !== "terminal" && !insuranceQuote && !balancedRepair && edgePct < 0.4 && totalBidCostPct > maxSetCostPct) {
         blockedReasons.push(`${direction}:set thin`);
         return;
       }
@@ -1324,7 +1438,7 @@ export class S10FullSetArb implements IStrategy {
         price,
         shares,
         ttlMs: getMakerQuoteTtlMs(module),
-        reason: `maker-${module}-${direction} bid=${bidPct.toFixed(2)} fair=${fairPct.toFixed(1)} set=${totalBidCostPct.toFixed(1)} edge=${edgeFloorPct.toFixed(1)} inv=${insuranceQuote ? "insurance" : inventory.tag}${options.reasonTag ? ` ${options.reasonTag}` : ""} ${guard.summary}`,
+        reason: `maker-${module}-${direction} bid=${bidPct.toFixed(2)} fair=${fairPct.toFixed(1)} set=${totalBidCostPct.toFixed(1)} edge=${edgeFloorPct.toFixed(1)} inv=${insuranceQuote ? "insurance" : balancedRepair ? "balanced_repair" : weakSideLock ? "lock_hedge" : inventory.tag}${options.reasonTag ? ` ${options.reasonTag}` : ""} ${guard.summary}`,
       });
     };
 
@@ -1348,6 +1462,16 @@ export class S10FullSetArb implements IStrategy {
       addQuote("up", upBidPct, fairUp, upQuote.sellValuePct);
       addQuote("down", downBidPct, fairDown, downQuote.sellValuePct);
     }
+
+    const currentTail = getCurrentTail(ctx);
+    quotes.sort((a, b) => {
+      const priority = (quote: MakerQuoteSignal) => {
+        if (currentTail.direction && quote.direction === opposite(currentTail.direction)) return 0;
+        if (currentTail.direction && quote.direction === currentTail.direction) return 2;
+        return 1;
+      };
+      return priority(a) - priority(b);
+    });
 
     this.s.makerMode = quotes.length >= 2 ? "dual_quote" : quotes.length === 1 ? "single_quote" : "watch";
     const imbalance = ctx.position.upSize - ctx.position.downSize;
