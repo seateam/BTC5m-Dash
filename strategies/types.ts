@@ -72,6 +72,24 @@ export interface FullSetArbSnapshot {
   bookLatencyMs: number | null;
 }
 
+export interface StrategyBookLevel {
+  price: number;
+  size: number;
+}
+
+export interface StrategyDiffSample {
+  t: number;
+  rem: number;
+  diff: number;
+}
+
+export interface S10TailMultipliers {
+  earlyProbe: number;
+  probe: number;
+  robust: number;
+  certainty: number;
+}
+
 export interface StrategyTickContext {
   rem: number;
   upPct: number | null;
@@ -87,6 +105,21 @@ export interface StrategyTickContext {
   macdFast1m: MacdSnapshot;
   fullSetArb: FullSetArbSnapshot;
   marketHoursOnly: boolean;
+  configuredAmount?: number;
+  s10TailMultipliers?: Partial<S10TailMultipliers>;
+  bookAgeMs?: number | null;
+  bookSource?: string | null;
+  diffHistory?: readonly StrategyDiffSample[];
+  book?: {
+    up: {
+      bids: readonly StrategyBookLevel[];
+      asks: readonly StrategyBookLevel[];
+    };
+    down: {
+      bids: readonly StrategyBookLevel[];
+      asks: readonly StrategyBookLevel[];
+    };
+  };
   position: {
     upSize: number;
     downSize: number;
@@ -99,6 +132,8 @@ export interface EntrySignal {
   direction: StrategyDirection;
   amount?: number;
   reason?: string;
+  source?: string;
+  maxPrice?: number;
 }
 
 export interface MakerQuoteSignal {
@@ -113,6 +148,12 @@ export interface MakerStatusSnapshot {
   activeOrders: number;
   upOrders: number;
   downOrders: number;
+  activeShares?: number;
+  activeNotional?: number;
+  upActiveShares?: number;
+  downActiveShares?: number;
+  upActiveNotional?: number;
+  downActiveNotional?: number;
   upBidPct: number | null;
   downBidPct: number | null;
   totalBidCostPct: number | null;
@@ -160,6 +201,8 @@ export interface IStrategy {
   updateGuards(ctx: StrategyTickContext): void;
 
   checkEntry(ctx: StrategyTickContext): EntrySignal | null;
+
+  checkOverlayEntry?(ctx: StrategyTickContext): EntrySignal | null;
 
   checkExit(ctx: StrategyTickContext, direction: StrategyDirection): ExitSignal;
 

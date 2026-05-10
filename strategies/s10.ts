@@ -21,6 +21,7 @@ import type {
   StrategyKey,
   StrategyNumber,
   StrategyTickContext,
+  S10TailMultipliers,
 } from "./types.js";
 import { getFairProb } from "./fair-prob.js";
 
@@ -72,13 +73,30 @@ const MAKER_MAX_PROJECTED_TAIL_SHARES = 42;
 const MAKER_MAX_TERMINAL_TAIL_SHARES = 45;
 const MAKER_MAX_SEED_TAIL_SHARES = 16;
 const MAKER_MAX_BALANCE_TAIL_SHARES = 34;
-const MAKER_TERMINAL_START_REM = 13;
+const MAKER_TERMINAL_START_REM = 60;
+const MAKER_TERMINAL_FULL_START_REM = 30;
+const MAKER_TERMINAL_FOK_START_REM = 15;
 const MAKER_TERMINAL_CHASE_MIN_BID_PCT = 82;
 const MAKER_TERMINAL_PANIC_MAX_SHARES = 5;
+const MAKER_TERMINAL_EARLY_PROBE_MAX_SHARES = 18;
+const MAKER_TERMINAL_EARLY_PROBE_MAX_NOTIONAL = 18;
+const MAKER_TERMINAL_ROBUST_MAX_SHARES = 45;
+const MAKER_TERMINAL_ROBUST_MAX_NOTIONAL = 60;
+const MAKER_TERMINAL_PROBE_MIN_CONSISTENCY = 0.72;
+const MAKER_TERMINAL_PROBE_MIN_CONFIDENCE_PCT = 94.0;
+const MAKER_TERMINAL_ROBUST_FALLBACK_MIN_CONFIDENCE_PCT = 96.8;
+const MAKER_TERMINAL_FINAL_FALLBACK_MIN_CONFIDENCE_PCT = 97.4;
 const MAKER_LOW_FAIR_TAIL_BLOCK_PCT = 35;
 const MAKER_MAX_LOW_FAIR_TAIL_SHARES = 8;
 const MAKER_MIN_INSURANCE_TAIL_SHARES = 6;
 const MAKER_MAX_INSURANCE_SHARES = 28;
+const MAKER_POSITIVE_REPAIR_MIN_PAIR_PROFIT_PCT = 0.05;
+const MAKER_FULL_PAIR_PROFIT_PCT = 2.0;
+const MAKER_POSITIVE_REPAIR_TARGET_NOTIONAL = 12;
+const MAKER_POSITIVE_REPAIR_MAX_SHARES = 75;
+const MAKER_SINGLE_SIDE_FREEZE_SEED_SHARES = 10;
+const MAKER_SINGLE_SIDE_FREEZE_BALANCE_SHARES = 8;
+const MAKER_SINGLE_SIDE_FREEZE_CONVICTION_SHARES = 8;
 const MAKER_WEAK_SIDE_BLOCK_REM_SEC = 180;
 const MAKER_WEAK_SIDE_BLOCK_GAP_PCT = 30;
 const MAKER_LATE_WEAK_SIDE_BLOCK_REM_SEC = 120;
@@ -88,11 +106,64 @@ const MAKER_CONVICTION_WEAK_SIDE_BLOCK_GAP_PCT = 5;
 const MAKER_WEAK_SIDE_LOCK_MIN_PAIR_PROFIT_PCT = 1.0;
 const MAKER_MIN_HEDGE_PAIR_PROFIT_PCT = 0.35;
 const MAKER_MIN_BALANCED_REPAIR_PAIR_PROFIT_PCT = 0.05;
-const MAKER_BALANCED_REPAIR_MIN_TAIL_SHARES = 8;
+const MAKER_BALANCED_REPAIR_MIN_TAIL_SHARES = MAKER_MIN_INSURANCE_TAIL_SHARES;
 const MAKER_BALANCED_REPAIR_INV_ROI_FLOOR_PCT = -1.5;
+const TAIL_MODEL_MARKET_WEIGHT = 0.32;
+const TAIL_MODEL_TECH_WEIGHT = 0.10;
+const TAIL_MODEL_BASE_UNCERTAINTY_PCT = 1.2;
+const TAIL_MODEL_MAX_UNCERTAINTY_PCT = 5.5;
+const TERMINAL_SWEEP_ENABLED = true;
+const TERMINAL_SWEEP_START_REM = 60;
+const TERMINAL_SWEEP_FULL_START_REM = 30;
+const TERMINAL_SWEEP_MIN_REMAINING = 4;
+const TERMINAL_SWEEP_MAX_PRICE_PCT = 99;
+const TERMINAL_SWEEP_PROBE_MAX_PRICE_PCT = 96;
+const TERMINAL_SWEEP_ROBUST_MAX_PRICE_PCT = 98;
+const TERMINAL_SWEEP_HIGH_PRICE_BOOK_MAX_AGE_MS = 350;
+const TERMINAL_SWEEP_BOOK_MAX_AGE_MS = 550;
+const TERMINAL_SWEEP_MIN_EDGE_PCT = 0.18;
+const TERMINAL_SWEEP_BUFFER_PCT = 0.35;
+const TERMINAL_SWEEP_MIN_NOTIONAL = 5;
+const TERMINAL_SWEEP_DEFAULT_BASE_NOTIONAL = 12;
+const TERMINAL_SWEEP_ABSOLUTE_MAX_NOTIONAL = 150;
+const TERMINAL_SWEEP_EARLY_PROBE_MULT = 1.0;
+const TERMINAL_SWEEP_PROBE_MULT = 2.0;
+const TERMINAL_SWEEP_ROBUST_MULT = 6.0;
+const TERMINAL_SWEEP_CERTAINTY_MULT = 10.0;
+const TERMINAL_SWEEP_MIN_LIQUIDITY_NOTIONAL = 5;
+const TERMINAL_SWEEP_HIGH_PRICE_MIN_CONSISTENCY = 0.86;
+const TERMINAL_SWEEP_MIN_CONSISTENCY = 0.72;
+const TERMINAL_SWEEP_VOL_SHOCK_RATIO = 1.8;
+const TERMINAL_SWEEP_ADVERSE_5S_BLOCK = 15;
+const TERMINAL_SWEEP_ADVERSE_15S_BLOCK = 28;
+const TERMINAL_SWEEP_SPIKE_3S = 18;
+const TERMINAL_SWEEP_SPIKE_5S = 28;
+const TERMINAL_SWEEP_SIGNAL_SOURCE = "strategy10sweep";
+const TERMINAL_SWEEP_FOK_MAX_REMAINING = 15;
+const TERMINAL_SWEEP_FOK_BOOK_MAX_AGE_MS = 300;
+const TERMINAL_SWEEP_FOK_HIGH_PRICE_BOOK_MAX_AGE_MS = 250;
+const TERMINAL_SWEEP_FOK_MIN_CONSISTENCY = 0.88;
+const TERMINAL_SWEEP_FOK_HIGH_PRICE_MIN_CONSISTENCY = 0.92;
+const TERMINAL_SWEEP_FOK_MIN_EDGE_PCT = 0.35;
+const TERMINAL_SWEEP_FOK_MIN_LIQUIDITY_MULT = 1.25;
+const TERMINAL_SWEEP_FOK_MAX_DRAWDOWN_5S = 5;
+const TERMINAL_SWEEP_FOK_MAX_DRAWDOWN_15S = 10;
+const TERMINAL_SWEEP_FOK_MIN_MOVE_5S = -3;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_REMAINING = 35;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_REMAINING = 8;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_DISCOUNT_PCT = 0.45;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_ASK_PCT = 98.0;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_Q99_MULT = 0.7;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_CONSISTENCY = 0.82;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_EDGE_PCT = 0.25;
+const TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_AMOUNT_MULT = 1.5;
+const TERMINAL_SWEEP_MULT_MIN = 0.05;
+const TERMINAL_SWEEP_MULT_MAX = 30;
 
 type S10Phase = "opening" | "inventory" | "conviction" | "terminal";
 type S10MakerModule = "idle" | "seed" | "balance" | "conviction" | "terminal";
+type TerminalSweepTier = "probe" | "robust" | "certainty";
+type TerminalSweepFokMode = "final" | "discount_take";
 
 type S10Decision = "idle" | "scan" | "enter" | "hold" | "lockProfit" | "lockDefensive" | "locked";
 
@@ -147,6 +218,34 @@ interface PhaseProfile {
   baseAmount: number;
 }
 
+interface TerminalSweepSignal {
+  direction: StrategyDirection;
+  tier: TerminalSweepTier;
+  fokEligible: boolean;
+  fokMode: TerminalSweepFokMode | null;
+  fokBlockReason: string | null;
+  amount: number;
+  maxAmount: number;
+  maxPricePct: number;
+  topAskPct: number;
+  vwapPct: number;
+  shares: number;
+  levelsUsed: number;
+  availableNotional: number;
+  winPct: number;
+  edgePct: number;
+  requiredDiff: number;
+  q95: number;
+  q99: number;
+  effectiveVol: number;
+  consistency: number;
+  signedMove3s: number;
+  signedMove5s: number;
+  signedDrawdown5s: number;
+  signedDrawdown15s: number;
+  reason: string;
+}
+
 interface S10State {
   decision: S10Decision;
   ready: boolean;
@@ -194,6 +293,12 @@ interface S10State {
   makerActiveOrders: number;
   makerUpOrders: number;
   makerDownOrders: number;
+  makerActiveShares: number;
+  makerActiveNotional: number;
+  makerUpActiveShares: number;
+  makerDownActiveShares: number;
+  makerUpActiveNotional: number;
+  makerDownActiveNotional: number;
   makerUpBidPct: number | null;
   makerDownBidPct: number | null;
   makerTotalBidCostPct: number | null;
@@ -213,6 +318,8 @@ interface S10State {
   makerProjectedPairPct: number | null;
   makerProjectedTailEvPct: number | null;
   makerProjectedTailShares: number;
+  makerPairBand: string;
+  makerRepairTargetTailShares: number | null;
   inventoryUpSize: number;
   inventoryDownSize: number;
   inventoryImbalance: number;
@@ -224,6 +331,30 @@ interface S10State {
   tailAvgCostPct: number | null;
   tailFairPct: number | null;
   tailEvPct: number | null;
+  tailModelUpPct: number | null;
+  tailModelDownPct: number | null;
+  tailModelReliabilityPct: number | null;
+  tailModelUncertaintyPct: number | null;
+  tailModelBiasPct: number | null;
+  terminalSweepEnabled: boolean;
+  terminalSweepDirection: StrategyDirection | null;
+  terminalSweepTier: TerminalSweepTier | "none";
+  terminalSweepReason: string;
+  terminalSweepWinPct: number | null;
+  terminalSweepEdgePct: number | null;
+  terminalSweepVwapPct: number | null;
+  terminalSweepTopAskPct: number | null;
+  terminalSweepMaxPricePct: number | null;
+  terminalSweepAmount: number | null;
+  terminalSweepMaxAmount: number | null;
+  terminalSweepRequiredDiff: number | null;
+  terminalSweepQ95: number | null;
+  terminalSweepQ99: number | null;
+  terminalSweepEffectiveVol: number | null;
+  terminalSweepConsistencyPct: number | null;
+  terminalSweepBookAgeMs: number | null;
+  terminalSweepAvailableNotional: number | null;
+  terminalSweepLevelsUsed: number | null;
   inventoryEvUsd: number | null;
   inventoryEvRoiPct: number | null;
   scaleInCount: number;
@@ -293,6 +424,12 @@ function createState(): S10State {
     makerActiveOrders: 0,
     makerUpOrders: 0,
     makerDownOrders: 0,
+    makerActiveShares: 0,
+    makerActiveNotional: 0,
+    makerUpActiveShares: 0,
+    makerDownActiveShares: 0,
+    makerUpActiveNotional: 0,
+    makerDownActiveNotional: 0,
     makerUpBidPct: null,
     makerDownBidPct: null,
     makerTotalBidCostPct: null,
@@ -312,6 +449,8 @@ function createState(): S10State {
     makerProjectedPairPct: null,
     makerProjectedTailEvPct: null,
     makerProjectedTailShares: 0,
+    makerPairBand: "none",
+    makerRepairTargetTailShares: null,
     inventoryUpSize: 0,
     inventoryDownSize: 0,
     inventoryImbalance: 0,
@@ -323,6 +462,30 @@ function createState(): S10State {
     tailAvgCostPct: null,
     tailFairPct: null,
     tailEvPct: null,
+    tailModelUpPct: null,
+    tailModelDownPct: null,
+    tailModelReliabilityPct: null,
+    tailModelUncertaintyPct: null,
+    tailModelBiasPct: null,
+    terminalSweepEnabled: TERMINAL_SWEEP_ENABLED,
+    terminalSweepDirection: null,
+    terminalSweepTier: "none",
+    terminalSweepReason: "",
+    terminalSweepWinPct: null,
+    terminalSweepEdgePct: null,
+    terminalSweepVwapPct: null,
+    terminalSweepTopAskPct: null,
+    terminalSweepMaxPricePct: null,
+    terminalSweepAmount: null,
+    terminalSweepMaxAmount: null,
+    terminalSweepRequiredDiff: null,
+    terminalSweepQ95: null,
+    terminalSweepQ99: null,
+    terminalSweepEffectiveVol: null,
+    terminalSweepConsistencyPct: null,
+    terminalSweepBookAgeMs: null,
+    terminalSweepAvailableNotional: null,
+    terminalSweepLevelsUsed: null,
     inventoryEvUsd: null,
     inventoryEvRoiPct: null,
     scaleInCount: 0,
@@ -345,6 +508,22 @@ function createState(): S10State {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function sanitizeMultiplier(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return clamp(n, TERMINAL_SWEEP_MULT_MIN, TERMINAL_SWEEP_MULT_MAX);
+}
+
+function getTerminalSweepMultipliers(ctx: StrategyTickContext): S10TailMultipliers {
+  const raw = ctx.s10TailMultipliers || {};
+  return {
+    earlyProbe: sanitizeMultiplier(raw.earlyProbe, TERMINAL_SWEEP_EARLY_PROBE_MULT),
+    probe: sanitizeMultiplier(raw.probe, TERMINAL_SWEEP_PROBE_MULT),
+    robust: sanitizeMultiplier(raw.robust, TERMINAL_SWEEP_ROBUST_MULT),
+    certainty: sanitizeMultiplier(raw.certainty, TERMINAL_SWEEP_CERTAINTY_MULT),
+  };
 }
 
 function opposite(direction: StrategyDirection): StrategyDirection {
@@ -470,6 +649,346 @@ function getExecutionBufferPct(spreadPct: number | null, volatilityBps: number, 
   return clamp(spreadBuffer + latencyBuffer + volBuffer, 0.8, 4.8);
 }
 
+const TERMINAL_SWEEP_ADVERSE_TABLE = [
+  { rem: 0, q95: 12, q99: 20 },
+  { rem: 10, q95: 26.0, q99: 43.8 },
+  { rem: 20, q95: 37.9, q99: 61.0 },
+  { rem: 30, q95: 43.8, q99: 69.0 },
+  { rem: 45, q95: 53.5, q99: 82.9 },
+  { rem: 60, q95: 58.9, q99: 84.2 },
+  { rem: 90, q95: 79.6, q99: 131.3 },
+  { rem: 120, q95: 91.6, q99: 148.1 },
+];
+
+function interpolateTerminalRisk(rem: number, key: "q95" | "q99"): number {
+  const table = TERMINAL_SWEEP_ADVERSE_TABLE;
+  if (rem <= table[0].rem) return table[0][key];
+  for (let i = 1; i < table.length; i++) {
+    const prev = table[i - 1];
+    const next = table[i];
+    if (rem <= next.rem) {
+      const ratio = (rem - prev.rem) / Math.max(1e-9, next.rem - prev.rem);
+      return prev[key] + (next[key] - prev[key]) * ratio;
+    }
+  }
+  return table[table.length - 1][key];
+}
+
+function getTerminalSweepTopAskPct(ctx: StrategyTickContext, direction: StrategyDirection): number | null {
+  const levels = ctx.book?.[direction]?.asks;
+  const topAsk = levels?.[0]?.price;
+  if (Number.isFinite(topAsk) && topAsk > 0 && topAsk <= 1) return topAsk * 100;
+  const quote = getQuoteProxy(ctx, direction);
+  return quote?.buyCostPct ?? null;
+}
+
+function getRecentDiffSamples(ctx: StrategyTickContext, seconds: number): Array<{ rem: number; diff: number; t: number }> {
+  const samples = (ctx.diffHistory || [])
+    .filter((sample) =>
+      Number.isFinite(sample.rem) &&
+      Number.isFinite(sample.diff) &&
+      sample.rem >= ctx.rem - 0.75 &&
+      sample.rem <= ctx.rem + seconds,
+    )
+    .map((sample) => ({ rem: sample.rem, diff: sample.diff, t: sample.t }))
+    .sort((a, b) => b.rem - a.rem);
+  if (ctx.diff != null && Number.isFinite(ctx.diff)) {
+    const hasCurrent = samples.some((sample) => Math.abs(sample.rem - ctx.rem) <= 0.75);
+    if (!hasCurrent) samples.push({ rem: ctx.rem, diff: ctx.diff, t: ctx.now });
+  }
+  return samples.sort((a, b) => b.rem - a.rem);
+}
+
+function getSignedMove(ctx: StrategyTickContext, direction: StrategyDirection, seconds: number): number {
+  const samples = getRecentDiffSamples(ctx, seconds);
+  if (ctx.diff == null || !samples.length) return 0;
+  const sign = direction === "up" ? 1 : -1;
+  const oldest = samples[0];
+  return sign * ctx.diff - sign * oldest.diff;
+}
+
+function getSignedDrawdown(ctx: StrategyTickContext, direction: StrategyDirection, seconds: number): number {
+  const samples = getRecentDiffSamples(ctx, seconds);
+  if (ctx.diff == null || !samples.length) return 0;
+  const sign = direction === "up" ? 1 : -1;
+  const current = sign * ctx.diff;
+  const maxSigned = Math.max(...samples.map((sample) => sign * sample.diff), current);
+  return Math.max(0, maxSigned - current);
+}
+
+function getDiffSigmaPerSqrtSec(samples: Array<{ rem: number; diff: number }>): number {
+  if (samples.length < 3) return 0;
+  const deltas: number[] = [];
+  for (let i = 1; i < samples.length; i++) {
+    const prev = samples[i - 1];
+    const next = samples[i];
+    const dt = Math.max(0.25, Math.abs(prev.rem - next.rem));
+    deltas.push((next.diff - prev.diff) / Math.sqrt(dt));
+  }
+  if (deltas.length < 2) return 0;
+  const mean = deltas.reduce((sum, value) => sum + value, 0) / deltas.length;
+  const variance = deltas.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (deltas.length - 1);
+  return Math.sqrt(Math.max(0, variance));
+}
+
+function getDirectionConsistency(ctx: StrategyTickContext, direction: StrategyDirection, seconds: number): number {
+  const samples = getRecentDiffSamples(ctx, seconds);
+  if (!samples.length) return 0;
+  const sign = direction === "up" ? 1 : -1;
+  return samples.filter((sample) => sign * sample.diff > 0).length / samples.length;
+}
+
+function getTerminalEffectiveVol(ctx: StrategyTickContext, q95: number): number {
+  const sigma5 = getDiffSigmaPerSqrtSec(getRecentDiffSamples(ctx, 5));
+  const sigma15 = getDiffSigmaPerSqrtSec(getRecentDiffSamples(ctx, 15));
+  const sigma30 = getDiffSigmaPerSqrtSec(getRecentDiffSamples(ctx, 30));
+  const sigma60 = getDiffSigmaPerSqrtSec(getRecentDiffSamples(ctx, 60));
+  const empiricalFloor = q95 / Math.sqrt(Math.max(1, ctx.rem)) * 0.42;
+  return Math.max(empiricalFloor, sigma5 * 1.2, sigma15, sigma30 * 0.85, sigma60 * 0.7, 0.6);
+}
+
+function isTerminalVolShock(ctx: StrategyTickContext): boolean {
+  const sigma5 = getDiffSigmaPerSqrtSec(getRecentDiffSamples(ctx, 5));
+  const sigma30 = getDiffSigmaPerSqrtSec(getRecentDiffSamples(ctx, 30));
+  return sigma5 > 1.2 && sigma30 > 0 && sigma5 / sigma30 >= TERMINAL_SWEEP_VOL_SHOCK_RATIO;
+}
+
+function getTerminalRequiredDiff(rem: number, topAskPct: number, q95: number, q99: number, effectiveVol: number): number {
+  const volGuard = effectiveVol * Math.sqrt(Math.max(1, rem)) * (topAskPct >= 98.5 ? 1.82 : topAskPct >= 97 ? 1.55 : 1.25);
+  let historicalGuard = q95;
+  if (topAskPct >= 98.5) {
+    historicalGuard = q95 * (rem <= 30 ? 1.32 : rem <= 60 ? 1.18 : 1.05);
+  } else if (topAskPct >= 97) {
+    historicalGuard = q95 * (rem <= 30 ? 1.04 : 0.94);
+  } else if (topAskPct >= 94) {
+    historicalGuard = q95 * 0.78;
+  } else {
+    historicalGuard = q95 * 0.62;
+  }
+  return clamp(Math.max(historicalGuard, volGuard), 12, q99 * 1.05);
+}
+
+function estimateTerminalWinPct(input: {
+  tier: TerminalSweepTier;
+  rem: number;
+  absDiff: number;
+  q95: number;
+  q99: number;
+  topAskPct: number;
+  consistency: number;
+  volShock: boolean;
+  bookAgeMs: number | null;
+}): number {
+  const progress = clamp((input.absDiff - input.q95) / Math.max(1, input.q99 - input.q95), 0, 1);
+  let winPct =
+    input.tier === "certainty"
+      ? 99.1 + progress * 0.45
+      : input.tier === "robust"
+        ? 98.25 + progress * 0.55
+        : 96.6 + progress * 0.75;
+  if (input.rem <= 65 && input.absDiff >= 70 && input.topAskPct >= 98.5) winPct = Math.max(winPct, 99.62);
+  if (input.rem <= 30 && input.absDiff >= 40 && input.topAskPct >= 97) winPct = Math.max(winPct, 99.45);
+  if (input.rem <= 10 && input.absDiff >= 40) winPct = Math.max(winPct, 99.2);
+  winPct -= clamp((TERMINAL_SWEEP_HIGH_PRICE_MIN_CONSISTENCY - input.consistency) * 1.4, 0, 1.2);
+  if (input.volShock) winPct -= 0.32;
+  if (input.bookAgeMs != null && input.bookAgeMs > TERMINAL_SWEEP_HIGH_PRICE_BOOK_MAX_AGE_MS) winPct -= 0.22;
+  return clamp(winPct, 90, 99.85);
+}
+
+function getTerminalSweepMaxNotional(ctx: StrategyTickContext, tier: TerminalSweepTier): number {
+  const base = clamp(ctx.configuredAmount ?? TERMINAL_SWEEP_DEFAULT_BASE_NOTIONAL, TERMINAL_SWEEP_MIN_NOTIONAL, TERMINAL_SWEEP_ABSOLUTE_MAX_NOTIONAL);
+  const earlyProbe = tier === "probe" && ctx.rem > TERMINAL_SWEEP_FULL_START_REM;
+  const multipliers = getTerminalSweepMultipliers(ctx);
+  const multiplier =
+    earlyProbe
+      ? multipliers.earlyProbe
+      : tier === "certainty"
+      ? multipliers.certainty
+      : tier === "robust"
+        ? multipliers.robust
+        : multipliers.probe;
+  return Math.round(Math.min(TERMINAL_SWEEP_ABSOLUTE_MAX_NOTIONAL, base * multiplier) * 100) / 100;
+}
+
+function calcTerminalSweepVwap(
+  ctx: StrategyTickContext,
+  direction: StrategyDirection,
+  maxNotional: number,
+  maxPricePct: number,
+): {
+  amount: number;
+  shares: number;
+  vwapPct: number;
+  topAskPct: number;
+  availableNotional: number;
+  levelsUsed: number;
+} | null {
+  const asks = ctx.book?.[direction]?.asks
+    ?.filter((level) => Number.isFinite(level.price) && Number.isFinite(level.size) && level.price > 0 && level.size > 0)
+    .sort((a, b) => a.price - b.price) || [];
+  const maxPrice = maxPricePct / 100;
+  const topAsk = asks[0]?.price;
+  if (!(topAsk > 0) || topAsk > maxPrice + 1e-9) return null;
+  let availableNotional = 0;
+  let amount = 0;
+  let shares = 0;
+  let levelsUsed = 0;
+  for (const level of asks) {
+    if (level.price > maxPrice + 1e-9) break;
+    const levelNotional = level.price * level.size;
+    availableNotional += levelNotional;
+    if (amount < maxNotional - 1e-9) {
+      const take = Math.min(maxNotional - amount, levelNotional);
+      amount += take;
+      shares += take / level.price;
+      levelsUsed++;
+    }
+  }
+  if (availableNotional < TERMINAL_SWEEP_MIN_LIQUIDITY_NOTIONAL || amount < TERMINAL_SWEEP_MIN_NOTIONAL || shares <= 0) return null;
+  return {
+    amount: Math.round(amount * 100) / 100,
+    shares,
+    vwapPct: (amount / shares) * 100,
+    topAskPct: topAsk * 100,
+    availableNotional,
+    levelsUsed,
+  };
+}
+
+function getTerminalSweepFokBlockReason(input: {
+  ctx: StrategyTickContext;
+  tier: TerminalSweepTier;
+  absDiff: number;
+  requiredDiff: number;
+  q99: number;
+  topAskPct: number;
+  vwapPct: number;
+  winPct: number;
+  edgePct: number;
+  consistency: number;
+  bookAgeMs: number | null;
+  amount: number;
+  availableNotional: number;
+  signedMove5s: number;
+  signedDrawdown5s: number;
+  signedDrawdown15s: number;
+}): string | null {
+  const highPrice = input.topAskPct >= 98.5;
+  if (input.ctx.rem > TERMINAL_SWEEP_FOK_MAX_REMAINING) {
+    return `maker-first rem>${TERMINAL_SWEEP_FOK_MAX_REMAINING}s`;
+  }
+  if (input.tier !== "certainty") return `maker-first tier=${input.tier}`;
+  const q99Need = Math.max(input.q99, input.requiredDiff);
+  if (input.absDiff < q99Need) {
+    return `need q99 diff ${input.absDiff.toFixed(1)}<${q99Need.toFixed(1)}`;
+  }
+  const maxBookAge = highPrice ? TERMINAL_SWEEP_FOK_HIGH_PRICE_BOOK_MAX_AGE_MS : TERMINAL_SWEEP_FOK_BOOK_MAX_AGE_MS;
+  if (input.bookAgeMs == null || input.bookAgeMs > maxBookAge) {
+    return `bookAge ${input.bookAgeMs == null ? "-" : input.bookAgeMs.toFixed(0)}>${maxBookAge}`;
+  }
+  const minConsistency = highPrice ? TERMINAL_SWEEP_FOK_HIGH_PRICE_MIN_CONSISTENCY : TERMINAL_SWEEP_FOK_MIN_CONSISTENCY;
+  if (input.consistency < minConsistency) {
+    return `consistency ${(input.consistency * 100).toFixed(0)}%<${(minConsistency * 100).toFixed(0)}%`;
+  }
+  if (
+    input.signedDrawdown5s > TERMINAL_SWEEP_FOK_MAX_DRAWDOWN_5S ||
+    input.signedDrawdown15s > TERMINAL_SWEEP_FOK_MAX_DRAWDOWN_15S
+  ) {
+    return `drawdown dd5=${input.signedDrawdown5s.toFixed(1)} dd15=${input.signedDrawdown15s.toFixed(1)}`;
+  }
+  if (input.signedMove5s < TERMINAL_SWEEP_FOK_MIN_MOVE_5S) {
+    return `move5=${input.signedMove5s.toFixed(1)}`;
+  }
+  if (input.edgePct < TERMINAL_SWEEP_FOK_MIN_EDGE_PCT) {
+    return `ev ${input.edgePct.toFixed(2)}%<${TERMINAL_SWEEP_FOK_MIN_EDGE_PCT.toFixed(2)}%`;
+  }
+  if (input.vwapPct >= input.winPct - TERMINAL_SWEEP_BUFFER_PCT) {
+    return `vwap ${input.vwapPct.toFixed(2)}>=win-buffer ${(input.winPct - TERMINAL_SWEEP_BUFFER_PCT).toFixed(2)}`;
+  }
+  const requiredLiquidity = Math.max(TERMINAL_SWEEP_MIN_LIQUIDITY_NOTIONAL, input.amount * TERMINAL_SWEEP_FOK_MIN_LIQUIDITY_MULT);
+  if (input.availableNotional < requiredLiquidity) {
+    return `depth ${input.availableNotional.toFixed(2)}<${requiredLiquidity.toFixed(2)}`;
+  }
+  return null;
+}
+
+function getTerminalMakerTargetBidPct(ctx: StrategyTickContext, direction: StrategyDirection): number | null {
+  if (ctx.diff == null || !Number.isFinite(ctx.diff)) return null;
+  const fairUp = getFairProb(ctx.diff, ctx.rem);
+  const upQuote = getQuoteProxy(ctx, "up");
+  const downQuote = getQuoteProxy(ctx, "down");
+  if (!upQuote || !downQuote) return null;
+  const signal = getMakerTerminalSignal(ctx, fairUp, upQuote, downQuote);
+  if (!signal || signal.direction !== direction) return null;
+  return signal.maxBidPct;
+}
+
+function getTerminalSweepDiscountTakeBlockReason(input: {
+  ctx: StrategyTickContext;
+  tier: TerminalSweepTier;
+  absDiff: number;
+  requiredDiff: number;
+  q99: number;
+  topAskPct: number;
+  vwapPct: number;
+  winPct: number;
+  edgePct: number;
+  consistency: number;
+  bookAgeMs: number | null;
+  amount: number;
+  availableNotional: number;
+  signedMove5s: number;
+  signedDrawdown5s: number;
+  signedDrawdown15s: number;
+  makerTargetBidPct: number | null;
+}): string | null {
+  if (
+    input.ctx.rem > TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_REMAINING ||
+    input.ctx.rem <= TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_REMAINING
+  ) {
+    return `discount window ${TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_REMAINING}-${TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_REMAINING}s`;
+  }
+  if (input.tier === "probe") return "discount needs robust/certainty";
+  if (input.makerTargetBidPct == null) return "discount no maker target";
+  const discountPct = input.makerTargetBidPct - input.topAskPct;
+  if (discountPct < TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_DISCOUNT_PCT) {
+    return `discount ${discountPct.toFixed(2)}<${TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_DISCOUNT_PCT.toFixed(2)}`;
+  }
+  if (input.topAskPct > TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_ASK_PCT) {
+    return `ask ${input.topAskPct.toFixed(2)}>${TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_ASK_PCT.toFixed(2)}`;
+  }
+  const qNeed = Math.max(input.requiredDiff, input.q99 * TERMINAL_SWEEP_DISCOUNT_TAKE_Q99_MULT);
+  if (input.absDiff < qNeed) {
+    return `need near-q99 diff ${input.absDiff.toFixed(1)}<${qNeed.toFixed(1)}`;
+  }
+  if (input.bookAgeMs == null || input.bookAgeMs > TERMINAL_SWEEP_FOK_BOOK_MAX_AGE_MS) {
+    return `bookAge ${input.bookAgeMs == null ? "-" : input.bookAgeMs.toFixed(0)}>${TERMINAL_SWEEP_FOK_BOOK_MAX_AGE_MS}`;
+  }
+  if (input.consistency < TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_CONSISTENCY) {
+    return `consistency ${(input.consistency * 100).toFixed(0)}%<${(TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_CONSISTENCY * 100).toFixed(0)}%`;
+  }
+  if (
+    input.signedDrawdown5s > TERMINAL_SWEEP_FOK_MAX_DRAWDOWN_5S ||
+    input.signedDrawdown15s > TERMINAL_SWEEP_FOK_MAX_DRAWDOWN_15S
+  ) {
+    return `drawdown dd5=${input.signedDrawdown5s.toFixed(1)} dd15=${input.signedDrawdown15s.toFixed(1)}`;
+  }
+  if (input.signedMove5s < TERMINAL_SWEEP_FOK_MIN_MOVE_5S) {
+    return `move5=${input.signedMove5s.toFixed(1)}`;
+  }
+  if (input.edgePct < TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_EDGE_PCT) {
+    return `ev ${input.edgePct.toFixed(2)}%<${TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_EDGE_PCT.toFixed(2)}%`;
+  }
+  if (input.vwapPct >= input.winPct - TERMINAL_SWEEP_BUFFER_PCT) {
+    return `vwap ${input.vwapPct.toFixed(2)}>=win-buffer ${(input.winPct - TERMINAL_SWEEP_BUFFER_PCT).toFixed(2)}`;
+  }
+  const requiredLiquidity = Math.max(TERMINAL_SWEEP_MIN_LIQUIDITY_NOTIONAL, input.amount * TERMINAL_SWEEP_FOK_MIN_LIQUIDITY_MULT);
+  if (input.availableNotional < requiredLiquidity) {
+    return `depth ${input.availableNotional.toFixed(2)}<${requiredLiquidity.toFixed(2)}`;
+  }
+  return null;
+}
+
 function getLockBufferPct(spreadPct: number | null, volatilityBps: number, rem: number): number {
   const spreadBuffer = spreadPct == null ? 0.8 : clamp(spreadPct * 100 * 0.22, 0.15, 1.8);
   const latencyBuffer = rem <= 20 ? 0.9 : rem <= 75 ? 0.55 : 0.35;
@@ -485,7 +1004,9 @@ function getMinLockProfitPct(rem: number, phase: S10Phase | "none"): number {
 }
 
 function getMakerTargetSetEdgePct(rem: number): number {
-  if (rem <= MAKER_TERMINAL_START_REM) return 0.8;
+  if (rem <= MAKER_TERMINAL_FOK_START_REM) return 0.8;
+  if (rem <= MAKER_TERMINAL_FULL_START_REM) return 1.2;
+  if (rem <= MAKER_TERMINAL_START_REM) return 1.8;
   if (rem <= 40) return MAKER_TARGET_SET_EDGE_LATE;
   if (rem <= 150) return MAKER_TARGET_SET_EDGE_MID;
   return MAKER_TARGET_SET_EDGE_OPENING;
@@ -535,7 +1056,11 @@ function makerModuleToPhase(module: S10MakerModule): S10Phase | "none" {
 }
 
 function getMakerFairEdgePct(module: S10MakerModule, rem: number): number {
-  if (module === "terminal") return rem <= 7 ? 0.25 : 0.4;
+  if (module === "terminal") {
+    if (rem > MAKER_TERMINAL_FULL_START_REM) return 1.4;
+    if (rem > MAKER_TERMINAL_FOK_START_REM) return 0.8;
+    return rem <= 7 ? 0.25 : 0.4;
+  }
   if (module === "conviction") return 1.25;
   if (module === "balance") return 2.0;
   if (module === "seed") return 2.9;
@@ -550,6 +1075,39 @@ function getMakerQuoteTtlMs(module: S10MakerModule): number {
 
 function getMakerMaxPricePct(module: S10MakerModule): number {
   return (module === "terminal" ? MAKER_TERMINAL_MAX_PRICE : MAKER_MAX_PRICE) * 100;
+}
+
+function getConfiguredMakerBaseNotional(ctx: StrategyTickContext): number {
+  return clamp(ctx.configuredAmount ?? MAKER_BASE_NOTIONAL, 5, TERMINAL_SWEEP_ABSOLUTE_MAX_NOTIONAL);
+}
+
+function getTerminalMakerMaxShares(
+  ctx: StrategyTickContext,
+  pricePct: number,
+  style: "chase" | "panic_probe",
+  q99Ready: boolean,
+): number {
+  const price = clamp(pricePct / 100, MAKER_MIN_PRICE, MAKER_TERMINAL_MAX_PRICE);
+  const configured = getConfiguredMakerBaseNotional(ctx);
+  if (ctx.rem > MAKER_TERMINAL_FULL_START_REM) {
+    const multiplier = style === "panic_probe" ? 0.55 : 1.0;
+    const notional = clamp(
+      configured * multiplier,
+      MAKER_MIN_QUOTE_SHARES * price,
+      MAKER_TERMINAL_EARLY_PROBE_MAX_NOTIONAL,
+    );
+    return round4(clamp(notional / price, MAKER_MIN_QUOTE_SHARES, MAKER_TERMINAL_EARLY_PROBE_MAX_SHARES));
+  }
+  if (ctx.rem > MAKER_TERMINAL_FOK_START_REM) {
+    const multiplier = style === "panic_probe" ? 0.8 : q99Ready ? 3.0 : 2.0;
+    const notional = clamp(
+      configured * multiplier,
+      MAKER_MIN_QUOTE_SHARES * price,
+      MAKER_TERMINAL_ROBUST_MAX_NOTIONAL,
+    );
+    return round4(clamp(notional / price, MAKER_MIN_QUOTE_SHARES, MAKER_TERMINAL_ROBUST_MAX_SHARES));
+  }
+  return style === "panic_probe" ? MAKER_TERMINAL_PANIC_MAX_SHARES : MAKER_MAX_TERMINAL_TAIL_SHARES;
 }
 
 function getMakerMaxTailShares(module: S10MakerModule): number {
@@ -583,11 +1141,22 @@ function getMakerTailEvForPairLossPct(module: S10MakerModule): number {
 }
 
 function getTerminalMinConfidencePct(rem: number, currentBidPct: number): number {
-  const base = rem <= 6 ? 99.15 : rem <= 10 ? 98.75 : 98.35;
-  return currentBidPct >= MAKER_TERMINAL_CHASE_MIN_BID_PCT ? base : 99.6;
+  const base =
+    rem > MAKER_TERMINAL_FULL_START_REM ? 97.2 :
+    rem > MAKER_TERMINAL_FOK_START_REM ? 97.8 :
+    rem <= 6 ? 99.15 :
+    rem <= 10 ? 98.75 :
+    98.35;
+  const panicBase =
+    rem > MAKER_TERMINAL_FULL_START_REM ? 98.4 :
+    rem > MAKER_TERMINAL_FOK_START_REM ? 98.7 :
+    99.6;
+  return currentBidPct >= MAKER_TERMINAL_CHASE_MIN_BID_PCT ? base : panicBase;
 }
 
 function getTerminalMinDiff(rem: number): number {
+  if (rem > MAKER_TERMINAL_FULL_START_REM) return 48;
+  if (rem > MAKER_TERMINAL_FOK_START_REM) return 38;
   if (rem <= 6) return 24;
   if (rem <= 10) return 32;
   return 44;
@@ -625,6 +1194,171 @@ function getCurrentTail(ctx: StrategyTickContext): { direction: StrategyDirectio
   return { direction: imbalance > 0 ? "up" : "down", shares: Math.abs(imbalance) };
 }
 
+function getSingleSideFreezeShares(module: S10MakerModule): number {
+  if (module === "seed") return MAKER_SINGLE_SIDE_FREEZE_SEED_SHARES;
+  if (module === "balance") return MAKER_SINGLE_SIDE_FREEZE_BALANCE_SHARES;
+  if (module === "conviction") return MAKER_SINGLE_SIDE_FREEZE_CONVICTION_SHARES;
+  return Number.POSITIVE_INFINITY;
+}
+
+function getRepairTargetTailShares(module: S10MakerModule): number {
+  if (module === "seed" || module === "balance") return 2.5;
+  if (module === "conviction") return 4.0;
+  return 8.0;
+}
+
+function isSingleSidedTail(ctx: StrategyTickContext): boolean {
+  const upSize = Math.max(0, ctx.position.upSize || 0);
+  const downSize = Math.max(0, ctx.position.downSize || 0);
+  return (upSize > 0.01 && downSize <= 0.01) || (downSize > 0.01 && upSize <= 0.01);
+}
+
+function getMakerSingleSideFreezeReason(
+  ctx: StrategyTickContext,
+  direction: StrategyDirection,
+  module: S10MakerModule,
+): string | null {
+  if (module === "terminal") return null;
+  const tail = getCurrentTail(ctx);
+  if (!tail.direction || tail.direction !== direction) return null;
+  if (!isSingleSidedTail(ctx)) return null;
+  const freezeShares = getSingleSideFreezeShares(module);
+  if (tail.shares < freezeShares) return null;
+  return `single-tail freeze ${direction} ${tail.shares.toFixed(1)}/${freezeShares}`;
+}
+
+function getMarketImpliedUpPct(ctx: StrategyTickContext): number | null {
+  const { bestBid, bestAsk } = ctx;
+  if (
+    bestBid == null ||
+    bestAsk == null ||
+    bestBid < 0 ||
+    bestAsk <= 0 ||
+    bestAsk < bestBid ||
+    bestBid > 1 ||
+    bestAsk > 1
+  ) return null;
+  return clamp(((bestBid + bestAsk) / 2) * 100, 1, 99);
+}
+
+function getMacdBiasPct(ctx: StrategyTickContext): number {
+  const trendBias = (trend: string | null | undefined, weight: number): number =>
+    trend === "bullish" ? weight : trend === "bearish" ? -weight : 0;
+  const histBias = (value: number | null | undefined, weight: number): number =>
+    value != null && Number.isFinite(value) ? clamp(value * weight, -2.5, 2.5) : 0;
+  return clamp(
+    trendBias(ctx.macd1m.trend, 2.2) +
+      trendBias(ctx.macdFast1m.trend, 1.3) +
+      histBias(ctx.macd1m.histogramBps, 0.55) +
+      histBias(ctx.macdFast1m.histogramSlopeBps, 0.75) +
+      histBias(ctx.macdFast1m.priceSlopeBps, 0.35),
+    -7,
+    7,
+  );
+}
+
+function getTailModel(ctx: StrategyTickContext, rawFairUp: number): TailModelSnapshot {
+  const marketUpPct = getMarketImpliedUpPct(ctx);
+  const macdBiasPct = getMacdBiasPct(ctx);
+  const rawWeight = Math.max(0, 1 - TAIL_MODEL_MARKET_WEIGHT - TAIL_MODEL_TECH_WEIGHT);
+  const marketComponent = marketUpPct ?? rawFairUp;
+  const blendedUpPct =
+    rawFairUp * rawWeight +
+    marketComponent * TAIL_MODEL_MARKET_WEIGHT +
+    (50 + macdBiasPct) * TAIL_MODEL_TECH_WEIGHT;
+  const absRawEdgePct = Math.abs(rawFairUp - 50);
+  const signalReliability = clamp((absRawEdgePct - 4) / 34, 0, 1);
+  const timeReliability =
+    ctx.rem >= 210 ? 0.55 :
+    ctx.rem >= 75 ? 0.70 :
+    ctx.rem >= 24 ? 0.86 :
+    1.0;
+  const reliability = clamp(signalReliability * timeReliability, 0, 1);
+  const volatilityBps = getRecentVolatilityBps(ctx.kline1m);
+  const volatilityPenaltyPct = clamp((volatilityBps - 12) * 0.04, 0, 1.4);
+  const uncertaintyPct = clamp(
+    TAIL_MODEL_BASE_UNCERTAINTY_PCT + (1 - reliability) * 4.0 + volatilityPenaltyPct,
+    TAIL_MODEL_BASE_UNCERTAINTY_PCT,
+    TAIL_MODEL_MAX_UNCERTAINTY_PCT,
+  );
+  const adjustedSignalPct = (blendedUpPct - 50) * reliability;
+  const upBasePct = 50 + adjustedSignalPct;
+  const downBasePct = 50 - adjustedSignalPct;
+  return {
+    rawUpPct: clamp(rawFairUp, 1, 99),
+    marketUpPct,
+    upWinPct: clamp(upBasePct - uncertaintyPct, 1, 99),
+    downWinPct: clamp(downBasePct - uncertaintyPct, 1, 99),
+    reliabilityPct: reliability * 100,
+    uncertaintyPct,
+    biasPct: macdBiasPct,
+  };
+}
+
+function getTailWinProbPct(model: TailModelSnapshot, direction: StrategyDirection): number {
+  return direction === "up" ? model.upWinPct : model.downWinPct;
+}
+
+function getTerminalMakerTailModel(base: TailModelSnapshot, signal: MakerTerminalSignal, rem: number): TailModelSnapshot {
+  const discount =
+    rem > MAKER_TERMINAL_FULL_START_REM ? 2.25 :
+    rem > MAKER_TERMINAL_FOK_START_REM ? 1.25 :
+    0.55;
+  const floorPct =
+    rem > MAKER_TERMINAL_FULL_START_REM ? 96.5 :
+    rem > MAKER_TERMINAL_FOK_START_REM ? 97.4 :
+    98.2;
+  const capPct =
+    rem > MAKER_TERMINAL_FULL_START_REM ? 98.2 :
+    rem > MAKER_TERMINAL_FOK_START_REM ? 98.9 :
+    99.45;
+  const terminalWinPct = clamp(signal.confidencePct - discount, floorPct, capPct);
+  if (signal.direction === "up") {
+    return {
+      ...base,
+      upWinPct: Math.max(base.upWinPct, terminalWinPct),
+      downWinPct: Math.min(base.downWinPct, 100 - terminalWinPct),
+      uncertaintyPct: Math.min(base.uncertaintyPct, discount),
+    };
+  }
+  return {
+    ...base,
+    downWinPct: Math.max(base.downWinPct, terminalWinPct),
+    upWinPct: Math.min(base.upWinPct, 100 - terminalWinPct),
+    uncertaintyPct: Math.min(base.uncertaintyPct, discount),
+  };
+}
+
+function getPairBand(pairProfitPct: number | null): string {
+  if (pairProfitPct == null) return "none";
+  if (pairProfitPct >= MAKER_FULL_PAIR_PROFIT_PCT) return "full";
+  if (pairProfitPct >= 0) return "thin-repair-only";
+  return "negative-block";
+}
+
+function getPositiveRepairPlan(
+  ctx: StrategyTickContext,
+  direction: StrategyDirection,
+  module: S10MakerModule,
+  price: number,
+): PositiveRepairPlan | null {
+  if (module === "terminal") return null;
+  const tail = getCurrentTail(ctx);
+  if (!tail.direction || tail.direction === direction) return null;
+  if (tail.shares < MAKER_MIN_INSURANCE_TAIL_SHARES) return null;
+  const targetTailShares = getRepairTargetTailShares(module);
+  const coverShares = Math.max(0, tail.shares - targetTailShares);
+  if (coverShares < MAKER_MIN_QUOTE_SHARES) return null;
+  const notionalCapShares = MAKER_POSITIVE_REPAIR_TARGET_NOTIONAL / Math.max(price, 0.03);
+  const quoteShares = Math.min(coverShares, notionalCapShares, MAKER_POSITIVE_REPAIR_MAX_SHARES);
+  if (quoteShares < MAKER_MIN_QUOTE_SHARES) return null;
+  return {
+    targetTailShares,
+    coverShares,
+    quoteShares,
+  };
+}
+
 function getMakerTailRoom(ctx: StrategyTickContext, direction: StrategyDirection, module: S10MakerModule): number {
   const ownSize = getPositionSize(ctx, direction);
   const otherSize = getPositionSize(ctx, opposite(direction));
@@ -635,6 +1369,11 @@ function getMakerTailRoom(ctx: StrategyTickContext, direction: StrategyDirection
 function getMakerInsuranceMaxShares(ctx: StrategyTickContext, direction: StrategyDirection, module: S10MakerModule): number {
   const tail = getCurrentTail(ctx);
   if (!tail.direction || tail.direction === direction || module === "terminal") return MAKER_MAX_SHARES_PER_SIDE;
+  const targetTailShares = getRepairTargetTailShares(module);
+  const fullRepairCoverShares = Math.max(0, tail.shares - targetTailShares);
+  if (fullRepairCoverShares >= MAKER_MIN_QUOTE_SHARES) {
+    return clamp(fullRepairCoverShares, MAKER_MIN_QUOTE_SHARES, MAKER_POSITIVE_REPAIR_MAX_SHARES);
+  }
   const baseRatio = module === "balance" ? 0.65 : module === "conviction" ? 0.55 : 0.5;
   const tailBoost = tail.shares >= 20 ? 0.12 : tail.shares >= 12 ? 0.06 : 0;
   const targetCoverRatio = clamp(baseRatio + tailBoost, 0.45, 0.78);
@@ -651,7 +1390,7 @@ function isMakerInsuranceQuote(
   const tail = getCurrentTail(ctx);
   if (!tail.direction || tail.direction === direction || tail.shares < MAKER_MIN_INSURANCE_TAIL_SHARES) return false;
   const pairProfitPct = projection.pairedProfitPct;
-  if (pairProfitPct == null || pairProfitPct < MAKER_MIN_HEDGE_PAIR_PROFIT_PCT) return false;
+  if (pairProfitPct == null || pairProfitPct < MAKER_POSITIVE_REPAIR_MIN_PAIR_PROFIT_PCT) return false;
   if (projection.inventoryEvRoiPct != null && projection.inventoryEvRoiPct < -0.5) return false;
   return true;
 }
@@ -667,6 +1406,109 @@ interface MakerTerminalSignal {
   reason: string;
 }
 
+interface MakerTerminalAllowance {
+  minConfidencePct: number;
+  edgePct: number;
+  q95: number;
+  q99: number;
+  consistency: number;
+  q99Ready: boolean;
+  tag: string;
+}
+
+function getMakerTerminalAllowance(input: {
+  ctx: StrategyTickContext;
+  direction: StrategyDirection;
+  absDiff: number;
+  confidencePct: number;
+  currentBidPct: number;
+  strictDiffOk: boolean;
+}): MakerTerminalAllowance | null {
+  const { ctx, direction, absDiff, confidencePct, currentBidPct, strictDiffOk } = input;
+  const q95 = interpolateTerminalRisk(ctx.rem, "q95");
+  const q99 = interpolateTerminalRisk(ctx.rem, "q99");
+  const consistency = getDirectionConsistency(ctx, direction, 30);
+  const q99Ready = absDiff >= q99 && consistency >= TERMINAL_SWEEP_FOK_MIN_CONSISTENCY;
+  const strictMinConfidencePct = getTerminalMinConfidencePct(ctx.rem, currentBidPct);
+  if (strictDiffOk && confidencePct >= strictMinConfidencePct) {
+    return {
+      minConfidencePct: strictMinConfidencePct,
+      edgePct: getMakerFairEdgePct("terminal", ctx.rem),
+      q95,
+      q99,
+      consistency,
+      q99Ready,
+      tag: "strict",
+    };
+  }
+
+  const topAskPct = getTerminalSweepTopAskPct(ctx, direction);
+  if (topAskPct == null || topAskPct <= 0) return null;
+  const signedMove3s = getSignedMove(ctx, direction, 3);
+  const signedMove5s = getSignedMove(ctx, direction, 5);
+  const signedDrawdown5s = getSignedDrawdown(ctx, direction, 5);
+  const signedDrawdown15s = getSignedDrawdown(ctx, direction, 15);
+  if (signedDrawdown5s >= TERMINAL_SWEEP_ADVERSE_5S_BLOCK || signedDrawdown15s >= TERMINAL_SWEEP_ADVERSE_15S_BLOCK) {
+    return null;
+  }
+  if (isTerminalVolShock(ctx) && signedMove3s < -4) return null;
+
+  if (ctx.rem > MAKER_TERMINAL_FULL_START_REM) {
+    const probeNeed = Math.max(20, q95 * 0.5);
+    const minConfidencePct = Math.max(MAKER_TERMINAL_PROBE_MIN_CONFIDENCE_PCT, topAskPct - 2.0);
+    if (
+      topAskPct <= TERMINAL_SWEEP_PROBE_MAX_PRICE_PCT &&
+      absDiff >= probeNeed &&
+      consistency >= MAKER_TERMINAL_PROBE_MIN_CONSISTENCY &&
+      confidencePct >= minConfidencePct
+    ) {
+      return {
+        minConfidencePct,
+        edgePct: 0.9,
+        q95,
+        q99,
+        consistency,
+        q99Ready: false,
+        tag: `early_probe ask=${topAskPct.toFixed(1)} need=${probeNeed.toFixed(1)}`,
+      };
+    }
+    return null;
+  }
+
+  const fallbackNeed = Math.max(
+    24,
+    getTerminalMinDiff(ctx.rem) * 0.85,
+    q95 * (ctx.rem <= MAKER_TERMINAL_FOK_START_REM ? 0.90 : 0.82),
+  );
+  const minConsistency =
+    ctx.rem <= MAKER_TERMINAL_FOK_START_REM
+      ? TERMINAL_SWEEP_DISCOUNT_TAKE_MIN_CONSISTENCY
+      : MAKER_TERMINAL_PROBE_MIN_CONSISTENCY;
+  const minConfidencePct =
+    ctx.rem <= MAKER_TERMINAL_FOK_START_REM
+      ? MAKER_TERMINAL_FINAL_FALLBACK_MIN_CONFIDENCE_PCT
+      : MAKER_TERMINAL_ROBUST_FALLBACK_MIN_CONFIDENCE_PCT;
+  if (
+    topAskPct <= TERMINAL_SWEEP_ROBUST_MAX_PRICE_PCT &&
+    absDiff >= fallbackNeed &&
+    consistency >= minConsistency &&
+    signedMove5s >= TERMINAL_SWEEP_FOK_MIN_MOVE_5S &&
+    confidencePct >= minConfidencePct
+  ) {
+    return {
+      minConfidencePct,
+      edgePct: ctx.rem <= MAKER_TERMINAL_FOK_START_REM ? 0.45 : 0.65,
+      q95,
+      q99,
+      consistency,
+      q99Ready,
+      tag: `fallback ask=${topAskPct.toFixed(1)} need=${fallbackNeed.toFixed(1)}`,
+    };
+  }
+
+  return null;
+}
+
 function getMakerTerminalSignal(
   ctx: StrategyTickContext,
   fairUp: number,
@@ -675,25 +1517,36 @@ function getMakerTerminalSignal(
 ): MakerTerminalSignal | null {
   if (ctx.diff == null || ctx.rem > MAKER_TERMINAL_START_REM || ctx.rem < MAKER_MIN_REMAINING) return null;
   const absDiff = Math.abs(ctx.diff);
-  if (absDiff < getTerminalMinDiff(ctx.rem)) return null;
+  const strictDiffOk = absDiff >= getTerminalMinDiff(ctx.rem);
   const direction: StrategyDirection = ctx.diff >= 0 ? "up" : "down";
   const confidencePct = direction === "up" ? fairUp : 100 - fairUp;
   const currentBidPct = direction === "up" ? upQuote.sellValuePct : downQuote.sellValuePct;
-  const minConfidencePct = getTerminalMinConfidencePct(ctx.rem, currentBidPct);
-  if (confidencePct < minConfidencePct) return null;
-  const edgePct = getMakerFairEdgePct("terminal", ctx.rem);
-  const maxBidPct = Math.min(getMakerMaxPricePct("terminal"), confidencePct - edgePct);
+  const allowance = getMakerTerminalAllowance({
+    ctx,
+    direction,
+    absDiff,
+    confidencePct,
+    currentBidPct,
+    strictDiffOk,
+  });
+  if (!allowance) return null;
+  const timePriceCap =
+    ctx.rem > MAKER_TERMINAL_FULL_START_REM ? TERMINAL_SWEEP_PROBE_MAX_PRICE_PCT :
+    ctx.rem > MAKER_TERMINAL_FOK_START_REM ? TERMINAL_SWEEP_ROBUST_MAX_PRICE_PCT :
+    getMakerMaxPricePct("terminal");
+  const maxBidPct = Math.min(timePriceCap, getMakerMaxPricePct("terminal"), confidencePct - allowance.edgePct);
+  if (maxBidPct < MAKER_MIN_PRICE * 100) return null;
   const style = currentBidPct >= MAKER_TERMINAL_CHASE_MIN_BID_PCT ? "chase" : "panic_probe";
-  const maxShares = style === "panic_probe" ? MAKER_TERMINAL_PANIC_MAX_SHARES : MAKER_MAX_TERMINAL_TAIL_SHARES;
+  const maxShares = getTerminalMakerMaxShares(ctx, maxBidPct, style, allowance.q99Ready);
   return {
     direction,
     confidencePct,
-    minConfidencePct,
-    edgePct,
+    minConfidencePct: allowance.minConfidencePct,
+    edgePct: allowance.edgePct,
     maxBidPct,
     maxShares,
     style,
-    reason: `${style} ${direction} conf=${confidencePct.toFixed(1)}% min=${minConfidencePct.toFixed(1)}% diff=${ctx.diff.toFixed(0)} rem=${ctx.rem.toFixed(1)}s`,
+    reason: `${style} ${direction} ${allowance.tag} conf=${confidencePct.toFixed(1)}% min=${allowance.minConfidencePct.toFixed(1)}% diff=${ctx.diff.toFixed(0)} q95=${allowance.q95.toFixed(1)} q99=${allowance.q99.toFixed(1)} cons=${(allowance.consistency * 100).toFixed(0)}% rem=${ctx.rem.toFixed(1)}s`,
   };
 }
 
@@ -712,9 +1565,26 @@ interface InventoryProjection {
   pairedProfitPct: number | null;
   tailDirection: StrategyDirection | null;
   tailShares: number;
+  tailWinProbPct: number | null;
   tailEvPct: number | null;
   inventoryEvUsd: number | null;
   inventoryEvRoiPct: number | null;
+}
+
+interface TailModelSnapshot {
+  rawUpPct: number;
+  marketUpPct: number | null;
+  upWinPct: number;
+  downWinPct: number;
+  reliabilityPct: number;
+  uncertaintyPct: number;
+  biasPct: number;
+}
+
+interface PositiveRepairPlan {
+  targetTailShares: number;
+  coverShares: number;
+  quoteShares: number;
 }
 
 function isWeakSideLockException(
@@ -864,7 +1734,7 @@ function projectInventoryAfterFill(
   direction: StrategyDirection,
   pricePct: number,
   shares: number,
-  fairUp: number,
+  tailModel: TailModelSnapshot,
 ): InventoryProjection {
   const upSize = Math.max(0, ctx.position.upSize || 0);
   const downSize = Math.max(0, ctx.position.downSize || 0);
@@ -892,8 +1762,8 @@ function projectInventoryAfterFill(
     : tailDirection === "down"
       ? projectedDownCostPct
       : null;
-  const tailFairPct = tailDirection === "up" ? fairUp : tailDirection === "down" ? 100 - fairUp : null;
-  const tailEvPct = tailFairPct != null && tailAvgCostPct != null ? tailFairPct - tailAvgCostPct : null;
+  const tailWinProbPct = tailDirection ? getTailWinProbPct(tailModel, tailDirection) : null;
+  const tailEvPct = tailWinProbPct != null && tailAvgCostPct != null ? tailWinProbPct - tailAvgCostPct : null;
   const pairedEvUsd = pairedShares > 0 && pairedProfitPct != null ? pairedShares * pairedProfitPct / 100 : 0;
   const tailEvUsd = tailShares > 0 && tailEvPct != null ? tailShares * tailEvPct / 100 : 0;
   const costKnown =
@@ -909,6 +1779,7 @@ function projectInventoryAfterFill(
     pairedProfitPct,
     tailDirection,
     tailShares,
+    tailWinProbPct,
     tailEvPct,
     inventoryEvUsd,
     inventoryEvRoiPct: inventoryEvUsd != null && inventoryCostUsd > 0
@@ -932,10 +1803,11 @@ function getMakerProjectionBlock(
   pricePct: number,
   shares: number,
   fairUp: number,
+  tailModel: TailModelSnapshot,
   module: S10MakerModule,
 ): { block: string | null; projection: InventoryProjection; summary: string } {
-  const current = projectInventoryAfterFill(ctx, direction, pricePct, 0, fairUp);
-  const projection = projectInventoryAfterFill(ctx, direction, pricePct, shares, fairUp);
+  const current = projectInventoryAfterFill(ctx, direction, pricePct, 0, tailModel);
+  const projection = projectInventoryAfterFill(ctx, direction, pricePct, shares, tailModel);
   const directionFairPct = direction === "up" ? fairUp : 100 - fairUp;
   const currentTailShares = Math.abs((ctx.position.upSize || 0) - (ctx.position.downSize || 0));
   const quoteAddsTail = projection.tailDirection === direction && projection.tailShares > currentTailShares + 0.0001;
@@ -953,6 +1825,7 @@ function getMakerProjectionBlock(
     projection.pairedProfitPct == null ||
     projection.pairedProfitPct >= MAKER_MIN_HEDGE_PAIR_PROFIT_PCT;
   const balancedRepair = isBalancedRepairQuote(ctx, direction, module, projection);
+  const pairBand = getPairBand(projection.pairedProfitPct);
   const riskReducing =
     (reducesTail &&
       (improvesInventoryRoi || improvesPair) &&
@@ -974,7 +1847,7 @@ function getMakerProjectionBlock(
     directionFairPct >= getTerminalMinConfidencePct(ctx.rem, pricePct) &&
     projection.tailEvPct != null &&
     projection.tailEvPct >= MAKER_MIN_TERMINAL_TAIL_EV_PCT;
-  const summary = `${module} ${formatProjection(projection)}${terminalChase ? " terminal_chase" : insuranceReducing ? " insurance" : balancedRepair ? " balanced_repair" : riskReducing ? " repair" : ""}`;
+  const summary = `${module} ${formatProjection(projection)} band=${pairBand}${terminalChase ? " terminal_chase" : insuranceReducing ? " insurance" : balancedRepair ? " balanced_repair" : riskReducing ? " repair" : ""}`;
 
   if (
     quoteAddsTail &&
@@ -1009,6 +1882,17 @@ function getMakerProjectionBlock(
     projection.pairedProfitPct < pairFloorPct
   ) {
     return { block: `pair floor ${projection.pairedProfitPct.toFixed(1)}%`, projection, summary };
+  }
+
+  if (
+    !terminalChase &&
+    module !== "terminal" &&
+    projection.pairedProfitPct != null &&
+    projection.pairedProfitPct >= 0 &&
+    projection.pairedProfitPct < MAKER_FULL_PAIR_PROFIT_PCT &&
+    !riskReducing
+  ) {
+    return { block: `pair thin repair-only ${projection.pairedProfitPct.toFixed(1)}%`, projection, summary };
   }
 
   if (
@@ -1076,9 +1960,10 @@ export class S10FullSetArb implements IStrategy {
     const tailShares = Math.abs(imbalance);
     const tailAvgCostPct = tailDirection ? getPositionCostPct(ctx, tailDirection) : null;
     const fairUp = ctx.diff == null ? null : getFairProb(ctx.diff, ctx.rem);
-    const tailFairPct = fairUp == null || !tailDirection
+    const tailModel = fairUp == null ? null : getTailModel(ctx, fairUp);
+    const tailFairPct = tailModel == null || !tailDirection
       ? null
-      : tailDirection === "up" ? fairUp : 100 - fairUp;
+      : getTailWinProbPct(tailModel, tailDirection);
     const tailEvPct = tailFairPct != null && tailAvgCostPct != null
       ? tailFairPct - tailAvgCostPct
       : null;
@@ -1099,10 +1984,353 @@ export class S10FullSetArb implements IStrategy {
     this.s.tailAvgCostPct = tailAvgCostPct != null ? round4(tailAvgCostPct) : null;
     this.s.tailFairPct = tailFairPct != null ? round4(tailFairPct) : null;
     this.s.tailEvPct = tailEvPct != null ? round4(tailEvPct) : null;
+    this.s.tailModelUpPct = tailModel ? round4(tailModel.upWinPct) : null;
+    this.s.tailModelDownPct = tailModel ? round4(tailModel.downWinPct) : null;
+    this.s.tailModelReliabilityPct = tailModel ? round4(tailModel.reliabilityPct) : null;
+    this.s.tailModelUncertaintyPct = tailModel ? round4(tailModel.uncertaintyPct) : null;
+    this.s.tailModelBiasPct = tailModel ? round4(tailModel.biasPct) : null;
     this.s.inventoryEvUsd = inventoryEvUsd != null ? round4(inventoryEvUsd) : null;
     this.s.inventoryEvRoiPct = inventoryEvUsd != null && inventoryCostUsd > 0
       ? round4((inventoryEvUsd / inventoryCostUsd) * 100)
       : null;
+  }
+
+  private clearTerminalSweep(reason: string): void {
+    this.s.terminalSweepDirection = null;
+    this.s.terminalSweepTier = "none";
+    this.s.terminalSweepReason = reason;
+    this.s.terminalSweepWinPct = null;
+    this.s.terminalSweepEdgePct = null;
+    this.s.terminalSweepVwapPct = null;
+    this.s.terminalSweepTopAskPct = null;
+    this.s.terminalSweepMaxPricePct = null;
+    this.s.terminalSweepAmount = null;
+    this.s.terminalSweepMaxAmount = null;
+    this.s.terminalSweepRequiredDiff = null;
+    this.s.terminalSweepQ95 = null;
+    this.s.terminalSweepQ99 = null;
+    this.s.terminalSweepEffectiveVol = null;
+    this.s.terminalSweepConsistencyPct = null;
+    this.s.terminalSweepBookAgeMs = null;
+    this.s.terminalSweepAvailableNotional = null;
+    this.s.terminalSweepLevelsUsed = null;
+  }
+
+  private recordTerminalSweep(signal: TerminalSweepSignal, ctx: StrategyTickContext): void {
+    this.s.terminalSweepDirection = signal.direction;
+    this.s.terminalSweepTier = signal.tier;
+    this.s.terminalSweepReason = signal.fokEligible
+      ? `${signal.reason} | FOK eligible:${signal.fokMode ?? "final"}`
+      : `${signal.reason} | FOK gated: ${signal.fokBlockReason}; maker-first`;
+    this.s.terminalSweepWinPct = round4(signal.winPct);
+    this.s.terminalSweepEdgePct = round4(signal.edgePct);
+    this.s.terminalSweepVwapPct = round4(signal.vwapPct);
+    this.s.terminalSweepTopAskPct = round4(signal.topAskPct);
+    this.s.terminalSweepMaxPricePct = round4(signal.maxPricePct);
+    this.s.terminalSweepAmount = round4(signal.amount);
+    this.s.terminalSweepMaxAmount = round4(signal.maxAmount);
+    this.s.terminalSweepRequiredDiff = round4(signal.requiredDiff);
+    this.s.terminalSweepQ95 = round4(signal.q95);
+    this.s.terminalSweepQ99 = round4(signal.q99);
+    this.s.terminalSweepEffectiveVol = round4(signal.effectiveVol);
+    this.s.terminalSweepConsistencyPct = round4(signal.consistency * 100);
+    this.s.terminalSweepBookAgeMs = ctx.bookAgeMs != null && Number.isFinite(ctx.bookAgeMs) ? Math.round(ctx.bookAgeMs) : null;
+    this.s.terminalSweepAvailableNotional = round4(signal.availableNotional);
+    this.s.terminalSweepLevelsUsed = signal.levelsUsed;
+  }
+
+  private recordTerminalSweepDiagnostic(input: {
+    ctx: StrategyTickContext;
+    direction: StrategyDirection;
+    topAskPct: number;
+    requiredDiff: number;
+    q95: number;
+    q99: number;
+    effectiveVol: number;
+    consistency: number;
+    reason: string;
+  }): void {
+    this.s.terminalSweepDirection = input.direction;
+    this.s.terminalSweepTier = "none";
+    this.s.terminalSweepReason = input.reason;
+    this.s.terminalSweepWinPct = null;
+    this.s.terminalSweepEdgePct = null;
+    this.s.terminalSweepVwapPct = null;
+    this.s.terminalSweepTopAskPct = round4(input.topAskPct);
+    this.s.terminalSweepMaxPricePct = null;
+    this.s.terminalSweepAmount = null;
+    this.s.terminalSweepMaxAmount = null;
+    this.s.terminalSweepRequiredDiff = round4(input.requiredDiff);
+    this.s.terminalSweepQ95 = round4(input.q95);
+    this.s.terminalSweepQ99 = round4(input.q99);
+    this.s.terminalSweepEffectiveVol = round4(input.effectiveVol);
+    this.s.terminalSweepConsistencyPct = round4(input.consistency * 100);
+    this.s.terminalSweepBookAgeMs = input.ctx.bookAgeMs != null && Number.isFinite(input.ctx.bookAgeMs)
+      ? Math.round(input.ctx.bookAgeMs)
+      : null;
+    this.s.terminalSweepAvailableNotional = null;
+    this.s.terminalSweepLevelsUsed = null;
+  }
+
+  private findTerminalSweep(ctx: StrategyTickContext): TerminalSweepSignal | null {
+    if (!TERMINAL_SWEEP_ENABLED) {
+      this.clearTerminalSweep("terminal sweep disabled");
+      return null;
+    }
+    if (ctx.rem < TERMINAL_SWEEP_MIN_REMAINING || ctx.rem > TERMINAL_SWEEP_START_REM) {
+      this.clearTerminalSweep(`sweep wait rem=${ctx.rem.toFixed(1)}s window=${TERMINAL_SWEEP_START_REM}-${TERMINAL_SWEEP_MIN_REMAINING}s`);
+      return null;
+    }
+    if (ctx.diff == null || !Number.isFinite(ctx.diff) || Math.abs(ctx.diff) < 1e-9) {
+      this.clearTerminalSweep("sweep wait diff unavailable");
+      return null;
+    }
+
+    const direction: StrategyDirection = ctx.diff > 0 ? "up" : "down";
+    const absDiff = Math.abs(ctx.diff);
+    const topAskPct = getTerminalSweepTopAskPct(ctx, direction);
+    if (topAskPct == null || topAskPct <= 0 || topAskPct > TERMINAL_SWEEP_MAX_PRICE_PCT) {
+      this.clearTerminalSweep(`sweep wait ${direction} ask=${topAskPct == null ? "-" : topAskPct.toFixed(2)}%`);
+      return null;
+    }
+
+    const highPrice = topAskPct >= 98.5;
+    const bookAgeMs = ctx.bookAgeMs != null && Number.isFinite(ctx.bookAgeMs) ? ctx.bookAgeMs : null;
+    const maxBookAge = highPrice ? TERMINAL_SWEEP_HIGH_PRICE_BOOK_MAX_AGE_MS : TERMINAL_SWEEP_BOOK_MAX_AGE_MS;
+    if (bookAgeMs == null || bookAgeMs > maxBookAge) {
+      this.clearTerminalSweep(`sweep block bookAge=${bookAgeMs == null ? "-" : bookAgeMs.toFixed(0)}ms>${maxBookAge}`);
+      return null;
+    }
+
+    const q95 = interpolateTerminalRisk(ctx.rem, "q95");
+    const q99 = interpolateTerminalRisk(ctx.rem, "q99");
+    const effectiveVol = getTerminalEffectiveVol(ctx, q95);
+    const requiredDiff = getTerminalRequiredDiff(ctx.rem, topAskPct, q95, q99, effectiveVol);
+    const consistency = getDirectionConsistency(ctx, direction, 30);
+    const signedMove3s = getSignedMove(ctx, direction, 3);
+    const signedMove5s = getSignedMove(ctx, direction, 5);
+    const signedDrawdown5s = getSignedDrawdown(ctx, direction, 5);
+    const signedDrawdown15s = getSignedDrawdown(ctx, direction, 15);
+    const volShock = isTerminalVolShock(ctx);
+    const minConsistency = highPrice ? TERMINAL_SWEEP_HIGH_PRICE_MIN_CONSISTENCY : TERMINAL_SWEEP_MIN_CONSISTENCY;
+
+    if (consistency < minConsistency) {
+      this.recordTerminalSweepDiagnostic({ ctx, direction, topAskPct, requiredDiff, q95, q99, effectiveVol, consistency, reason: `sweep block consistency ${(consistency * 100).toFixed(0)}%<${(minConsistency * 100).toFixed(0)}%` });
+      return null;
+    }
+    if (signedDrawdown5s >= TERMINAL_SWEEP_ADVERSE_5S_BLOCK || signedDrawdown15s >= TERMINAL_SWEEP_ADVERSE_15S_BLOCK) {
+      this.recordTerminalSweepDiagnostic({ ctx, direction, topAskPct, requiredDiff, q95, q99, effectiveVol, consistency, reason: `sweep block adverse dd5=${signedDrawdown5s.toFixed(1)} dd15=${signedDrawdown15s.toFixed(1)}` });
+      return null;
+    }
+    if (volShock && signedMove3s < -4) {
+      this.recordTerminalSweepDiagnostic({ ctx, direction, topAskPct, requiredDiff, q95, q99, effectiveVol, consistency, reason: `sweep block volShock move3=${signedMove3s.toFixed(1)}` });
+      return null;
+    }
+
+    const empiricalHighCertainty =
+      ctx.rem <= 65 &&
+      absDiff >= 70 &&
+      topAskPct >= 98.5 &&
+      signedMove5s >= -3;
+    const lateCertainty =
+      ctx.rem <= 30 &&
+      topAskPct < 98.5 &&
+      absDiff >= 40 &&
+      topAskPct >= 97 &&
+      signedMove5s >= -5;
+    const qCertainty = highPrice
+      ? absDiff >= Math.max(q99, requiredDiff)
+      : absDiff >= q99;
+    const spikeLag =
+      ctx.rem <= 45 &&
+      (signedMove3s >= TERMINAL_SWEEP_SPIKE_3S || signedMove5s >= TERMINAL_SWEEP_SPIKE_5S) &&
+      absDiff >= Math.max(24, q95 * 0.55) &&
+      topAskPct <= TERMINAL_SWEEP_ROBUST_MAX_PRICE_PCT;
+
+    const probeOnlyWindow = ctx.rem > TERMINAL_SWEEP_FULL_START_REM;
+    let tier: TerminalSweepTier | null = null;
+    if (probeOnlyWindow) {
+      if (topAskPct <= TERMINAL_SWEEP_PROBE_MAX_PRICE_PCT && absDiff >= Math.max(20, q95 * 0.5)) {
+        tier = "probe";
+      }
+    } else if (qCertainty || empiricalHighCertainty || lateCertainty) {
+      tier = "certainty";
+    } else if (absDiff >= requiredDiff || absDiff >= q95 || spikeLag) {
+      tier = "robust";
+    } else if (topAskPct <= TERMINAL_SWEEP_PROBE_MAX_PRICE_PCT && absDiff >= Math.max(20, q95 * 0.5)) {
+      tier = "probe";
+    }
+
+    if (!tier) {
+      const reason = probeOnlyWindow
+        ? `sweep wait early-probe diff=${absDiff.toFixed(1)} ask=${topAskPct.toFixed(2)}% need<=${TERMINAL_SWEEP_PROBE_MAX_PRICE_PCT.toFixed(1)}%`
+        : `sweep wait diff=${absDiff.toFixed(1)} need=${requiredDiff.toFixed(1)} q95=${q95.toFixed(1)}`;
+      this.recordTerminalSweepDiagnostic({ ctx, direction, topAskPct, requiredDiff, q95, q99, effectiveVol, consistency, reason });
+      return null;
+    }
+    if (highPrice && tier !== "certainty") {
+      this.recordTerminalSweepDiagnostic({ ctx, direction, topAskPct, requiredDiff, q95, q99, effectiveVol, consistency, reason: `sweep block high ask ${topAskPct.toFixed(2)}% requires certainty` });
+      return null;
+    }
+
+    const maxPricePct =
+      tier === "certainty"
+        ? TERMINAL_SWEEP_MAX_PRICE_PCT
+        : tier === "robust"
+          ? TERMINAL_SWEEP_ROBUST_MAX_PRICE_PCT
+          : TERMINAL_SWEEP_PROBE_MAX_PRICE_PCT;
+    const maxAmount = getTerminalSweepMaxNotional(ctx, tier);
+    const vwap = calcTerminalSweepVwap(ctx, direction, maxAmount, maxPricePct);
+    if (!vwap) {
+      this.recordTerminalSweepDiagnostic({ ctx, direction, topAskPct, requiredDiff, q95, q99, effectiveVol, consistency, reason: `sweep wait liquidity ask<=${maxPricePct.toFixed(1)}%` });
+      return null;
+    }
+
+    const winPct = estimateTerminalWinPct({
+      tier,
+      rem: ctx.rem,
+      absDiff,
+      q95,
+      q99,
+      topAskPct,
+      consistency,
+      volShock,
+      bookAgeMs,
+    });
+    const edgePct = winPct - vwap.vwapPct - TERMINAL_SWEEP_BUFFER_PCT;
+    if (edgePct < TERMINAL_SWEEP_MIN_EDGE_PCT) {
+      this.recordTerminalSweepDiagnostic({ ctx, direction, topAskPct, requiredDiff, q95, q99, effectiveVol, consistency, reason: `sweep block ev=${edgePct.toFixed(2)}% win=${winPct.toFixed(2)} vwap=${vwap.vwapPct.toFixed(2)}%` });
+      return null;
+    }
+
+    const finalFokBlockReason = getTerminalSweepFokBlockReason({
+      ctx,
+      tier,
+      absDiff,
+      requiredDiff,
+      q99,
+      topAskPct: vwap.topAskPct,
+      vwapPct: vwap.vwapPct,
+      winPct,
+      edgePct,
+      consistency,
+      bookAgeMs,
+      amount: vwap.amount,
+      availableNotional: vwap.availableNotional,
+      signedMove5s,
+      signedDrawdown5s,
+      signedDrawdown15s,
+    });
+    let fokMode: TerminalSweepFokMode | null = finalFokBlockReason == null ? "final" : null;
+    let fokBlockReason = finalFokBlockReason;
+    let executionVwap = vwap;
+    let executionMaxAmount = maxAmount;
+    let executionMaxPricePct = maxPricePct;
+    let executionEdgePct = edgePct;
+    const makerTargetBidPct = getTerminalMakerTargetBidPct(ctx, direction);
+    if (!fokMode) {
+      const discountBlockReason = getTerminalSweepDiscountTakeBlockReason({
+        ctx,
+        tier,
+        absDiff,
+        requiredDiff,
+        q99,
+        topAskPct: vwap.topAskPct,
+        vwapPct: vwap.vwapPct,
+        winPct,
+        edgePct,
+        consistency,
+        bookAgeMs,
+        amount: vwap.amount,
+        availableNotional: vwap.availableNotional,
+        signedMove5s,
+        signedDrawdown5s,
+        signedDrawdown15s,
+        makerTargetBidPct,
+      });
+      if (discountBlockReason == null) {
+        const discountMaxAmount = Math.min(
+          maxAmount,
+          clamp(
+            (ctx.configuredAmount ?? TERMINAL_SWEEP_DEFAULT_BASE_NOTIONAL) * TERMINAL_SWEEP_DISCOUNT_TAKE_MAX_AMOUNT_MULT,
+            TERMINAL_SWEEP_MIN_NOTIONAL,
+            TERMINAL_SWEEP_ABSOLUTE_MAX_NOTIONAL,
+          ),
+        );
+        const discountVwap = calcTerminalSweepVwap(
+          ctx,
+          direction,
+          discountMaxAmount,
+          Math.min(maxPricePct, makerTargetBidPct ?? maxPricePct),
+        );
+        if (discountVwap) {
+          executionVwap = discountVwap;
+          executionMaxAmount = discountMaxAmount;
+          executionMaxPricePct = Math.min(maxPricePct, makerTargetBidPct ?? maxPricePct);
+          executionEdgePct = winPct - executionVwap.vwapPct - TERMINAL_SWEEP_BUFFER_PCT;
+          fokMode = "discount_take";
+          fokBlockReason = null;
+        } else {
+          fokBlockReason = `discount liquidity ask<=${Math.min(maxPricePct, makerTargetBidPct ?? maxPricePct).toFixed(1)}%`;
+        }
+      } else {
+        fokBlockReason = `${finalFokBlockReason}; discount:${discountBlockReason}`;
+      }
+    }
+    const reason =
+      `s10-terminal-sweep ${tier} ${direction} ` +
+      `rem=${ctx.rem.toFixed(1)} diff=${ctx.diff.toFixed(1)} ` +
+      `${probeOnlyWindow ? "earlyProbe " : ""}` +
+      `need=${requiredDiff.toFixed(1)} q95=${q95.toFixed(1)} q99=${q99.toFixed(1)} ` +
+      `win=${winPct.toFixed(2)}% vwap=${executionVwap.vwapPct.toFixed(2)}% ev=${executionEdgePct.toFixed(2)}% ` +
+      `maxPx=${executionMaxPricePct.toFixed(1)}% maxAmt=${executionMaxAmount.toFixed(2)} ` +
+      `liq=${executionVwap.availableNotional.toFixed(2)} cons=${(consistency * 100).toFixed(0)}%` +
+      `${makerTargetBidPct != null ? ` makerTarget=${makerTargetBidPct.toFixed(2)}%` : ""}` +
+      `${fokMode ? ` fok=${fokMode}` : ""}`;
+    return {
+      direction,
+      tier,
+      fokEligible: fokMode != null,
+      fokMode,
+      fokBlockReason,
+      amount: executionVwap.amount,
+      maxAmount: executionMaxAmount,
+      maxPricePct: executionMaxPricePct,
+      topAskPct: executionVwap.topAskPct,
+      vwapPct: executionVwap.vwapPct,
+      shares: executionVwap.shares,
+      levelsUsed: executionVwap.levelsUsed,
+      availableNotional: executionVwap.availableNotional,
+      winPct,
+      edgePct: executionEdgePct,
+      requiredDiff,
+      q95,
+      q99,
+      effectiveVol,
+      consistency,
+      signedMove3s,
+      signedMove5s,
+      signedDrawdown5s,
+      signedDrawdown15s,
+      reason,
+    };
+  }
+
+  checkOverlayEntry(ctx: StrategyTickContext): EntrySignal | null {
+    const signal = this.findTerminalSweep(ctx);
+    if (!signal) return null;
+    this.recordTerminalSweep(signal, ctx);
+    if (!signal.fokEligible) {
+      this.s.terminalSweepReason = `${signal.reason} | FOK gated: ${signal.fokBlockReason}; maker-first`;
+      return null;
+    }
+    return {
+      direction: signal.direction,
+      amount: signal.amount,
+      maxPrice: signal.maxPricePct / 100,
+      source: TERMINAL_SWEEP_SIGNAL_SOURCE,
+      reason: `${signal.reason} | FOK eligible:${signal.fokMode ?? "final"}`,
+    };
   }
 
   getDescription(): StrategyDescription {
@@ -1110,13 +2338,19 @@ export class S10FullSetArb implements IStrategy {
       key: this.key,
       number: this.number,
       name: this.name,
-      title: "S10 · 结算EV库存策略",
+      title: "S10 - 双边库存 + 尾盘一枪扫单",
       lines: [
-        { text: "高覆盖率：目标是多数 5m 盘口只要存在正 EV 就建一笔库存，而不是等待极端折价。", color: "#f0a500" },
-        { text: "核心公式：adjustedEV = fairProb(direction) - buyCost(direction) - spread/latency/vol buffer。" },
-        { text: "分阶段入场：opening 保守，inventory 主动，conviction/terminal 降低边际但提高方向确定性。", color: "#58a6ff" },
-        { text: "默认持有到结算；盘中不因短期浮盈卖出，避免被假盘口回撤甩下车。", color: "#3fb950", marginTop: true },
-        { text: "仍然不是无风险策略：只有模拟盘长期样本证明后，才考虑真实盘小额灰度。", color: "#f85149" },
+        { text: "中早期：核心还是双边库存。pair profit 为正时优先补反边到均衡，少付保险费，不盲目追单。", color: "#f0a500" },
+        { text: "尾盘启动：剩余 60s 内切到 tail-maker-first；60s~30s 是按基础金额动态缩放的 probe maker，30s 内强信号再扩大 maker。", color: "#58a6ff" },
+        { text: "方向信号：diff>0 看 Up，diff<0 看 Down；diff 越大、剩余时间越短、近期越不反抽，方向越可靠。", color: "#58a6ff" },
+        { text: "动态门槛：系统会算 requiredDiff。它取历史尾盘反向冲击、最近 5/15/30/60s 波动、当前价格三者里更保守的值。", color: "#58a6ff" },
+        { text: "参考门槛：历史 q95/q99 逆向冲击约为 60s=58.9/84.2，30s=43.8/69.0，10s=26.0/43.8；高价 0.99 要求更严格。", color: "#58a6ff" },
+        { text: "进场分层：60s~30s maker 只挂到 0.96、最多约 1x 基础金额；30s~15s maker 仍只挂到 0.98，但数量按信号和基础金额动态放大；15s 内 certainty 才允许 final FOK。", color: "#3fb950", marginTop: true },
+        { text: "金额倍数：这里输入的是基础金额。默认 early probe=1x，probe=2x，robust=6x，certainty=10x；前端可手动覆盖。", color: "#3fb950" },
+        { text: "金额上限：单笔最多 150U，单个 5m 窗口最多 150U；实际金额还会被盘口可吃流动性和 VWAP 自动缩小。", color: "#3fb950" },
+        { text: "下单机制：尾盘 maker 优先；35s~8s 只有 ask 比 maker 目标价便宜约 0.45% 且接近强信号时才小额 FOK 吃折价，15s 内 q99 才允许最终 FOK。", color: "#3fb950" },
+        { text: "硬风控：bookAge 高价≤350ms；方向一致性≥86%；3/5/15s 反向回撤、波动率突增、保守 EV≤0 都会拦截。", color: "#f85149", marginTop: true },
+        { text: "时间风控：剩余时间低于 4s 或窗口已结束绝不下单，也不会挂着等成交，这是尾盘策略的大忌。", color: "#f85149" },
       ],
     };
   }
@@ -1307,11 +2541,43 @@ export class S10FullSetArb implements IStrategy {
       this.s.makerProjectedPairPct = null;
       this.s.makerProjectedTailEvPct = null;
       this.s.makerProjectedTailShares = 0;
+      this.s.makerPairBand = "none";
+      this.s.makerRepairTargetTailShares = null;
+      return [];
+    }
+    if (
+      module === "terminal" &&
+      (ctx.bookAgeMs == null || !Number.isFinite(ctx.bookAgeMs) || ctx.bookAgeMs > TERMINAL_SWEEP_BOOK_MAX_AGE_MS)
+    ) {
+      this.s.makerMode = "watch";
+      this.s.makerLastReason = `maker terminal stale book age=${ctx.bookAgeMs == null ? "-" : ctx.bookAgeMs.toFixed(0)}ms`;
+      this.s.makerUpBidPct = null;
+      this.s.makerDownBidPct = null;
+      this.s.makerTotalBidCostPct = null;
+      this.s.makerRiskReason = "terminal stale book";
+      this.s.makerTerminalDirection = null;
+      this.s.makerTerminalConfidencePct = null;
+      this.s.makerTerminalEdgePct = null;
+      this.s.makerTerminalMaxPricePct = null;
+      this.s.makerTerminalReason = this.s.makerLastReason;
+      this.s.makerProjectedEvRoiPct = null;
+      this.s.makerProjectedPairPct = null;
+      this.s.makerProjectedTailEvPct = null;
+      this.s.makerProjectedTailShares = 0;
+      this.s.makerPairBand = "none";
+      this.s.makerRepairTargetTailShares = null;
       return [];
     }
 
     const fairDown = 100 - fairUp;
+    const rawTailModel = getTailModel(ctx, fairUp);
     const terminalSignal = module === "terminal" ? getMakerTerminalSignal(ctx, fairUp, upQuote, downQuote) : null;
+    const tailModel = terminalSignal ? getTerminalMakerTailModel(rawTailModel, terminalSignal, ctx.rem) : rawTailModel;
+    this.s.tailModelUpPct = round4(tailModel.upWinPct);
+    this.s.tailModelDownPct = round4(tailModel.downWinPct);
+    this.s.tailModelReliabilityPct = round4(tailModel.reliabilityPct);
+    this.s.tailModelUncertaintyPct = round4(tailModel.uncertaintyPct);
+    this.s.tailModelBiasPct = round4(tailModel.biasPct);
     const fairEdge = terminalSignal?.edgePct ?? getMakerFairEdgePct(module, ctx.rem);
     const rebalanceEdge = getMakerRebalanceEdgePct(ctx.rem);
     const minPct = MAKER_MIN_PRICE * 100;
@@ -1387,8 +2653,14 @@ export class S10FullSetArb implements IStrategy {
         blockedReasons.push(`${direction}:above bid`);
         return;
       }
+      const singleSideFreeze = getMakerSingleSideFreezeReason(ctx, direction, module);
+      if (singleSideFreeze) {
+        blockedReasons.push(`${direction}:${singleSideFreeze}`);
+        return;
+      }
       const requiredEdgePct = (options.edgePct ?? fairEdge) + inventory.extraEdgePct;
       const price = Math.round((bidPct / 100) * 10000) / 10000;
+      const repairPlan = getPositiveRepairPlan(ctx, direction, module, price);
       const tailRoomShares = getMakerTailRoom(ctx, direction, module);
       const insuranceMaxShares = getMakerInsuranceMaxShares(ctx, direction, module);
       const maxShares = options.maxShares != null
@@ -1398,12 +2670,15 @@ export class S10FullSetArb implements IStrategy {
         blockedReasons.push(`${direction}:room ${maxShares.toFixed(1)}`);
         return;
       }
-      const shares = getMakerShares(price, ctx.rem, inventory.sizeMultiplier, maxShares, module);
+      let shares = getMakerShares(price, ctx.rem, inventory.sizeMultiplier, maxShares, module);
+      if (repairPlan) {
+        shares = round4(Math.max(shares, Math.min(repairPlan.quoteShares, maxShares)));
+      }
       if (shares < MAKER_MIN_QUOTE_SHARES) {
         blockedReasons.push(`${direction}:size ${shares.toFixed(1)}`);
         return;
       }
-      const guard = getMakerProjectionBlock(ctx, direction, bidPct, shares, fairUp, module);
+      const guard = getMakerProjectionBlock(ctx, direction, bidPct, shares, fairUp, tailModel, module);
       lastProjection = guard.projection;
       if (guard.block) {
         blockedReasons.push(`${direction}:${guard.block}`);
@@ -1433,12 +2708,15 @@ export class S10FullSetArb implements IStrategy {
         return;
       }
       lastAllowedProjection = guard.projection;
+      if (repairPlan && (insuranceQuote || balancedRepair || weakSideLock)) {
+        this.s.makerRepairTargetTailShares = round4(repairPlan.targetTailShares);
+      }
       quotes.push({
         direction,
         price,
         shares,
         ttlMs: getMakerQuoteTtlMs(module),
-        reason: `maker-${module}-${direction} bid=${bidPct.toFixed(2)} fair=${fairPct.toFixed(1)} set=${totalBidCostPct.toFixed(1)} edge=${edgeFloorPct.toFixed(1)} inv=${insuranceQuote ? "insurance" : balancedRepair ? "balanced_repair" : weakSideLock ? "lock_hedge" : inventory.tag}${options.reasonTag ? ` ${options.reasonTag}` : ""} ${guard.summary}`,
+        reason: `maker-${module}-${direction} bid=${bidPct.toFixed(2)} fair=${fairPct.toFixed(1)} tailFair=${getTailWinProbPct(tailModel, direction).toFixed(1)} set=${totalBidCostPct.toFixed(1)} edge=${edgeFloorPct.toFixed(1)} inv=${insuranceQuote ? "insurance" : balancedRepair ? "balanced_repair" : weakSideLock ? "lock_hedge" : inventory.tag}${repairPlan ? ` repairTo=${repairPlan.targetTailShares.toFixed(1)}` : ""}${options.reasonTag ? ` ${options.reasonTag}` : ""} ${guard.summary}`,
       });
     };
 
@@ -1481,6 +2759,8 @@ export class S10FullSetArb implements IStrategy {
     this.s.makerProjectedPairPct = projectionForState?.pairedProfitPct != null ? round4(projectionForState.pairedProfitPct) : null;
     this.s.makerProjectedTailEvPct = projectionForState?.tailEvPct != null ? round4(projectionForState.tailEvPct) : null;
     this.s.makerProjectedTailShares = projectionForState ? round4(projectionForState.tailShares) : 0;
+    this.s.makerPairBand = projectionForState ? getPairBand(projectionForState.pairedProfitPct) : "none";
+    if (!quotes.some((quote) => /repairTo=/.test(quote.reason || ""))) this.s.makerRepairTargetTailShares = null;
     this.s.makerLastReason = quotes.length
       ? `maker ${module} quotes=${quotes.length} setBid=${totalBidCostPct.toFixed(1)}% targetEdge=${targetEdgePct.toFixed(1)}% inv=${imbalance.toFixed(1)}`
       : `maker ${module} no quote setBid=${totalBidCostPct.toFixed(1)}% inv=${imbalance.toFixed(1)} ${this.s.makerRiskReason || this.s.makerTerminalReason}`;
@@ -1493,6 +2773,12 @@ export class S10FullSetArb implements IStrategy {
     this.s.makerActiveOrders = status.activeOrders;
     this.s.makerUpOrders = status.upOrders;
     this.s.makerDownOrders = status.downOrders;
+    this.s.makerActiveShares = round4(status.activeShares ?? 0);
+    this.s.makerActiveNotional = round4(status.activeNotional ?? 0);
+    this.s.makerUpActiveShares = round4(status.upActiveShares ?? 0);
+    this.s.makerDownActiveShares = round4(status.downActiveShares ?? 0);
+    this.s.makerUpActiveNotional = round4(status.upActiveNotional ?? 0);
+    this.s.makerDownActiveNotional = round4(status.downActiveNotional ?? 0);
     this.s.makerFilledCount = status.filledCount;
     this.s.makerMergedCount = status.mergedCount;
     const statusReason = status.lastReason || "";

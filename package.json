@@ -4,7 +4,7 @@
   "description": "BTC 5分钟涨跌盘口监控 — 独立部署版",
   "type": "module",
   "scripts": {
-    "start": "npx tsx server.ts",
+    "start": "node --import tsx server.ts",
     "watchdog": "node tools/s10-watchdog.mjs"
   },
   "dependencies": {

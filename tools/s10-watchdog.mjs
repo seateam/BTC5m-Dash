@@ -11,6 +11,10 @@ const PORT = Number(process.env.WATCHDOG_PORT || 3456);
 const INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 15_000);
 const STALE_BOOK_MS = Number(process.env.WATCHDOG_STALE_BOOK_MS || 6_000);
 const RESTART_COOLDOWN_MS = Number(process.env.WATCHDOG_RESTART_COOLDOWN_MS || 120_000);
+const ALERT_COOLDOWN_MS = Number(process.env.WATCHDOG_ALERT_COOLDOWN_MS || RESTART_COOLDOWN_MS);
+const AUTO_RESTART = ["1", "true", "yes", "on"].includes(
+  String(process.env.WATCHDOG_AUTO_RESTART || "").trim().toLowerCase(),
+);
 const LOG_FILE = resolve(ROOT, ".watchdog.log");
 const SERVER_LOG = resolve(ROOT, ".server.log");
 const SERVER_ERR = resolve(ROOT, ".server.err.log");
@@ -19,6 +23,7 @@ let failCount = 0;
 let staleCount = 0;
 let zeroWindowCount = 0;
 let lastRestartAt = 0;
+let lastAlertAt = 0;
 
 function nowIso() {
   return new Date().toISOString();
@@ -59,7 +64,7 @@ async function restartServer(reason) {
     `$old = Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess`,
     `if ($old) { Stop-Process -Id $old -Force }`,
     `Start-Sleep -Seconds 1`,
-    `Start-Process -FilePath 'npx.cmd' -ArgumentList @('tsx','server.ts') -WorkingDirectory '${ROOT.replaceAll("'", "''")}' -WindowStyle Hidden -RedirectStandardOutput '${SERVER_LOG.replaceAll("'", "''")}' -RedirectStandardError '${SERVER_ERR.replaceAll("'", "''")}'`,
+    `Start-Process -FilePath 'node' -ArgumentList @('--import','tsx','server.ts') -WorkingDirectory '${ROOT.replaceAll("'", "''")}' -WindowStyle Hidden -RedirectStandardOutput '${SERVER_LOG.replaceAll("'", "''")}' -RedirectStandardError '${SERVER_ERR.replaceAll("'", "''")}'`,
   ].join("\n");
   try {
     await execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
@@ -76,6 +81,22 @@ async function restartServer(reason) {
     log("error", "restart command failed", { reason, error: err instanceof Error ? err.message : String(err) });
     return false;
   }
+}
+
+async function handleUnhealthy(reason, meta = {}) {
+  if (!AUTO_RESTART) {
+    const now = Date.now();
+    if (now - lastAlertAt >= ALERT_COOLDOWN_MS) {
+      lastAlertAt = now;
+      log("warn", "alert only; auto restart disabled", {
+        reason,
+        ...meta,
+        hint: "set WATCHDOG_AUTO_RESTART=true to allow restart",
+      });
+    }
+    return false;
+  }
+  return restartServer(reason);
 }
 
 function summarize(state) {
@@ -106,7 +127,7 @@ async function checkOnce() {
   } catch (err) {
     failCount++;
     log("error", "state fetch failed", { failCount, error: err instanceof Error ? err.message : String(err) });
-    if (failCount >= 3) await restartServer("api unreachable");
+    if (failCount >= 3) await handleUnhealthy("api unreachable", { failCount });
     return;
   }
 
@@ -124,13 +145,13 @@ async function checkOnce() {
 
   if (zeroWindowCount >= 4) {
     log("error", "window not subscribed", { zeroWindowCount, ...summary });
-    await restartServer("windowStart stayed zero");
+    await handleUnhealthy("windowStart stayed zero", { zeroWindowCount, ...summary });
     return;
   }
 
   if (staleCount >= 4) {
     log("error", "book stale or missing", { staleCount, ...summary });
-    await restartServer("book stale or missing");
+    await handleUnhealthy("book stale or missing", { staleCount, ...summary });
     return;
   }
 
@@ -158,7 +179,13 @@ if (!existsSync(resolve(ROOT, "server.ts"))) {
   process.exit(1);
 }
 
-log("info", "watchdog started", { stateUrl: STATE_URL, intervalMs: INTERVAL_MS, root: ROOT });
+log("info", "watchdog started", {
+  stateUrl: STATE_URL,
+  intervalMs: INTERVAL_MS,
+  root: ROOT,
+  autoRestart: AUTO_RESTART,
+  mode: AUTO_RESTART ? "restart" : "alert-only",
+});
 await checkOnce();
 setInterval(() => {
   checkOnce().catch((err) => log("error", "check crashed", { error: err instanceof Error ? err.message : String(err) }));

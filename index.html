@@ -1279,6 +1279,54 @@
       font-weight: 700;
     }
 
+    .hist-item .hist-reason-tag {
+      display: inline-flex;
+      align-items: center;
+      max-width: 128px;
+      padding: 1px 5px;
+      border: 1px solid #30363d;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.35;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    .hist-item .hist-reason-tag.open {
+      border-color: #7c5c00;
+      color: #f0a500;
+      background: #261d08;
+    }
+
+    .hist-item .hist-reason-tag.rebalance {
+      border-color: #1f6feb;
+      color: #58a6ff;
+      background: #0d2038;
+    }
+
+    .hist-item .hist-reason-tag.sweep {
+      border-color: #238636;
+      color: #3fb950;
+      background: #10261a;
+    }
+
+    .hist-item .hist-reason-tag.reject {
+      border-color: #8a2f2f;
+      color: #f85149;
+      background: #2a1212;
+    }
+
+    .hist-item .hist-reason-tag.settle {
+      border-color: #315a85;
+      color: #9ecbff;
+      background: #102033;
+    }
+
+    .hist-item .hist-reason-detail {
+      color: #7a8a9a;
+    }
+
     /* ┢┢ Polymarket 真实盈亏 ┢┢ */
     #pm-pnl {
       background: #0d1117;
@@ -2084,6 +2132,51 @@
       display: flex;
     }
 
+    #s8-arb-controls {
+      display: none;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      width: 100%;
+    }
+
+    #s8-arb-controls.show {
+      display: flex;
+    }
+
+    #s8-arb-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 22px;
+      padding: 2px 8px;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      background: #0d1117;
+      color: #7a8a9a;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    #s8-arb-toggle:hover {
+      color: #d0d7de;
+      border-color: #3d444d;
+    }
+
+    #s8-arb-toggle.expanded {
+      color: #f0a500;
+      border-color: #8a6300;
+    }
+
+    #s8-arb-toggle .toggle-arrow {
+      font-size: 10px;
+      transition: transform 0.16s ease;
+    }
+
+    #s8-arb-toggle.expanded .toggle-arrow {
+      transform: rotate(180deg);
+    }
+
     .s8-pill {
       display: inline-flex;
       align-items: center;
@@ -2332,6 +2425,27 @@
         <span id="strat-config-note" style="font-size:11px;color:#555" title="策略配置只在本次运行中生效，重启后恢复 .env 默认值">-</span>
       </div>
       <div id="strat-mode-info">策略模式：-</div>
+      <div id="s10-tail-mult-controls" style="display:flex;align-items:center;gap:6px;font-size:11px;color:#7a8a9a;flex-wrap:wrap;justify-content:flex-end">
+        <span title="S10 terminal max notional multipliers. Base amount is the S10 U input.">S10 tail x</span>
+        <label title="45-30s early probe max amount multiplier" style="display:flex;align-items:center;gap:3px">45-30
+          <input type="number" id="s10-tail-early-probe-mult" min="0.05" max="30" step="0.05" value="1" style="width:42px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e0e0e0;text-align:center;font-size:11px;padding:2px">
+        </label>
+        <label title="Probe max amount multiplier" style="display:flex;align-items:center;gap:3px">probe
+          <input type="number" id="s10-tail-probe-mult" min="0.05" max="30" step="0.05" value="2" style="width:42px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e0e0e0;text-align:center;font-size:11px;padding:2px">
+        </label>
+        <label title="Robust signal max amount multiplier" style="display:flex;align-items:center;gap:3px">robust
+          <input type="number" id="s10-tail-robust-mult" min="0.05" max="30" step="0.05" value="6" style="width:42px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e0e0e0;text-align:center;font-size:11px;padding:2px">
+        </label>
+        <label title="Certainty/q99 max amount multiplier" style="display:flex;align-items:center;gap:3px">q99
+          <input type="number" id="s10-tail-certainty-mult" min="0.05" max="30" step="0.05" value="10" style="width:42px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e0e0e0;text-align:center;font-size:11px;padding:2px">
+        </label>
+      </div>
+      <div id="s8-arb-controls">
+        <button id="s8-arb-toggle" type="button" onclick="toggleStrategyDetails()" aria-expanded="false" title="展开/收起策略参数详情">
+          <span class="toggle-label">参数详情</span>
+          <span class="toggle-arrow">▾</span>
+        </button>
+      </div>
       <div id="s8-arb-panel" aria-live="polite"></div>
       <!-- Claim 提示：引导用户到 Polymarket 官网弢启自Claim -->
       <div id="claim-tip" style="display:flex;align-items:center;gap:6px;font-size:11px;color:#666">
@@ -2740,10 +2854,19 @@
     }
 
     const LOW_DATA_STORAGE_KEY = 'btc5m.lowDataMode';
+    const STRATEGY_DETAILS_STORAGE_KEY = 'btc5m.strategyDetailsExpanded';
 
     function loadLowDataModePreference() {
       try {
         return localStorage.getItem(LOW_DATA_STORAGE_KEY) === '1';
+      } catch {
+        return false;
+      }
+    }
+
+    function loadStrategyDetailsPreference() {
+      try {
+        return localStorage.getItem(STRATEGY_DETAILS_STORAGE_KEY) === '1';
       } catch {
         return false;
       }
@@ -2755,7 +2878,14 @@
       } catch { }
     }
 
+    function persistStrategyDetailsPreference() {
+      try {
+        localStorage.setItem(STRATEGY_DETAILS_STORAGE_KEY, strategyDetailsExpanded ? '1' : '0');
+      } catch { }
+    }
+
     let lowDataMode = loadLowDataModePreference();
+    let strategyDetailsExpanded = loadStrategyDetailsPreference();
     document.body.classList.toggle('low-data-mode', lowDataMode);
     let executionMode = 'paper';
     let liveSafety = null;
@@ -2803,6 +2933,8 @@
     const $compactAccountSub = document.getElementById('compact-account-sub');
     const $compactStrategyMain = document.getElementById('compact-strategy-main');
     const $compactStrategySub = document.getElementById('compact-strategy-sub');
+    const $strategyDetailsToggle = document.getElementById('s8-arb-toggle');
+    const $strategyDetailsControls = document.getElementById('s8-arb-controls');
     const $bookLag = document.getElementById('book-lag');
     const $bookAge = document.getElementById('book-age');
     const $clockLag = document.getElementById('clock-lag');
@@ -2901,6 +3033,17 @@
       if (!$lowDataToggle) return;
       $lowDataToggle.classList.toggle('on', lowDataMode);
       $lowDataToggle.setAttribute('aria-pressed', lowDataMode ? 'true' : 'false');
+    }
+
+    function updateStrategyDetailsToggleUi(visible = true) {
+      if ($strategyDetailsControls) {
+        $strategyDetailsControls.classList.toggle('show', !!visible);
+      }
+      if (!$strategyDetailsToggle) return;
+      $strategyDetailsToggle.classList.toggle('expanded', !!strategyDetailsExpanded);
+      $strategyDetailsToggle.setAttribute('aria-expanded', strategyDetailsExpanded ? 'true' : 'false');
+      const label = $strategyDetailsToggle.querySelector('.toggle-label');
+      if (label) label.textContent = strategyDetailsExpanded ? '收起参数' : '参数详情';
     }
 
     function updateCompactOverview() {
@@ -3039,6 +3182,19 @@
       setLowDataMode(!lowDataMode);
     }
 
+    function setStrategyDetailsExpanded(expanded, options = {}) {
+      const { persist = true } = options;
+      strategyDetailsExpanded = !!expanded;
+      if (persist) persistStrategyDetailsPreference();
+      updateStrategyDetailsToggleUi(true);
+      renderS8ArbPanel();
+      updateStratUI();
+    }
+
+    function toggleStrategyDetails() {
+      setStrategyDetailsExpanded(!strategyDetailsExpanded);
+    }
+
     function getTradeSourceLabel(source) {
       const s = String(source || '');
       if (!s) return { text: '手动', cls: 'manual' };
@@ -3078,6 +3234,111 @@
       return isMergeTrade(r) ? '1 USDC' : fallbackPriceText;
     }
 
+    function getReasonToken(reason, key) {
+      const match = String(reason || '').match(new RegExp(`${key}=([^\\s;]+)`, 'i'));
+      return match ? match[1] : '';
+    }
+
+    function shortenReasonText(value, maxLen = 120) {
+      const text = String(value || '').replace(/\s+/g, ' ').trim();
+      return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text;
+    }
+
+    function translateMakerTrigger(trigger) {
+      if (trigger === 'book_touch') return '盘口触碰';
+      if (trigger === 'book_hold') return '挂单停留';
+      if (trigger === 'crossed_ask') return 'ask下穿';
+      if (trigger === 'bid_swept') return 'bid扫穿';
+      return trigger || '';
+    }
+
+    function buildTradeReasonDisplay(r) {
+      const source = String(r?.source || '');
+      const status = String(r?.status || '');
+      const reason = String(r?.exitReason || '');
+      const rejectReason = String(r?.rejectReason || '');
+      const title = shortenReasonText([reason, rejectReason].filter(Boolean).join(' | '), 260);
+
+      if (isMergeTrade(r)) {
+        return { tag: '双边合并', cls: 'settle', detail: '锁定完整 pair 兑付', title };
+      }
+      if (status.includes('SETTLED') || source === 'paper-settlement') {
+        const parsed = parseTradeResult(r);
+        const resultText = parsed === 'up' ? '涨赢' : parsed === 'down' ? '跌赢' : '结果确认';
+        const settlement = reason.startsWith('crypto-close') ? '本地收盘价' : reason.startsWith('settled') ? '官方结算' : '模拟结算';
+        return { tag: '到期结算', cls: 'settle', detail: `${settlement} · ${resultText}`, title };
+      }
+
+      if (source === 'strategy10sweep' || r?.roundEntry === 'terminal-sweep' || reason.startsWith('s10-terminal-sweep')) {
+        const tier = (reason.match(/s10-terminal-sweep\s+(\w+)/i) || [])[1] || '';
+        const tag = status.includes('REJECT') ? '尾盘拒单' : `尾盘扫单${tier ? ` ${tier}` : ''}`;
+        const detailParts = [
+          getReasonToken(reason, 'rem') ? `rem ${getReasonToken(reason, 'rem')}` : '',
+          getReasonToken(reason, 'diff') ? `diff ${getReasonToken(reason, 'diff')}` : '',
+          getReasonToken(reason, 'need') ? `need ${getReasonToken(reason, 'need')}` : '',
+          getReasonToken(reason, 'vwap') ? `VWAP ${getReasonToken(reason, 'vwap')}` : '',
+          getReasonToken(reason, 'ev') ? `EV ${getReasonToken(reason, 'ev')}` : '',
+          getReasonToken(reason, 'maxPx') ? `maxPx ${getReasonToken(reason, 'maxPx')}` : '',
+          getReasonToken(reason, 'maxAmt') ? `maxAmt ${getReasonToken(reason, 'maxAmt')}` : '',
+          rejectReason ? `拒因 ${rejectReason}` : '',
+        ].filter(Boolean);
+        return { tag, cls: status.includes('REJECT') ? 'reject' : 'sweep', detail: detailParts.join(' · '), title };
+      }
+
+      if (source === 'strategy10maker' || reason.includes('maker-')) {
+        const trigger = translateMakerTrigger(reason.split(';')[0]?.trim());
+        const moduleMatch = reason.match(/maker-(seed|balance|conviction|terminal)-/i);
+        const module = moduleMatch ? moduleMatch[1] : '';
+        const inv = getReasonToken(reason, 'inv');
+        const band = getReasonToken(reason, 'band');
+        let tag = 'S10挂单';
+        let cls = 'open';
+        if (inv === 'insurance' || reason.includes('repairTo=')) {
+          tag = '方向补仓';
+          cls = 'rebalance';
+        } else if (module === 'seed') {
+          tag = '中早期开仓';
+          cls = 'open';
+        } else if (module === 'balance') {
+          tag = '均衡补仓';
+          cls = 'rebalance';
+        } else if (module === 'conviction') {
+          tag = '趋势补仓';
+          cls = 'rebalance';
+        } else if (module === 'terminal') {
+          tag = '尾盘挂单';
+          cls = 'sweep';
+        }
+        const detailParts = [
+          module ? `${module}阶段` : '',
+          trigger,
+          getReasonToken(reason, 'bid') ? `bid ${getReasonToken(reason, 'bid')}` : '',
+          getReasonToken(reason, 'fair') ? `fair ${getReasonToken(reason, 'fair')}` : '',
+          getReasonToken(reason, 'edge') ? `edge ${getReasonToken(reason, 'edge')}` : '',
+          inv ? (inv === 'insurance' ? '保险补仓' : inv) : '',
+          getReasonToken(reason, 'pair') ? `pair ${getReasonToken(reason, 'pair')}` : '',
+          band && band !== 'none' ? `band ${band}` : '',
+        ].filter(Boolean);
+        return { tag, cls, detail: detailParts.join(' · '), title };
+      }
+
+      if (status.includes('REJECT')) {
+        return { tag: '拒单', cls: 'reject', detail: rejectReason || shortenReasonText(reason, 80), title };
+      }
+      if (r?.side === 'buy') {
+        return { tag: '手动开仓', cls: 'open', detail: shortenReasonText(reason, 80), title };
+      }
+      return null;
+    }
+
+    function renderTradeReason(r) {
+      const info = buildTradeReasonDisplay(r);
+      if (!info) return '';
+      const detail = info.detail ? ` <span class="hist-reason-detail">${escapeHtml(shortenReasonText(info.detail, 120))}</span>` : '';
+      const title = info.title ? ` title="${escapeHtml(info.title)}"` : '';
+      return ` | <span class="hist-reason-tag ${info.cls}"${title}>${escapeHtml(info.tag)}</span>${detail}`;
+    }
+
     function renderTradeHistory() {
       if (!$signalHistoryList) return;
       if (!Array.isArray(tradeHistory) || tradeHistory.length === 0) {
@@ -3108,9 +3369,7 @@
         const pnlText = (r.side === 'sell' || isMergeTrade(r)) && Number.isFinite(pnlVal)
           ? ` | <span class="hist-pnl ${pnlVal > 0 ? 'up' : pnlVal < 0 ? 'down' : 'gray'}">盈亏 ${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>`
           : '';
-        const reasonText = (r.side === 'sell' || isMergeTrade(r)) && r.exitReason
-          ? ` | <span style="color:#f0a500">${r.exitReason.replace(/rem=/g, '剩余').replace(/s /g, '秒').replace(/s$/g, '-').replace(/diff=/g, '差价')}</span>`
-          : '';
+        const reasonText = renderTradeReason(r);
         const roundText = r.roundEntry ? ` <span style="color:#666">[${r.roundEntry}]</span>` : '';
         return `<div class="hist-item">
       <span class="hist-time">${timeText}</span>
@@ -3177,6 +3436,50 @@
       return shares > 0 && price > 0 ? shares * price : 0;
     }
 
+    function getCurrentS10MakerSummary() {
+      const s10 = strat?.perStrategy?.s10 || {};
+      return {
+        activeOrders: tradeNumber(s10.makerActiveOrders),
+        upOrders: tradeNumber(s10.makerUpOrders),
+        downOrders: tradeNumber(s10.makerDownOrders),
+        activeShares: tradeNumber(s10.makerActiveShares),
+        activeNotional: tradeNumber(s10.makerActiveNotional),
+        upActiveShares: tradeNumber(s10.makerUpActiveShares),
+        downActiveShares: tradeNumber(s10.makerDownActiveShares),
+        upActiveNotional: tradeNumber(s10.makerUpActiveNotional),
+        downActiveNotional: tradeNumber(s10.makerDownActiveNotional),
+        upBidPct: Number(s10.makerUpBidPct),
+        downBidPct: Number(s10.makerDownBidPct),
+        module: String(s10.makerModule || ''),
+        mode: String(s10.makerMode || ''),
+        reason: String(s10.makerLastReason || s10.reason || ''),
+      };
+    }
+
+    function applyCurrentMakerSummaryToRow(row) {
+      if (!row || row.windowStart !== currentWindowStart) return;
+      const maker = getCurrentS10MakerSummary();
+      row.activeOrders = maker.activeOrders;
+      row.activeUpOrders = maker.upOrders;
+      row.activeDownOrders = maker.downOrders;
+      row.activeShares = maker.activeShares;
+      row.activeNotional = maker.activeNotional;
+      row.activeUpShares = maker.upActiveShares;
+      row.activeDownShares = maker.downActiveShares;
+      row.activeUpNotional = maker.upActiveNotional;
+      row.activeDownNotional = maker.downActiveNotional;
+      row.activeUpBidPct = maker.upBidPct;
+      row.activeDownBidPct = maker.downBidPct;
+      row.makerModule = maker.module;
+      row.makerMode = maker.mode;
+      row.makerReason = maker.reason;
+    }
+
+    function formatPct0(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? `${Math.round(n)}%` : '-';
+    }
+
     function getTradeFee(r) {
       return ['fee', 'fees', 'gas', 'gasFee', 'gasCost', 'commission', 'makerFee', 'takerFee', 'protocolFee']
         .reduce((sum, key) => sum + tradeNumber(r?.[key]), 0);
@@ -3215,6 +3518,24 @@
         hasRealizedPnl: false,
         rejects: 0,
         fills: 0,
+        makerFills: 0,
+        sweepFills: 0,
+        filledShares: 0,
+        filledNotional: 0,
+        activeOrders: 0,
+        activeUpOrders: 0,
+        activeDownOrders: 0,
+        activeShares: 0,
+        activeNotional: 0,
+        activeUpShares: 0,
+        activeDownShares: 0,
+        activeUpNotional: 0,
+        activeDownNotional: 0,
+        activeUpBidPct: NaN,
+        activeDownBidPct: NaN,
+        makerModule: '',
+        makerMode: '',
+        makerReason: '',
         result: info?.result || info?.officialResult || info?.localResult || null,
         settled: !!info?.settled,
       };
@@ -3244,6 +3565,10 @@
         }
         if (r?.side === 'buy' && !isMergeTrade(r) && shares > 0) {
           row.fills += 1;
+          row.filledShares += shares;
+          row.filledNotional += notional;
+          if (String(r?.source || '') === 'strategy10maker') row.makerFills += 1;
+          if (String(r?.source || '') === 'strategy10sweep' || r?.roundEntry === 'terminal-sweep') row.sweepFills += 1;
           const impactPct = tradeNumber(r?.priceImpactPct);
           if (r.direction === 'up') {
             row.upShares += shares;
@@ -3270,8 +3595,20 @@
         }
       }
 
+      const currentMaker = getCurrentS10MakerSummary();
+      if (currentWindowStart && currentMaker.activeOrders > 0 && !rows.has(currentWindowStart)) {
+        rows.set(currentWindowStart, emptyPaperWindowRow(currentWindowStart, infoMap.get(currentWindowStart) || null));
+      }
+      for (const row of rows.values()) applyCurrentMakerSummaryToRow(row);
+
       return [...rows.values()]
-        .filter((row) => row.upShares > 0.0001 || row.downShares > 0.0001 || row.payout > 0 || row.rejects > 0)
+        .filter((row) =>
+          row.upShares > 0.0001 ||
+          row.downShares > 0.0001 ||
+          row.payout > 0 ||
+          row.rejects > 0 ||
+          row.activeOrders > 0
+        )
         .sort((a, b) => b.windowStart - a.windowStart);
     }
 
@@ -3314,6 +3651,18 @@
         const feeText = moneyText(row.fees);
         const impactText = moneyText(row.impactCost);
         const netPnlText = Number.isFinite(netPnl) ? `${netPnl >= 0 ? '+' : ''}${moneyText(netPnl)}` : '-';
+        const activeOrderText = row.activeOrders > 0
+          ? `挂 ${row.activeOrders} · 涨${row.activeUpOrders}/跌${row.activeDownOrders}`
+          : '无活跃挂单';
+        const activeVolumeText = row.activeOrders > 0
+          ? `${fmtSize(row.activeShares)} / ${moneyText(row.activeNotional)}`
+          : '-';
+        const activeBidText = `涨 ${formatPct0(row.activeUpBidPct)} / 跌 ${formatPct0(row.activeDownBidPct)}`;
+        const fillVolumeText = `${fmtSize(row.filledShares)} / ${moneyText(row.filledNotional)}`;
+        const fillBreakdownText = `maker ${row.makerFills} · sweep ${row.sweepFills} · 拒 ${row.rejects}`;
+        const makerReason = row.makerReason
+          ? escapeHtml(shortenReasonText(row.makerReason, 88))
+          : escapeHtml(`${row.makerModule || '-'} ${row.makerMode || ''}`.trim());
         return `<div class="paper-window-row">
           <div class="paper-window-top">
             <span class="paper-window-time">${formatPaperWindowRange(row.windowStart)}</span>
@@ -3344,6 +3693,21 @@
               <div class="box-title">成交</div>
               <div class="box-main">${row.fills}笔</div>
               <div class="box-sub">拒单 ${row.rejects} · 兑付 ${moneyText(row.payout)}</div>
+            </div>
+            <div class="paper-window-box">
+              <div class="box-title">当前挂单</div>
+              <div class="box-main">${activeOrderText}</div>
+              <div class="box-sub">${activeVolumeText} · ${activeBidText}</div>
+            </div>
+            <div class="paper-window-box">
+              <div class="box-title">成交量</div>
+              <div class="box-main">${fillVolumeText}</div>
+              <div class="box-sub">${fillBreakdownText}</div>
+            </div>
+            <div class="paper-window-box">
+              <div class="box-title">Maker状态</div>
+              <div class="box-main">${escapeHtml(row.makerModule || '-')} / ${escapeHtml(row.makerMode || '-')}</div>
+              <div class="box-sub">${makerReason || '-'}</div>
             </div>
             <div class="paper-window-box">
               <div class="box-title">标记价值</div>
@@ -3391,12 +3755,13 @@
         const pnlText = (r.side === 'sell' || isMergeTrade(r)) && Number.isFinite(pnlVal)
           ? ` | <span class="hist-pnl ${pnlVal > 0 ? 'up' : pnlVal < 0 ? 'down' : 'gray'}">盈亏 ${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>`
           : '';
-        const rejectText = r.rejectReason ? ` | <span style="color:#f85149">${escapeHtml(r.rejectReason)}</span>` : '';
+        const reasonText = renderTradeReason(r);
+        const rejectText = r.rejectReason && !reasonText ? ` | <span style="color:#f85149">${escapeHtml(r.rejectReason)}</span>` : '';
         return `<div class="hist-item">
           <span class="hist-time">${timeText}</span>
           <span class="hist-type ${source.cls}">模拟${source.text === '手动' ? '' : source.text.replace('策略', 'S')}</span>
           <span class="hist-side ${sideCls}">${sideText}</span>
-          <span class="hist-desc">${dirText} ${fmtSize(r.amount)} @ ${priceText} <span style="color:${statusColor}">${escapeHtml(r.status || '')}</span>${pnlText}${latencyText}${modelText}${depthText}${impactText}${snapshotText}${checkText}${rejectText}</span>
+          <span class="hist-desc">${dirText} ${fmtSize(r.amount)} @ ${priceText} <span style="color:${statusColor}">${escapeHtml(r.status || '')}</span>${reasonText}${pnlText}${latencyText}${modelText}${depthText}${impactText}${snapshotText}${checkText}${rejectText}</span>
         </div>`;
       }).join('');
     }
@@ -3446,6 +3811,20 @@
         eventFills: 0,
         postedNotional: 0,
         filledNotional: 0,
+        activeOrders: 0,
+        activeUpOrders: 0,
+        activeDownOrders: 0,
+        activeShares: 0,
+        activeNotional: 0,
+        activeUpShares: 0,
+        activeDownShares: 0,
+        activeUpNotional: 0,
+        activeDownNotional: 0,
+        activeUpBidPct: NaN,
+        activeDownBidPct: NaN,
+        makerModule: '',
+        makerMode: '',
+        makerReason: '',
         latestTs: 0,
         latestReason: '',
       };
@@ -3505,6 +3884,12 @@
         if (event?.reason) row.latestReason = String(event.reason);
       }
 
+      const currentMaker = getCurrentS10MakerSummary();
+      if (currentWindowStart && currentMaker.activeOrders > 0 && !rows.has(currentWindowStart)) {
+        rows.set(currentWindowStart, emptyLiveWindowRow(currentWindowStart));
+      }
+      for (const row of rows.values()) applyCurrentMakerSummaryToRow(row);
+
       return [...rows.values()]
         .filter((row) =>
           row.upShares > 0.0001 ||
@@ -3513,7 +3898,8 @@
           row.posted > 0 ||
           row.canceled > 0 ||
           row.rejected > 0 ||
-          row.cancelFailed > 0
+          row.cancelFailed > 0 ||
+          row.activeOrders > 0
         )
         .sort((a, b) => b.windowStart - a.windowStart);
     }
@@ -3547,6 +3933,17 @@
         const statusText = row.windowStart === currentWindowStart ? '进行中' : row.hasRealizedPnl ? '已兑付' : '待结算';
         const statusColor = row.windowStart === currentWindowStart ? '#f0a500' : row.hasRealizedPnl ? '#58a6ff' : '#7a8a9a';
         const reason = row.latestReason ? escapeHtml(row.latestReason).slice(0, 88) : '-';
+        const activeOrderText = row.activeOrders > 0
+          ? `${row.activeOrders}单 · 涨${row.activeUpOrders} / 跌${row.activeDownOrders}`
+          : '-';
+        const activeVolumeText = row.activeOrders > 0
+          ? `${fmtSize(row.activeShares)} / ${moneyText(row.activeNotional)}`
+          : '-';
+        const activeBidText = row.activeOrders > 0
+          ? `bid 涨${formatPct0(row.activeUpBidPct)} / 跌${formatPct0(row.activeDownBidPct)}`
+          : 'bid -';
+        const liveFillVolumeText = `${fmtSize(row.upShares + row.downShares)} / ${moneyText(row.filledNotional || totalCost)}`;
+        const liveMakerReason = row.makerReason ? escapeHtml(row.makerReason).slice(0, 88) : reason;
         return `<div class="paper-window-row">
           <div class="paper-window-top">
             <span class="paper-window-time">${formatPaperWindowRange(row.windowStart)}</span>
@@ -3574,14 +3971,24 @@
               <div class="box-sub">撤 ${row.canceled} · 拒 ${row.rejected} · 失败 ${row.cancelFailed}</div>
             </div>
             <div class="paper-window-box">
+              <div class="box-title">当前挂单</div>
+              <div class="box-main">${activeOrderText}</div>
+              <div class="box-sub">${activeVolumeText} · ${activeBidText}</div>
+            </div>
+            <div class="paper-window-box">
+              <div class="box-title">成交量</div>
+              <div class="box-main">${liveFillVolumeText}</div>
+              <div class="box-sub">涨 ${fmtSize(row.upShares)} · 跌 ${fmtSize(row.downShares)} · 兑付 ${moneyText(row.payout)}</div>
+            </div>
+            <div class="paper-window-box">
               <div class="box-title">资金占用</div>
               <div class="box-main">${moneyText(row.postedNotional || totalCost)}</div>
               <div class="box-sub">成交 ${moneyText(row.filledNotional || totalCost)} · 兑付 ${moneyText(row.payout)}</div>
             </div>
             <div class="paper-window-box">
-              <div class="box-title">最近原因</div>
-              <div class="box-main">${reason}</div>
-              <div class="box-sub">${row.latestTs ? new Date(row.latestTs).toLocaleTimeString([], { hour12: false }) : '-'}</div>
+              <div class="box-title">Maker状态</div>
+              <div class="box-main">${escapeHtml(row.makerModule || '-')} / ${escapeHtml(row.makerMode || '-')}</div>
+              <div class="box-sub">${liveMakerReason}</div>
             </div>
           </div>
         </div>`;
@@ -4046,6 +4453,7 @@
 
     renderTradeHistory();
     updateLowDataToggleUi();
+    updateStrategyDetailsToggleUi(false);
 
     // ┢┢ Polymarket 真实盈亏 ┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢┢
     const $pmPnlList = document.getElementById('pm-pnl-list');
@@ -4367,6 +4775,12 @@
     const $brStatPnl = document.getElementById('br-stat-pnl');
     const $brCurrent = document.getElementById('br-current');
     const $stratConfigNote = document.getElementById('strat-config-note');
+    const s10TailMultEls = {
+      earlyProbe: document.getElementById('s10-tail-early-probe-mult'),
+      probe: document.getElementById('s10-tail-probe-mult'),
+      robust: document.getElementById('s10-tail-robust-mult'),
+      certainty: document.getElementById('s10-tail-certainty-mult'),
+    };
 
     if ($brCurrent) {
       ['scroll', 'wheel', 'touchmove', 'pointerdown'].forEach((eventName) => {
@@ -4418,6 +4832,7 @@
     };
     const stratEnabled = {};
     const stratAmount = {};
+    let s10TailMultipliers = { earlyProbe: 1, probe: 2, robust: 6, certainty: 10 };
     let maxRoundEntries = 1;
     let marketHoursOnly = false;
     let autoClaimEnabled = false;
@@ -4451,6 +4866,9 @@
       if ($maxRoundEntries) $maxRoundEntries.disabled = disabled;
       if ($marketHoursOnly) $marketHoursOnly.disabled = disabled;
       if ($autoClaimEnabled) $autoClaimEnabled.disabled = disabled;
+      for (const el of Object.values(s10TailMultEls)) {
+        if (el) el.disabled = disabled;
+      }
     }
 
     function updateFairProb(msg) {
@@ -4527,6 +4945,33 @@
     }
 
     // s6 动量因子面板已移
+    function readS10TailMultipliersFromControls() {
+      const next = {};
+      for (const key of Object.keys(s10TailMultEls)) {
+        const value = Number(s10TailMultEls[key]?.value);
+        if (!Number.isFinite(value) || value < 0.05 || value > 30) {
+          return { error: `S10 tail ${key} must be 0.05-30` };
+        }
+        next[key] = value;
+      }
+      return { value: next };
+    }
+
+    function applyS10TailMultipliers(config) {
+      const raw = config?.s10TailMultipliers || {};
+      s10TailMultipliers = {
+        earlyProbe: Number(raw.earlyProbe) || 1,
+        probe: Number(raw.probe) || 2,
+        robust: Number(raw.robust) || 6,
+        certainty: Number(raw.certainty) || 10,
+      };
+      const activeEl = document.activeElement;
+      for (const key of Object.keys(s10TailMultEls)) {
+        const el = s10TailMultEls[key];
+        if (el && el !== activeEl) el.value = String(s10TailMultipliers[key]);
+      }
+    }
+
     function applyStrategyConfig(config) {
       const activeEl = document.activeElement;
       for (const key of strategyKeys) {
@@ -4552,6 +4997,7 @@
         executionMode = config.executionMode;
         updateExecutionModeUI();
       }
+      applyS10TailMultipliers(config);
     }
 
     let __authToken = '';
@@ -4592,6 +5038,7 @@
           body: JSON.stringify({
             enabled: stratEnabled,
             amount: stratAmount,
+            s10TailMultipliers,
             maxRoundEntries,
             marketHoursOnly,
             autoClaimEnabled,
@@ -4636,12 +5083,21 @@
         nextEnabled[key] = !!stratChkEls[key]?.checked;
         if (!Number.isFinite(nextAmount[key]) || nextAmount[key] < 0.01) {
           setStratConfigNote(`策略${key.slice(1)}金额必须 0.01`, '#f85149');
-          applyStrategyConfig({ enabled: stratEnabled, amount: stratAmount });
+          applyStrategyConfig({ enabled: stratEnabled, amount: stratAmount, s10TailMultipliers });
           setTimeout(() => {
             if (!stratConfigSaving) setStratConfigNote();
           }, 2500);
           return;
         }
+      }
+      const nextTailMultipliers = readS10TailMultipliersFromControls();
+      if (nextTailMultipliers.error) {
+        setStratConfigNote(nextTailMultipliers.error, '#f85149');
+        applyStrategyConfig({ enabled: stratEnabled, amount: stratAmount, s10TailMultipliers });
+        setTimeout(() => {
+          if (!stratConfigSaving) setStratConfigNote();
+        }, 2500);
+        return;
       }
 
       stratConfigSaving = true;
@@ -4655,6 +5111,7 @@
           body: JSON.stringify({
             enabled: nextEnabled,
             amount: nextAmount,
+            s10TailMultipliers: nextTailMultipliers.value,
             maxRoundEntries: Number($maxRoundEntries?.value) || 1,
             marketHoursOnly: !!$marketHoursOnly?.checked,
             autoClaimEnabled: !!$autoClaimEnabled?.checked,
@@ -4669,7 +5126,7 @@
           if (!stratConfigSaving) setStratConfigNote();
         }, 1500);
       } catch (e) {
-        applyStrategyConfig({ enabled: stratEnabled, amount: stratAmount });
+        applyStrategyConfig({ enabled: stratEnabled, amount: stratAmount, s10TailMultipliers });
         setStratConfigNote(e.message?.slice(0, 40) || '保存失败', '#f85149');
         setTimeout(() => {
           if (!stratConfigSaving) setStratConfigNote();
@@ -5187,6 +5644,11 @@
       if (s10.makerModule) parts.push(`module ${s10.makerModule}`);
       if (s10.makerMode) parts.push(`maker ${s10.makerMode}`);
       if (isFiniteNumber(s10.makerTerminalConfidencePct)) parts.push(`terminal ${s10.makerTerminalDirection || '-'} ${formatPct(s10.makerTerminalConfidencePct)}`);
+      if (isFiniteNumber(s10.terminalSweepWinPct)) {
+        parts.push(`sweep ${s10.terminalSweepDirection || '-'} ${s10.terminalSweepTier || '-'} p${formatPct(s10.terminalSweepWinPct)} ev${formatPct(s10.terminalSweepEdgePct)}`);
+      } else if (!compact && s10.terminalSweepReason) {
+        parts.push(`sweep ${String(s10.terminalSweepReason).slice(0, 40)}`);
+      }
       if (isFiniteNumber(s10.makerTotalBidCostPct)) parts.push(`bidset ${formatPct(s10.makerTotalBidCostPct)}`);
       if (isFiniteNumber(s10.pairedProfitPct)) parts.push(`pair ${formatPct(s10.pairedProfitPct)}`);
       if (isFiniteNumber(s10.tailEvPct)) parts.push(`tailEV ${formatPct(s10.tailEvPct)}`);
@@ -5218,9 +5680,10 @@
       const showS9 = !!(s9 && (stratEnabled.s9 || strat.activeStrategy === 9) && strat.activeStrategy !== 8 && !showS10);
       const showS8 = !!(s8 && (stratEnabled.s8 || strat.activeStrategy === 8) && !showS9 && !showS10);
       const visible = showS8 || showS9 || showS10;
-      panel.classList.toggle('show', visible);
+      updateStrategyDetailsToggleUi(visible);
+      panel.classList.toggle('show', visible && strategyDetailsExpanded);
       panel.replaceChildren();
-      if (!visible) return;
+      if (!visible || !strategyDetailsExpanded) return;
 
       const addPill = (label, value, cls = '') => {
         const pill = document.createElement('span');
@@ -5242,6 +5705,17 @@
         addPill('S10', s10.decision || s10.status || 'scan', ready ? 'good' : 'muted');
         if (s10.makerModule) addPill('Module', s10.makerModule, s10.makerModule === 'terminal' ? 'good' : s10.makerModule === 'seed' ? 'muted' : 'warn');
         if (isFiniteNumber(s10.makerTerminalConfidencePct)) addPill('Terminal', `${s10.makerTerminalDirection || '-'} ${formatPct(s10.makerTerminalConfidencePct)}`, s10.makerTerminalConfidencePct >= 99 ? 'good' : 'warn');
+        if (isFiniteNumber(s10.terminalSweepWinPct)) {
+          addPill('Sweep', `${s10.terminalSweepDirection || '-'} ${s10.terminalSweepTier || '-'} p${formatPct(s10.terminalSweepWinPct)} ev${formatPct(s10.terminalSweepEdgePct)}`, s10.terminalSweepEdgePct > 0 ? 'good' : 'warn');
+          addPill('SweepPx', `vwap ${formatPct(s10.terminalSweepVwapPct)} max ${formatPct(s10.terminalSweepMaxPricePct)}`, 'muted');
+          addPill('SweepNeed', `diff ${Number(s10.terminalSweepRequiredDiff || 0).toFixed(1)} q95 ${Number(s10.terminalSweepQ95 || 0).toFixed(1)} q99 ${Number(s10.terminalSweepQ99 || 0).toFixed(1)}`, 'muted');
+          addPill('SweepAmt', `$${Number(s10.terminalSweepAmount || 0).toFixed(2)} / max $${Number(s10.terminalSweepMaxAmount || 0).toFixed(2)}`, 'muted');
+        } else if (s10.terminalSweepReason) {
+          addPill('Sweep', String(s10.terminalSweepReason).slice(0, 36), 'muted');
+          if (isFiniteNumber(s10.terminalSweepRequiredDiff)) {
+            addPill('SweepNeed', `diff ${Number(s10.terminalSweepRequiredDiff || 0).toFixed(1)} q95 ${Number(s10.terminalSweepQ95 || 0).toFixed(1)} q99 ${Number(s10.terminalSweepQ99 || 0).toFixed(1)}`, 'muted');
+          }
+        }
         addPill('Maker', s10.makerMode || '-', isFiniteNumber(s10.makerActiveOrders) && s10.makerActiveOrders > 0 ? 'good' : 'muted');
         addPill('Orders', isFiniteNumber(s10.makerActiveOrders) ? `${s10.makerActiveOrders}(${s10.makerUpOrders || 0}/${s10.makerDownOrders || 0})` : '-', isFiniteNumber(s10.makerActiveOrders) && s10.makerActiveOrders > 0 ? 'good' : 'muted');
         if (isFiniteNumber(s10.makerTotalBidCostPct)) addPill('BidSet', `${formatPct(s10.makerTotalBidCostPct)} / edge ${formatPct(s10.makerTargetEdgePct)}`, s10.makerTotalBidCostPct <= 98 ? 'good' : 'warn');
@@ -5318,7 +5792,9 @@
     function formatS7ModeInfo() {
       const s10 = strat.perStrategy?.s10;
       if (stratEnabled.s10 && s10) {
-        const parts = getS10InfoParts(s10);
+        const parts = strategyDetailsExpanded
+          ? getS10InfoParts(s10)
+          : getS10InfoParts(s10, { compact: true }).slice(0, 6);
         return {
           text: parts.join(' | '),
           color: s10.ready ? '#3fb950' : '#888',
@@ -5604,6 +6080,9 @@
     if ($maxRoundEntries) $maxRoundEntries.addEventListener('change', saveStrategyConfigFromControls);
     if ($marketHoursOnly) $marketHoursOnly.addEventListener('change', saveStrategyConfigFromControls);
     if ($autoClaimEnabled) $autoClaimEnabled.addEventListener('change', saveStrategyConfigFromControls);
+    for (const el of Object.values(s10TailMultEls)) {
+      if (el) el.addEventListener('change', saveStrategyConfigFromControls);
+    }
 
     // F1/F2 快捷键切换买卖出，F3/F4 切换涨跌方向
     document.addEventListener('keydown', e => {

@@ -1,5 +1,5 @@
 import { dirname } from "path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 
 type Outcome = "up" | "down" | "";
 type ActivitySide = "BUY" | "SELL" | "";
@@ -210,6 +210,9 @@ export interface BonereaperMonitorOptions {
   pollMs?: number;
   activityLimit?: number;
   maxWindows?: number;
+  sampleWindows?: number;
+  maxLoadBytes?: number;
+  maxSamplesPerWindow?: number;
 }
 
 export interface BonereaperSnapshotContext {
@@ -221,7 +224,10 @@ const DEFAULT_ADDRESS = "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30";
 const DATA_API = "https://data-api.polymarket.com/activity";
 const FIVE_MIN_SECONDS = 300;
 const MARKET_MATCH_MAX_LAG_MS = 2500;
-const MAX_SAMPLES_PER_WINDOW = 420;
+const DEFAULT_MAX_WINDOWS = 288;
+const DEFAULT_SAMPLE_WINDOWS = 36;
+const DEFAULT_MAX_LOAD_BYTES = 80 * 1024 * 1024;
+const DEFAULT_MAX_SAMPLES_PER_WINDOW = 180;
 
 function round(value: number, digits = 4): number {
   if (!Number.isFinite(value)) return 0;
@@ -640,6 +646,9 @@ export class BonereaperMonitor {
   private readonly pollMs: number;
   private readonly activityLimit: number;
   private readonly maxWindows: number;
+  private readonly sampleWindows: number;
+  private readonly maxLoadBytes: number;
+  private readonly maxSamplesPerWindow: number;
   private readonly windows = new Map<string, StoredWindow>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -654,7 +663,22 @@ export class BonereaperMonitor {
     this.address = options.address || DEFAULT_ADDRESS;
     this.pollMs = Math.max(5000, Math.round(options.pollMs || 10000));
     this.activityLimit = Math.max(50, Math.round(options.activityLimit || 500));
-    this.maxWindows = Math.max(20, Math.round(options.maxWindows || 1200));
+    this.maxWindows = Math.max(
+      20,
+      Math.round(options.maxWindows || Number(process.env.BONEREAPER_MONITOR_MAX_WINDOWS || DEFAULT_MAX_WINDOWS)),
+    );
+    this.sampleWindows = Math.max(
+      1,
+      Math.round(options.sampleWindows || Number(process.env.BONEREAPER_MONITOR_SAMPLE_WINDOWS || DEFAULT_SAMPLE_WINDOWS)),
+    );
+    this.maxLoadBytes = Math.max(
+      1024 * 1024,
+      Math.round(options.maxLoadBytes || Number(process.env.BONEREAPER_MONITOR_MAX_LOAD_BYTES || DEFAULT_MAX_LOAD_BYTES)),
+    );
+    this.maxSamplesPerWindow = Math.max(
+      20,
+      Math.round(options.maxSamplesPerWindow || Number(process.env.BONEREAPER_MONITOR_MAX_SAMPLES_PER_WINDOW || DEFAULT_MAX_SAMPLES_PER_WINDOW)),
+    );
     this.load();
   }
 
@@ -711,8 +735,8 @@ export class BonereaperMonitor {
     const last = window.samples.at(-1);
     if (last && sample.ts <= last.ts) return;
     window.samples.push(sample);
-    if (window.samples.length > MAX_SAMPLES_PER_WINDOW) {
-      window.samples.splice(0, window.samples.length - MAX_SAMPLES_PER_WINDOW);
+    if (window.samples.length > this.maxSamplesPerWindow) {
+      window.samples.splice(0, window.samples.length - this.maxSamplesPerWindow);
     }
     window.summary = summarizeWindow(window);
     if (Date.now() - this.lastPersistAt > 15000) {
@@ -839,25 +863,47 @@ export class BonereaperMonitor {
     for (const item of ordered.slice(this.maxWindows)) {
       this.windows.delete(item.conditionId);
     }
+    ordered.slice(0, this.maxWindows).forEach((item, index) => {
+      if (!Array.isArray(item.samples)) item.samples = [];
+      if (index >= this.sampleWindows) {
+        item.samples = [];
+      } else if (item.samples.length > this.maxSamplesPerWindow) {
+        item.samples = item.samples.slice(-this.maxSamplesPerWindow);
+      }
+    });
   }
 
   private load(): void {
     if (!existsSync(this.file)) return;
     try {
+      const size = statSync(this.file).size;
+      if (size > this.maxLoadBytes) {
+        const archive = this.file.replace(/\.json$/i, `.archive-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+        renameSync(this.file, archive);
+        console.warn(
+          `[Bonereaper] monitor file too large ${(size / 1024 / 1024).toFixed(1)}MB > ${(this.maxLoadBytes / 1024 / 1024).toFixed(1)}MB; archived to ${archive}`,
+        );
+        return;
+      }
       const raw = JSON.parse(readFileSync(this.file, "utf8")) as PersistedState;
       if (!Array.isArray(raw.windows)) return;
-      for (const item of raw.windows) {
+      for (const [index, item] of raw.windows.entries()) {
         if (!item?.conditionId || !Number.isFinite(Number(item.windowStart)) || !Array.isArray(item.activities)) continue;
+        const samples = index < this.sampleWindows && Array.isArray(item.samples)
+          ? item.samples.slice(-this.maxSamplesPerWindow)
+          : [];
         const window: StoredWindow = {
           conditionId: item.conditionId,
           slug: item.slug || `btc-updown-5m-${item.windowStart}`,
           title: item.title || "",
           windowStart: Number(item.windowStart),
           activities: item.activities,
-          samples: Array.isArray(item.samples) ? item.samples : [],
-          summary: item.summary,
+          samples,
+          summary: item.summary || ({} as BonereaperWindowSummary),
         };
-        window.summary = summarizeWindow(window);
+        if (window.samples.length || !window.summary) {
+          window.summary = summarizeWindow(window);
+        }
         this.windows.set(window.conditionId, window);
       }
       this.trimWindows();
@@ -870,7 +916,14 @@ export class BonereaperMonitor {
     try {
       const dir = dirname(this.file);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      const windows = [...this.windows.values()].sort((a, b) => b.windowStart - a.windowStart);
+      const windows = [...this.windows.values()]
+        .sort((a, b) => b.windowStart - a.windowStart)
+        .map((window, index) => ({
+          ...window,
+          samples: index < this.sampleWindows
+            ? (window.samples || []).slice(-this.maxSamplesPerWindow)
+            : [],
+        }));
       const payload: PersistedState = {
         address: this.address,
         updatedAt: Date.now(),
