@@ -7,9 +7,13 @@ node_modules/
 
 # 运行时数据
 .trade-history.json
+.paper-state.json
+.paper-trade-history.json
+.execution-events.json
 .strategy-config.json
 .strategy-sources.json
 .backtest-state.json
+backtest-data/*.json
 backtest-data/*.jsonl
 backtest-data/.DS_Store
 
