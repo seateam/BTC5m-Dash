@@ -133,6 +133,8 @@ export interface BonereaperWindowSummary {
   approxPnlUsd: number | null;
   approxRoiPct: number | null;
   resultDirection: Outcome;
+  statsWarning?: string;
+  redeemMatchesInventory?: boolean;
   terminalBuyCount: number;
   terminalBuyUsdc: number;
   terminalBuyShares: number;
@@ -234,10 +236,11 @@ const DEFAULT_ADDRESS = "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30";
 const DATA_API = "https://data-api.polymarket.com/activity";
 const FIVE_MIN_SECONDS = 300;
 const MARKET_MATCH_MAX_LAG_MS = 2500;
-const DEFAULT_MAX_WINDOWS = 288;
-const DEFAULT_SAMPLE_WINDOWS = 36;
+const DEFAULT_MAX_WINDOWS = 48;
+const DEFAULT_SAMPLE_WINDOWS = 8;
 const DEFAULT_MAX_LOAD_BYTES = 80 * 1024 * 1024;
-const DEFAULT_MAX_SAMPLES_PER_WINDOW = 180;
+const DEFAULT_MAX_SAMPLES_PER_WINDOW = 30;
+const DEFAULT_MAX_ACTIVITIES_PER_WINDOW = 360;
 
 function round(value: number, digits = 4): number {
   if (!Number.isFinite(value)) return 0;
@@ -446,7 +449,7 @@ function inferResultDirection(
   if (upGap <= downGap && upGap <= Math.max(2, upShares * 0.03)) return "up";
   if (downGap < upGap && downGap <= Math.max(2, downShares * 0.03))
     return "down";
-  return upShares >= downShares ? "up" : "down";
+  return "";
 }
 
 function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
@@ -493,12 +496,24 @@ function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
   const redeemShares = sum(redeems, (item) => item.size);
   const redeemUsdc = sum(redeems, (item) => item.usdcSize);
   const sellUsdc = sum(sells, (item) => item.usdcSize);
-  const resultDirection = inferResultDirection(
-    upBuyShares,
-    downBuyShares,
-    redeemShares,
-  );
-  const completed = redeemUsdc > 0 || sellUsdc > 0;
+  const redeemInventoryGap =
+    redeemShares > 0
+      ? Math.min(
+          Math.abs(upBuyShares - redeemShares),
+          Math.abs(downBuyShares - redeemShares),
+        )
+      : 0;
+  const redeemMatchesInventory =
+    redeemShares <= 0 ||
+    redeemInventoryGap <= Math.max(2, redeemShares * 0.03);
+  const statsWarning =
+    redeemUsdc > 0 && !redeemMatchesInventory
+      ? "redeem_activity_truncated"
+      : "";
+  const resultDirection = redeemMatchesInventory
+    ? inferResultDirection(upBuyShares, downBuyShares, redeemShares)
+    : "";
+  const completed = !statsWarning && (redeemUsdc > 0 || sellUsdc > 0);
   const approxPnlUsd = completed
     ? round(redeemUsdc + sellUsdc - totalBuyUsdc, 4)
     : null;
@@ -723,6 +738,8 @@ function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
     approxPnlUsd,
     approxRoiPct,
     resultDirection,
+    statsWarning,
+    redeemMatchesInventory,
     terminalBuyCount: terminalBuys.length,
     terminalBuyUsdc: round(terminalBuyUsdc, 4),
     terminalBuyShares: round(terminalBuyShares, 4),
@@ -1099,13 +1116,11 @@ export class BonereaperMonitor {
           slug: item.slug || `btc-updown-5m-${item.windowStart}`,
           title: item.title || "",
           windowStart: Number(item.windowStart),
-          activities: item.activities,
+          activities: item.activities.slice(-DEFAULT_MAX_ACTIVITIES_PER_WINDOW),
           samples,
           summary: item.summary || ({} as BonereaperWindowSummary),
         };
-        if (window.samples.length || !window.summary) {
-          window.summary = summarizeWindow(window);
-        }
+        window.summary = summarizeWindow(window);
         this.windows.set(window.conditionId, window);
       }
       this.trimWindows();
@@ -1134,6 +1149,9 @@ export class BonereaperMonitor {
         .sort((a, b) => b.windowStart - a.windowStart)
         .map((window, index) => ({
           ...window,
+          activities: (window.activities || []).slice(
+            -DEFAULT_MAX_ACTIVITIES_PER_WINDOW,
+          ),
           samples:
             index < this.sampleWindows
               ? (window.samples || []).slice(-this.maxSamplesPerWindow)
@@ -1144,12 +1162,16 @@ export class BonereaperMonitor {
         updatedAt: Date.now(),
         windows,
       };
-      const text = `${JSON.stringify(payload, null, 2)}\n`;
+      const text = `${JSON.stringify(payload)}\n`;
       if (text.length <= 2) return;
       tmp = `${this.file}.tmp-${process.pid}-${Date.now()}`;
       writeFileSync(tmp, text, "utf8");
       try {
-        if (existsSync(this.file) && statSync(this.file).size > 0) {
+        if (
+          process.env.BONEREAPER_MONITOR_BACKUP_ENABLED === "1" &&
+          existsSync(this.file) &&
+          statSync(this.file).size > 0
+        ) {
           copyFileSync(this.file, `${this.file}.bak`);
         }
       } catch {

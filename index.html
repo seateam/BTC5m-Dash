@@ -4295,6 +4295,7 @@
           Number(row.tailShares) || 0,
           Number(row.approxPnlUsd) || 0,
           row.resultDirection || '',
+          row.statsWarning || '',
         ].join(':');
       }).join('|') + `|${s10Text}|${s10Reason || ''}`;
     }
@@ -4362,7 +4363,13 @@
         const upAvg = Number(row.upAvgBuy);
         const downAvg = Number(row.downAvgBuy);
         const pairCls = Number(row.pairedEdgePct) > 0 ? 'up' : Number(row.pairedEdgePct) < 0 ? 'down' : 'gray';
-        const pnlCls = Number(row.approxPnlUsd) > 0 ? 'up' : Number(row.approxPnlUsd) < 0 ? 'down' : 'gray';
+        const statsWarning = row.statsWarning || (Number(row.redeemUsdc) > 0 && row.redeemMatchesInventory === false ? 'redeem_activity_truncated' : '');
+        const pnlCls = statsWarning ? 'yellow' : Number(row.approxPnlUsd) > 0 ? 'up' : Number(row.approxPnlUsd) < 0 ? 'down' : 'gray';
+        const pnlStyle = statsWarning ? ' style="color:#f0a500"' : '';
+        const pnlMainText = statsWarning ? '统计截断' : brSignedMoney(row.approxPnlUsd);
+        const pnlSubText = statsWarning
+          ? `redeem ${moneyText(row.redeemUsdc)} | 买入记录不完整`
+          : `redeem ${moneyText(row.redeemUsdc)} | ROI ${brPct(row.approxRoiPct)}`;
         const activeTag = row.conditionId === current?.conditionId && idx === 0 ? '<span class="br-pill good">current</span>' : '';
         const patternCls = brPatternClass(row);
         const title = `${escapeHtml(row.slug || '')} ${row.resultDirection ? 'result ' + brDirText(row.resultDirection) : ''}`.trim();
@@ -4428,8 +4435,8 @@
             </div>
             <div class="paper-window-box">
               <div class="box-title">Redeem / PnL</div>
-              <div class="box-main ${pnlCls}">${brSignedMoney(row.approxPnlUsd)}</div>
-              <div class="box-sub">redeem ${moneyText(row.redeemUsdc)} | ROI ${brPct(row.approxRoiPct)}</div>
+              <div class="box-main ${pnlCls}"${pnlStyle}>${pnlMainText}</div>
+              <div class="box-sub">${pnlSubText}</div>
             </div>
             <div class="paper-window-box">
               <div class="box-title">Entry / opposite</div>

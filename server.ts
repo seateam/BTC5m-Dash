@@ -123,7 +123,11 @@ function safeWriteTextFile(file: string, payload: string, label: string): boolea
     try {
       writeFileSync(tmp, payload, "utf-8");
       try {
-        if (existsSync(file) && statSync(file).size > 0) {
+        if (
+          PERSIST_BACKUP_ENABLED &&
+          existsSync(file) &&
+          statSync(file).size > 0
+        ) {
           copyFileSync(file, `${file}.bak`);
         }
       } catch {
@@ -622,23 +626,29 @@ const FULL_DATA_STATE_INTERVAL_MS = 200;
 const LOW_DATA_STATE_INTERVAL_MS = 2000;
 const MAX_WS_BUFFERED_BYTES = 512 * 1024;
 const MAX_BOOK_STALE_MS = 2500;
-const TRADE_HISTORY_FILE = resolve(__dirname, ".trade-history.json");
-const PAPER_STATE_FILE = resolve(__dirname, ".paper-state.json");
+const RUNTIME_DATA_DIR = process.env.BTC5M_DATA_DIR || "E:\\BTC5m-Dash-runtime";
+const TRADE_HISTORY_FILE = resolve(RUNTIME_DATA_DIR, ".trade-history.json");
+const PAPER_STATE_FILE = resolve(RUNTIME_DATA_DIR, ".paper-state.json");
 const PAPER_TRADE_HISTORY_FILE = resolve(
-  __dirname,
+  RUNTIME_DATA_DIR,
   ".paper-trade-history.json",
 );
-const EXECUTION_EVENTS_FILE = resolve(__dirname, ".execution-events.json");
+const EXECUTION_EVENTS_FILE = resolve(RUNTIME_DATA_DIR, ".execution-events.json");
 const STRATEGY_CONFIG_FILE = resolve(__dirname, ".strategy-config.json");
-const BACKTEST_DATA_DIR = resolve(__dirname, "backtest-data");
+const BACKTEST_DATA_DIR = resolve(RUNTIME_DATA_DIR, "backtest-data");
 const BONEREAPER_MONITOR_FILE = resolve(
   BACKTEST_DATA_DIR,
   "bonereaper-btc5m-monitor.json",
 );
 const TRADE_HISTORY_MAX = 200;
-const PAPER_TRADE_HISTORY_MAX = 5000;
+const PAPER_TRADE_HISTORY_MAX = Math.floor(
+  parseNumberEnv("PAPER_TRADE_HISTORY_MAX", 400, 100),
+);
 const PAPER_WINDOW_SUMMARY_MAX = 288;
-const EXECUTION_EVENTS_MAX = 5000;
+const EXECUTION_EVENTS_MAX = Math.floor(
+  parseNumberEnv("EXECUTION_EVENTS_MAX", 400, 100),
+);
+const PERSIST_BACKUP_ENABLED = parseBooleanEnv("PERSIST_BACKUP_ENABLED", false);
 const PENDING_TRADE_META_MAX_AGE_MS = 15 * 60 * 1000;
 
 const PRIVATE_KEY = process.env.POLYMARKET_PRIVATE_KEY || "";
@@ -1455,7 +1465,7 @@ function loadExecutionEvents(): ExecutionEventItem[] {
 function persistExecutionEvents(): void {
   safeWriteTextFile(
     EXECUTION_EVENTS_FILE,
-    `${JSON.stringify(executionEvents, null, 2)}\n`,
+    `${JSON.stringify(executionEvents)}\n`,
     "execution-events",
   );
 }
@@ -1652,7 +1662,7 @@ function loadPaperTradeHistory(): TradeHistoryItem[] {
 function persistPaperTradeHistory(): void {
   safeWriteTextFile(
     PAPER_TRADE_HISTORY_FILE,
-    `${JSON.stringify(paperTradeHistory, null, 2)}\n`,
+    `${JSON.stringify(paperTradeHistory)}\n`,
     "paper-trade-history",
   );
 }
@@ -6809,6 +6819,11 @@ function buildS10BonereaperCloneOrder(
   const owned = getS10BonereaperCloneOwnedPosition(state.windowStart);
   const baseAmount = getS10BonereaperCloneBaseAmount();
   const baseWindowCap = getS10BonereaperCloneWindowCap(ctx);
+  const neutralMainDiffLimit = Math.min(
+    55,
+    Math.max(24, profile.threshold * (ctx.rem <= 90 ? 0.78 : 0.72)),
+  );
+  const nearNeutralDiff = profile.absDiff <= neutralMainDiffLimit;
   const marketBiasTrusted =
     bookBias.triggered &&
     bookBias.direction != null &&
@@ -7226,6 +7241,14 @@ function buildS10BonereaperCloneOrder(
       direction === "up" ? owned.downNotional : owned.upNotional;
     const currentDominance =
       currentNotional / Math.max(baseAmount, otherNotional);
+    const directionNotionalLead = currentNotional - otherNotional;
+    const directionShareLead = currentShares - otherShares;
+    const clearlyHeavyDirection =
+      currentNotional >= baseAmount * (ctx.rem <= 90 ? 5 : 4) &&
+      (directionNotionalLead >= baseAmount * (ctx.rem <= 90 ? 2 : 3) ||
+        currentDominance >= (ctx.rem <= 90 ? 1.35 : 1.5) ||
+        directionShareLead * Math.max(ask, 0.01) >=
+          baseAmount * (ctx.rem <= 90 ? 3 : 4));
     const highPriceLowEdge =
       kind === "market" &&
       ask >= 0.9 &&
@@ -7244,6 +7267,18 @@ function buildS10BonereaperCloneOrder(
       !strongDirectionalAdd &&
       ((ask >= 0.64 && profile.absDiff < 36) ||
         (ask >= 0.58 && bookBias.leadPct < 45));
+    const neutralHeavyMarketBlock =
+      kind === "market" &&
+      nearNeutralDiff &&
+      clearlyHeavyDirection &&
+      !strongDirectionalAdd;
+    const lateNeutralHighMarketBlock =
+      kind === "market" &&
+      ctx.rem < 90 &&
+      ask >= 0.5 &&
+      nearNeutralDiff &&
+      !strongDirectionalAdd &&
+      (clearlyHeavyDirection || owned.totalNotional >= baseAmount * 10);
     const avgWorseningHigh =
       (kind === "market" || kind === "signal") &&
       !strongDirectionalAdd &&
@@ -7342,6 +7377,8 @@ function buildS10BonereaperCloneOrder(
       (marketBiasTrusted &&
         direction === bookBias.direction &&
         flipAllowed &&
+        !neutralHeavyMarketBlock &&
+        !lateNeutralHighMarketBlock &&
         !highPriceLowEdge &&
         ask <= maxPrice + 1e-9);
     const pairAllowed =
@@ -7368,6 +7405,22 @@ function buildS10BonereaperCloneOrder(
       pairMissingShares,
       highPriceRiskCap,
       terminalWrongSideRiskCap,
+      neutralHeavyMarketBlock,
+      lateNeutralHighMarketBlock,
+      clearlyHeavyDirection,
+      nearNeutralDiff,
+      neutralMainDiffLimit,
+      directionNotionalLead,
+      currentDominance,
+      riskGate: neutralHeavyMarketBlock
+        ? "neutral-heavy-main"
+        : lateNeutralHighMarketBlock
+          ? "late-neutral-high"
+          : highPriceLowEdge
+            ? "high-price-low-edge"
+            : highPriceFlip && !flipAllowed
+              ? "flip-block"
+              : null,
       amount:
         signalAllowed && marketAllowed && pairAllowed && probeAllowed
           ? Math.min(
@@ -7457,6 +7510,8 @@ function buildS10BonereaperCloneOrder(
     rawProgressPct: round4(rawProgress * 100),
     earlyDirectionUnclear,
     earlyProgressCapPct: round4(earlyProgressCap * 100),
+    nearNeutralDiff,
+    neutralMainDiffLimit: round4(neutralMainDiffLimit),
     strength: round4(getS10BonereaperCloneSignalStrength(ctx)),
     signalScore: round4(profile.score),
     signalThreshold: round4(profile.threshold),
@@ -7481,16 +7536,23 @@ function buildS10BonereaperCloneOrder(
     order: selected,
   };
   if (!selected) {
-    s10BonereaperCloneLastReason = profile.triggered
-      ? `br-clone signal wait ${profile.direction} tier=${profile.tier} score=${profile.score.toFixed(2)} gap=${budgetGap.toFixed(2)}`
-      : `br-clone no signal diff=${profile.diff.toFixed(1)} need=${profile.threshold.toFixed(1)} used=${used.toFixed(2)}`;
+    const blockedMarket = candidates.find(
+      (candidate) =>
+        candidate.kind === "market" &&
+        (candidate.neutralHeavyMarketBlock || candidate.lateNeutralHighMarketBlock),
+    );
+    s10BonereaperCloneLastReason = blockedMarket
+      ? `br-clone neutral-heavy wait ${blockedMarket.direction} gate=${blockedMarket.riskGate} diff=${profile.diff.toFixed(1)} neutral<=${neutralMainDiffLimit.toFixed(1)} heavy=${blockedMarket.clearlyHeavyDirection ? "yes" : "no"} ask=${(blockedMarket.ask * 100).toFixed(1)} used=${used.toFixed(2)}`
+      : profile.triggered
+        ? `br-clone signal wait ${profile.direction} tier=${profile.tier} score=${profile.score.toFixed(2)} gap=${budgetGap.toFixed(2)}`
+        : `br-clone no signal diff=${profile.diff.toFixed(1)} need=${profile.threshold.toFixed(1)} used=${used.toFixed(2)}`;
     return null;
   }
   return {
     direction: selected.direction,
     amount: selected.amount,
     maxPrice: selected.maxPrice,
-    reason: `br-clone ${selected.kind} ${selected.direction} tier=${profile.tier} rem=${ctx.rem.toFixed(1)} diff=${ctx.diff == null ? "-" : Number(ctx.diff).toFixed(1)} score=${profile.score.toFixed(2)} market=${bookBias.direction ?? "-"} lead=${bookBias.leadPct.toFixed(1)}/${bookBias.leadNeed.toFixed(1)} ask=${(selected.ask * 100).toFixed(1)} maxPx=${(selected.maxPrice * 100).toFixed(1)} amount=${selected.amount.toFixed(2)} slice=${selected.sliceCap.toFixed(2)} avg=${selected.directionAvg == null ? "-" : (selected.directionAvg * 100).toFixed(1)} avgCap=${Number.isFinite(selected.avgGuardCap) ? selected.avgGuardCap.toFixed(2) : "-"} pairBudget=${selected.pairRepairBudget.toFixed(2)} termRisk=${Number.isFinite(selected.terminalWrongSideRiskCap) ? selected.terminalWrongSideRiskCap.toFixed(2) : "-"} depth=${selected.depthLevels}/${(selected.depthPriceLift * 100).toFixed(1)}pt used=${used.toFixed(2)} cap=${windowCap.toFixed(2)}`,
+    reason: `br-clone ${selected.kind} ${selected.direction} tier=${profile.tier} rem=${ctx.rem.toFixed(1)} diff=${ctx.diff == null ? "-" : Number(ctx.diff).toFixed(1)} score=${profile.score.toFixed(2)} market=${bookBias.direction ?? "-"} lead=${bookBias.leadPct.toFixed(1)}/${bookBias.leadNeed.toFixed(1)} ask=${(selected.ask * 100).toFixed(1)} maxPx=${(selected.maxPrice * 100).toFixed(1)} amount=${selected.amount.toFixed(2)} slice=${selected.sliceCap.toFixed(2)} avg=${selected.directionAvg == null ? "-" : (selected.directionAvg * 100).toFixed(1)} avgCap=${Number.isFinite(selected.avgGuardCap) ? selected.avgGuardCap.toFixed(2) : "-"} neutral=${selected.nearNeutralDiff ? "yes" : "no"}/${selected.neutralMainDiffLimit.toFixed(1)} heavy=${selected.clearlyHeavyDirection ? "yes" : "no"} gate=${selected.riskGate ?? "-"} pairBudget=${selected.pairRepairBudget.toFixed(2)} termRisk=${Number.isFinite(selected.terminalWrongSideRiskCap) ? selected.terminalWrongSideRiskCap.toFixed(2) : "-"} depth=${selected.depthLevels}/${(selected.depthPriceLift * 100).toFixed(1)}pt used=${used.toFixed(2)} cap=${windowCap.toFixed(2)}`,
   };
 }
 
