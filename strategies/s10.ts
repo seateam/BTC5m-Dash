@@ -56,8 +56,10 @@ const MAKER_TARGET_SET_EDGE_LATE = 2.0;
 const MAKER_MIN_PRICE = 0.03;
 const MAKER_MAX_PRICE = 0.97;
 const MAKER_TERMINAL_MAX_PRICE = 0.99;
-const MAKER_TTL_MS = 2200;
-const MAKER_TERMINAL_TTL_MS = 850;
+const MAKER_SEED_TTL_MS = 8000;
+const MAKER_BALANCE_TTL_MS = 7000;
+const MAKER_CONVICTION_TTL_MS = 4200;
+const MAKER_TERMINAL_TTL_MS = 1400;
 const MAKER_BASE_NOTIONAL = 18;
 const MAKER_MAX_SHARES_PER_SIDE = 75;
 const MAKER_SOFT_IMBALANCE_SHARES = 45;
@@ -1069,8 +1071,10 @@ function getMakerFairEdgePct(module: S10MakerModule, rem: number): number {
 
 function getMakerQuoteTtlMs(module: S10MakerModule): number {
   if (module === "terminal") return MAKER_TERMINAL_TTL_MS;
-  if (module === "conviction") return 1400;
-  return MAKER_TTL_MS;
+  if (module === "conviction") return MAKER_CONVICTION_TTL_MS;
+  if (module === "balance") return MAKER_BALANCE_TTL_MS;
+  if (module === "seed") return MAKER_SEED_TTL_MS;
+  return MAKER_BALANCE_TTL_MS;
 }
 
 function getMakerMaxPricePct(module: S10MakerModule): number {

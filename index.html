@@ -516,6 +516,21 @@
       text-overflow: ellipsis;
     }
 
+    .paper-window-box .active-order-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+    }
+
+    .paper-window-box .active-order-item {
+      color: #8b949e;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     #bonereaper-panel {
       background: #0d1117;
       border-top: 1px solid #21262d;
@@ -3199,6 +3214,7 @@
       const s = String(source || '');
       if (!s) return { text: '手动', cls: 'manual' };
       if (s.includes('maker-merge') || s.endsWith('merge')) return { text: 'S10合并', cls: 'merge' };
+      if (s === 'strategy10bonereaper') return { text: 'BR-Clone', cls: 'strategy' };
       if (s === 'strategy10maker') return { text: 'S10Maker', cls: 'strategy' };
       if (s.startsWith('strategy')) {
         const num = s.replace('strategy', '') || '?';
@@ -3283,6 +3299,61 @@
           rejectReason ? `拒因 ${rejectReason}` : '',
         ].filter(Boolean);
         return { tag, cls: status.includes('REJECT') ? 'reject' : 'sweep', detail: detailParts.join(' · '), title };
+      }
+
+      if ((source === 'strategy10bonereaper' && !reason.startsWith('br-clone')) || r?.roundEntry === 'bonereaper-mimic' || reason.startsWith('br-mimic')) {
+        const phase = getReasonToken(reason, 'phase');
+        const role = getReasonToken(reason, 'role');
+        const tag = status.includes('REJECT')
+          ? 'BR-Mimic reject'
+          : role === 'terminal-tail'
+            ? 'BR terminal'
+            : role === 'pair-balance'
+              ? 'BR pair'
+              : 'BR mimic';
+        const detailParts = [
+          phase ? `phase ${phase}` : '',
+          role ? `role ${role}` : '',
+          getReasonToken(reason, 'rem') ? `rem ${getReasonToken(reason, 'rem')}` : '',
+          getReasonToken(reason, 'diff') ? `diff ${getReasonToken(reason, 'diff')}` : '',
+          getReasonToken(reason, 'conf') ? `conf ${getReasonToken(reason, 'conf')}` : '',
+          getReasonToken(reason, 'pairCost') ? `pairCost ${getReasonToken(reason, 'pairCost')}` : '',
+          getReasonToken(reason, 'maxPair') ? `maxPair ${getReasonToken(reason, 'maxPair')}` : '',
+          getReasonToken(reason, 'tailEdge') ? `tailEdge ${getReasonToken(reason, 'tailEdge')}` : '',
+          getReasonToken(reason, 'maxPx') ? `maxPx ${getReasonToken(reason, 'maxPx')}` : '',
+          rejectReason ? `reject ${rejectReason}` : '',
+        ].filter(Boolean);
+        const cls = status.includes('REJECT')
+          ? 'reject'
+          : role === 'terminal-tail'
+            ? 'sweep'
+            : role === 'pair-balance'
+              ? 'rebalance'
+              : 'open';
+        return { tag, cls, detail: detailParts.join(' · '), title };
+      }
+
+      if (reason.startsWith('br-clone')) {
+        const tag = status.includes('REJECT')
+          ? 'BR-Clone reject'
+          : reason.includes('taker')
+            ? 'BR-Clone taker'
+            : 'BR-Clone maker';
+        const detailParts = [
+          getReasonToken(reason, 'rem') ? `rem ${getReasonToken(reason, 'rem')}` : '',
+          getReasonToken(reason, 'diff') ? `diff ${getReasonToken(reason, 'diff')}` : '',
+          getReasonToken(reason, 'req') ? `req ${getReasonToken(reason, 'req')}` : '',
+          getReasonToken(reason, 'prog') ? `prog ${getReasonToken(reason, 'prog')}` : '',
+          getReasonToken(reason, 'upNotional') ? `up资金 ${getReasonToken(reason, 'upNotional')}` : '',
+          getReasonToken(reason, 'upTarget') ? `upTarget ${getReasonToken(reason, 'upTarget')}` : '',
+          getReasonToken(reason, 'target') ? `target ${getReasonToken(reason, 'target')}` : '',
+          getReasonToken(reason, 'current') ? `current ${getReasonToken(reason, 'current')}` : '',
+          getReasonToken(reason, 'ask') ? `ask ${getReasonToken(reason, 'ask')}` : '',
+          getReasonToken(reason, 'maxPx') ? `maxPx ${getReasonToken(reason, 'maxPx')}` : '',
+          getReasonToken(reason, 'cap') ? `cap ${getReasonToken(reason, 'cap')}` : '',
+          rejectReason ? `reject ${rejectReason}` : '',
+        ].filter(Boolean);
+        return { tag, cls: status.includes('REJECT') ? 'reject' : 'rebalance', detail: detailParts.join(' · '), title };
       }
 
       if (source === 'strategy10maker' || reason.includes('maker-')) {
@@ -3438,21 +3509,47 @@
 
     function getCurrentS10MakerSummary() {
       const s10 = strat?.perStrategy?.s10 || {};
+      const activeMakerOrders = Array.isArray(paperAccount?.activeMakerOrders)
+        ? paperAccount.activeMakerOrders
+            .filter((order) => !currentWindowStart || Number(order?.windowStart) === Number(currentWindowStart))
+            .map((order) => ({
+              id: String(order?.id || ''),
+              direction: order?.direction === 'down' ? 'down' : 'up',
+              price: Number(order?.price),
+              pricePct: Number(order?.pricePct),
+              shares: Number(order?.shares),
+              remainingShares: Number(order?.remainingShares),
+              notional: Number(order?.notional),
+              activeMs: Number(order?.activeMs),
+              expiresInMs: Number(order?.expiresInMs),
+            }))
+        : [];
+      const detailUpOrders = activeMakerOrders.filter((order) => order.direction === 'up');
+      const detailDownOrders = activeMakerOrders.filter((order) => order.direction === 'down');
+      const detailShares = activeMakerOrders.reduce((sum, order) => sum + tradeNumber(order.remainingShares), 0);
+      const detailNotional = activeMakerOrders.reduce((sum, order) => sum + tradeNumber(order.notional), 0);
+      const detailUpShares = detailUpOrders.reduce((sum, order) => sum + tradeNumber(order.remainingShares), 0);
+      const detailDownShares = detailDownOrders.reduce((sum, order) => sum + tradeNumber(order.remainingShares), 0);
+      const detailUpNotional = detailUpOrders.reduce((sum, order) => sum + tradeNumber(order.notional), 0);
+      const detailDownNotional = detailDownOrders.reduce((sum, order) => sum + tradeNumber(order.notional), 0);
+      const detailUpBidPct = detailUpOrders.reduce((max, order) => Math.max(max, tradeNumber(order.pricePct)), 0);
+      const detailDownBidPct = detailDownOrders.reduce((max, order) => Math.max(max, tradeNumber(order.pricePct)), 0);
       return {
-        activeOrders: tradeNumber(s10.makerActiveOrders),
-        upOrders: tradeNumber(s10.makerUpOrders),
-        downOrders: tradeNumber(s10.makerDownOrders),
-        activeShares: tradeNumber(s10.makerActiveShares),
-        activeNotional: tradeNumber(s10.makerActiveNotional),
-        upActiveShares: tradeNumber(s10.makerUpActiveShares),
-        downActiveShares: tradeNumber(s10.makerDownActiveShares),
-        upActiveNotional: tradeNumber(s10.makerUpActiveNotional),
-        downActiveNotional: tradeNumber(s10.makerDownActiveNotional),
-        upBidPct: Number(s10.makerUpBidPct),
-        downBidPct: Number(s10.makerDownBidPct),
+        activeOrders: activeMakerOrders.length || tradeNumber(s10.makerActiveOrders),
+        upOrders: detailUpOrders.length || tradeNumber(s10.makerUpOrders),
+        downOrders: detailDownOrders.length || tradeNumber(s10.makerDownOrders),
+        activeShares: detailShares || tradeNumber(s10.makerActiveShares),
+        activeNotional: detailNotional || tradeNumber(s10.makerActiveNotional),
+        upActiveShares: detailUpShares || tradeNumber(s10.makerUpActiveShares),
+        downActiveShares: detailDownShares || tradeNumber(s10.makerDownActiveShares),
+        upActiveNotional: detailUpNotional || tradeNumber(s10.makerUpActiveNotional),
+        downActiveNotional: detailDownNotional || tradeNumber(s10.makerDownActiveNotional),
+        upBidPct: detailUpBidPct || Number(s10.makerUpBidPct),
+        downBidPct: detailDownBidPct || Number(s10.makerDownBidPct),
         module: String(s10.makerModule || ''),
         mode: String(s10.makerMode || ''),
         reason: String(s10.makerLastReason || s10.reason || ''),
+        orders: activeMakerOrders,
       };
     }
 
@@ -3473,11 +3570,36 @@
       row.makerModule = maker.module;
       row.makerMode = maker.mode;
       row.makerReason = maker.reason;
+      row.activeOrderDetails = maker.orders;
     }
 
     function formatPct0(value) {
       const n = Number(value);
       return Number.isFinite(n) ? `${Math.round(n)}%` : '-';
+    }
+
+    function formatActiveOrderDetails(orders) {
+      if (!Array.isArray(orders) || !orders.length) return '';
+      return orders.slice(0, 6).map((order) => {
+        const dir = order.direction === 'down' ? '跌' : '涨';
+        const pricePct = Number.isFinite(order.pricePct)
+          ? order.pricePct
+          : Number.isFinite(order.price)
+            ? order.price * 100
+            : NaN;
+        const remaining = Number(order.remainingShares);
+        const original = Number(order.shares);
+        const qtyText = Number.isFinite(remaining)
+          ? fmtSize(remaining)
+          : '-';
+        const originalText = Number.isFinite(original) && Math.abs(original - remaining) > 0.01
+          ? `/${fmtSize(original)}`
+          : '';
+        const notional = Number(order.notional);
+        const activeMs = Number(order.activeMs);
+        const ageText = Number.isFinite(activeMs) ? ` · ${(activeMs / 1000).toFixed(1)}s` : '';
+        return `<div class="active-order-item">${dir} ${Number.isFinite(pricePct) ? pricePct.toFixed(1) + '%' : '-'} · 买量 ${qtyText}${originalText} · ${moneyText(notional)}${ageText}</div>`;
+      }).join('');
     }
 
     function getTradeFee(r) {
@@ -3533,6 +3655,7 @@
         activeDownNotional: 0,
         activeUpBidPct: NaN,
         activeDownBidPct: NaN,
+        activeOrderDetails: [],
         makerModule: '',
         makerMode: '',
         makerReason: '',
@@ -3658,6 +3781,10 @@
           ? `${fmtSize(row.activeShares)} / ${moneyText(row.activeNotional)}`
           : '-';
         const activeBidText = `涨 ${formatPct0(row.activeUpBidPct)} / 跌 ${formatPct0(row.activeDownBidPct)}`;
+        const activeOrderDetailHtml = formatActiveOrderDetails(row.activeOrderDetails);
+        const activeOrderSubHtml = activeOrderDetailHtml
+          ? `<div class="active-order-list">${activeOrderDetailHtml}</div>`
+          : `${activeVolumeText} · ${activeBidText}`;
         const fillVolumeText = `${fmtSize(row.filledShares)} / ${moneyText(row.filledNotional)}`;
         const fillBreakdownText = `maker ${row.makerFills} · sweep ${row.sweepFills} · 拒 ${row.rejects}`;
         const makerReason = row.makerReason
@@ -3697,7 +3824,7 @@
             <div class="paper-window-box">
               <div class="box-title">当前挂单</div>
               <div class="box-main">${activeOrderText}</div>
-              <div class="box-sub">${activeVolumeText} · ${activeBidText}</div>
+              <div class="box-sub">${activeOrderSubHtml}</div>
             </div>
             <div class="paper-window-box">
               <div class="box-title">成交量</div>
@@ -5641,6 +5768,11 @@
       if (!s10) return [];
       const { compact = false } = options;
       const parts = [`S10 ${s10.decision || 'scan'}`];
+      const br = s10.bonereaperMimic || null;
+      const brPlan = br?.plan || null;
+      if (br?.enabled) parts.push(`BR ${brPlan?.phase || '-'} ${brPlan?.role || '-'} ${brPlan?.direction || '-'} ${String(br.lastReason || brPlan?.reason || '').slice(0, compact ? 12 : 22)}`);
+      const brClone = s10.bonereaperClone || null;
+      if (brClone?.enabled) parts.push(`BRClone ${String(brClone.lastReason || '').slice(0, compact ? 14 : 28)}`);
       if (s10.makerModule) parts.push(`module ${s10.makerModule}`);
       if (s10.makerMode) parts.push(`maker ${s10.makerMode}`);
       if (isFiniteNumber(s10.makerTerminalConfidencePct)) parts.push(`terminal ${s10.makerTerminalDirection || '-'} ${formatPct(s10.makerTerminalConfidencePct)}`);
@@ -5703,6 +5835,29 @@
         const minEdge = isFiniteNumber(s10.minEdgePct) ? s10.minEdgePct : 0;
         const ready = !!s10.ready && edge != null && edge >= minEdge;
         addPill('S10', s10.decision || s10.status || 'scan', ready ? 'good' : 'muted');
+        const br = s10.bonereaperMimic || null;
+        const brPlan = br?.plan || null;
+        if (br?.enabled) {
+          addPill('BR-Mimic', `${brPlan?.phase || '-'} ${brPlan?.role || '-'} ${brPlan?.direction || '-'}`, brPlan?.ready ? 'good' : 'muted');
+          addPill('BR Need', `conf ${formatPct(brPlan?.confidencePct)} pair ${formatPct(brPlan?.pairCostPct)} / ${formatPct(brPlan?.maxPairCostPct)}`, brPlan?.ready ? 'good' : 'muted');
+          addPill('BR Target', `U ${Number(brPlan?.targetUpShares || 0).toFixed(1)} D ${Number(brPlan?.targetDownShares || 0).toFixed(1)}`, 'muted');
+          addPill('BR Cap', `$${Number(brPlan?.windowFilledUsdc || 0).toFixed(2)} / $${Number(brPlan?.windowCapUsdc || 0).toFixed(2)} order $${Number(brPlan?.orderCapUsdc || 0).toFixed(2)}`, 'muted');
+          addPill('BR Reason', String(br?.lastReason || brPlan?.reason || '-').slice(0, 36), brPlan?.ready ? 'good' : 'muted');
+        }
+        const brClone = s10.bonereaperClone || null;
+        const brClonePlan = brClone?.plan || null;
+        if (brClone?.enabled) {
+          addPill('BR-Clone', String(brClone.lastReason || '-').slice(0, 42), Array.isArray(brClonePlan?.quotes) && brClonePlan.quotes.length ? 'good' : 'muted');
+          if (brClonePlan) {
+            addPill('BR Target', `prog ${formatPct(brClonePlan.progressPct)} up资金 ${formatPct(brClonePlan.upNotionalTargetPct ?? brClonePlan.upShareTargetPct)}`, 'muted');
+            addPill('BR Pos', `U ${Number(brClonePlan.currentUp || 0).toFixed(1)}/${Number(brClonePlan.targetUpShares || 0).toFixed(1)} D ${Number(brClonePlan.currentDown || 0).toFixed(1)}/${Number(brClonePlan.targetDownShares || 0).toFixed(1)}`, 'muted');
+            addPill('BR Gate', `maxPx ${formatPct(brClonePlan.dynamicMaxAskPct)} order $${Number(brClonePlan.orderCap || 0).toFixed(0)}`, Number(brClonePlan.dynamicMaxAskPct || 0) >= 97 ? 'warn' : 'muted');
+            addPill('BR Budget', `x${Number(brClonePlan.convictionWindowMult || 1).toFixed(2)} cap $${Number(brClonePlan.windowCap || 0).toFixed(0)}`, Number(brClonePlan.convictionWindowMult || 1) > 1.5 ? 'warn' : 'muted');
+            if (brClonePlan.pricedInDirection) {
+              addPill('BR Priced', `${brClonePlan.pricedInDirection} cap throttle`, 'warn');
+            }
+          }
+        }
         if (s10.makerModule) addPill('Module', s10.makerModule, s10.makerModule === 'terminal' ? 'good' : s10.makerModule === 'seed' ? 'muted' : 'warn');
         if (isFiniteNumber(s10.makerTerminalConfidencePct)) addPill('Terminal', `${s10.makerTerminalDirection || '-'} ${formatPct(s10.makerTerminalConfidencePct)}`, s10.makerTerminalConfidencePct >= 99 ? 'good' : 'warn');
         if (isFiniteNumber(s10.terminalSweepWinPct)) {

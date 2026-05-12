@@ -1,5 +1,15 @@
-import { dirname } from "path";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
+import { basename, dirname, join } from "path";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
 
 type Outcome = "up" | "down" | "";
 type ActivitySide = "BUY" | "SELL" | "";
@@ -240,7 +250,9 @@ function pct(numerator: number, denominator: number): number | null {
 }
 
 function normalizeOutcome(value: unknown, outcomeIndex?: unknown): Outcome {
-  const text = String(value || "").trim().toLowerCase();
+  const text = String(value || "")
+    .trim()
+    .toLowerCase();
   if (text === "up") return "up";
   if (text === "down") return "down";
   if (outcomeIndex === 0) return "up";
@@ -249,7 +261,9 @@ function normalizeOutcome(value: unknown, outcomeIndex?: unknown): Outcome {
 }
 
 function normalizeSide(value: unknown): ActivitySide {
-  const text = String(value || "").trim().toUpperCase();
+  const text = String(value || "")
+    .trim()
+    .toUpperCase();
   return text === "BUY" || text === "SELL" ? text : "";
 }
 
@@ -277,7 +291,9 @@ function activityKey(row: RawActivity, normalized: StoredActivity): string {
 
 function normalizeActivity(row: RawActivity): StoredActivity | null {
   const timestamp = Number(row.timestamp);
-  const type = String(row.type || "").trim().toUpperCase();
+  const type = String(row.type || "")
+    .trim()
+    .toUpperCase();
   if (!Number.isFinite(timestamp) || timestamp <= 0 || !type) return null;
   const size = Number(row.size) || 0;
   const usdcSize = Number(row.usdcSize) || 0;
@@ -298,7 +314,10 @@ function normalizeActivity(row: RawActivity): StoredActivity | null {
   return item;
 }
 
-function sum(items: StoredActivity[], fn: (item: StoredActivity) => number): number {
+function sum(
+  items: StoredActivity[],
+  fn: (item: StoredActivity) => number,
+): number {
   return items.reduce((acc, item) => acc + (Number(fn(item)) || 0), 0);
 }
 
@@ -307,7 +326,10 @@ function sampleNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function nearestSample(samples: BonereaperMarketSample[], targetMs: number): { sample: BonereaperMarketSample; lagMs: number } | null {
+function nearestSample(
+  samples: BonereaperMarketSample[],
+  targetMs: number,
+): { sample: BonereaperMarketSample; lagMs: number } | null {
   let best: { sample: BonereaperMarketSample; lagMs: number } | null = null;
   for (const sample of samples) {
     const lagMs = Math.abs(sample.ts - targetMs);
@@ -318,7 +340,8 @@ function nearestSample(samples: BonereaperMarketSample[], targetMs: number): { s
 }
 
 function diffSign(diff: number | null): Outcome {
-  if (diff == null || !Number.isFinite(diff) || Math.abs(diff) < 0.01) return "";
+  if (diff == null || !Number.isFinite(diff) || Math.abs(diff) < 0.01)
+    return "";
   return diff > 0 ? "up" : "down";
 }
 
@@ -328,7 +351,10 @@ function opposite(direction: Outcome): Outcome {
   return "";
 }
 
-function directionMarketMid(sample: BonereaperMarketSample | null, direction: Outcome): number | null {
+function directionMarketMid(
+  sample: BonereaperMarketSample | null,
+  direction: Outcome,
+): number | null {
   if (!sample) return null;
   if (direction === "up") return sample.upMid;
   if (direction === "down") return sample.downMid;
@@ -347,8 +373,18 @@ function buildMotiveTags(input: {
   firstDiff: number | null;
 }): string[] {
   const tags: string[] = [];
-  const { activity, sample, beforeUp, beforeDown, afterUp, afterDown, firstDirection, firstDiff } = input;
-  if (activity.type !== "TRADE" || activity.side !== "BUY" || !activity.outcome) return tags;
+  const {
+    activity,
+    sample,
+    beforeUp,
+    beforeDown,
+    afterUp,
+    afterDown,
+    firstDirection,
+    firstDiff,
+  } = input;
+  if (activity.type !== "TRADE" || activity.side !== "BUY" || !activity.outcome)
+    return tags;
   const rem = sample?.remSec ?? null;
   const price = activity.price;
   const marketMid = directionMarketMid(sample, activity.outcome);
@@ -359,19 +395,28 @@ function buildMotiveTags(input: {
   const directionFromFirstDiff = diffSign(firstDiff);
 
   if (rem != null && rem > 210) tags.push("early_seed");
-  if (rem != null && rem <= 10 && price != null && price >= 0.85) tags.push("terminal_chase");
-  else if (rem != null && rem <= 20 && price != null && price >= 0.8) tags.push("late_confidence");
-  if (rem != null && rem <= 25 && price != null && price <= 0.35) tags.push("panic_catch");
+  if (rem != null && rem <= 10 && price != null && price >= 0.85)
+    tags.push("terminal_chase");
+  else if (rem != null && rem <= 20 && price != null && price >= 0.8)
+    tags.push("late_confidence");
+  if (rem != null && rem <= 25 && price != null && price <= 0.35)
+    tags.push("panic_catch");
   if (marketMid != null && price != null) {
     if (price <= marketMid - 0.025) tags.push("below_mid_fill");
     if (price >= marketMid + 0.025) tags.push("above_mid_pay");
   }
   if (directionFromDiff) {
-    tags.push(directionFromDiff === activity.outcome ? "trend_follow" : "contrarian");
+    tags.push(
+      directionFromDiff === activity.outcome ? "trend_follow" : "contrarian",
+    );
   }
   if (firstDirection && activity.outcome === opposite(firstDirection)) {
     tags.push("opposite_leg");
-    if (directionFromDiff === activity.outcome && directionFromDiff !== directionFromFirstDiff) tags.push("reversal_response");
+    if (
+      directionFromDiff === activity.outcome &&
+      directionFromDiff !== directionFromFirstDiff
+    )
+      tags.push("reversal_response");
   }
   if (beforeOwn <= beforeOther + 1e-9) tags.push("hedge_or_pair");
   else tags.push("tail_add");
@@ -390,17 +435,24 @@ function avgPrice(usdc: number, shares: number): number | null {
   return shares > 0 ? round(usdc / shares, 6) : null;
 }
 
-function inferResultDirection(upShares: number, downShares: number, redeemShares: number): Outcome {
+function inferResultDirection(
+  upShares: number,
+  downShares: number,
+  redeemShares: number,
+): Outcome {
   if (redeemShares <= 0) return "";
   const upGap = Math.abs(upShares - redeemShares);
   const downGap = Math.abs(downShares - redeemShares);
   if (upGap <= downGap && upGap <= Math.max(2, upShares * 0.03)) return "up";
-  if (downGap < upGap && downGap <= Math.max(2, downShares * 0.03)) return "down";
+  if (downGap < upGap && downGap <= Math.max(2, downShares * 0.03))
+    return "down";
   return upShares >= downShares ? "up" : "down";
 }
 
 function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
-  const activities = [...window.activities].sort((a, b) => a.timestamp - b.timestamp);
+  const activities = [...window.activities].sort(
+    (a, b) => a.timestamp - b.timestamp,
+  );
   const samples = [...(window.samples || [])].sort((a, b) => a.ts - b.ts);
   const trades = activities.filter((item) => item.type === "TRADE");
   const buys = trades.filter((item) => item.side === "BUY");
@@ -420,28 +472,58 @@ function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
   const upAvg = avgPrice(upBuyUsdc, upBuyShares);
   const downAvg = avgPrice(downBuyUsdc, downBuyShares);
   const pairedShares = Math.min(upBuyShares, downBuyShares);
-  const pairedCostPct = upAvg != null && downAvg != null ? round((upAvg + downAvg) * 100, 3) : null;
-  const pairedEdgePct = pairedCostPct != null ? round(100 - pairedCostPct, 3) : null;
-  const pairedPnlUsd = pairedEdgePct != null ? round(pairedShares * pairedEdgePct / 100, 4) : null;
-  const tailDirection: Outcome = upBuyShares > downBuyShares + 1e-9 ? "up" : downBuyShares > upBuyShares + 1e-9 ? "down" : "";
+  const pairedCostPct =
+    upAvg != null && downAvg != null ? round((upAvg + downAvg) * 100, 3) : null;
+  const pairedEdgePct =
+    pairedCostPct != null ? round(100 - pairedCostPct, 3) : null;
+  const pairedPnlUsd =
+    pairedEdgePct != null
+      ? round((pairedShares * pairedEdgePct) / 100, 4)
+      : null;
+  const tailDirection: Outcome =
+    upBuyShares > downBuyShares + 1e-9
+      ? "up"
+      : downBuyShares > upBuyShares + 1e-9
+        ? "down"
+        : "";
   const tailShares = Math.abs(upBuyShares - downBuyShares);
-  const tailAvg = tailDirection === "up" ? upAvg : tailDirection === "down" ? downAvg : null;
+  const tailAvg =
+    tailDirection === "up" ? upAvg : tailDirection === "down" ? downAvg : null;
 
   const redeemShares = sum(redeems, (item) => item.size);
   const redeemUsdc = sum(redeems, (item) => item.usdcSize);
   const sellUsdc = sum(sells, (item) => item.usdcSize);
-  const resultDirection = inferResultDirection(upBuyShares, downBuyShares, redeemShares);
+  const resultDirection = inferResultDirection(
+    upBuyShares,
+    downBuyShares,
+    redeemShares,
+  );
   const completed = redeemUsdc > 0 || sellUsdc > 0;
-  const approxPnlUsd = completed ? round(redeemUsdc + sellUsdc - totalBuyUsdc, 4) : null;
-  const approxRoiPct = approxPnlUsd != null ? pct(approxPnlUsd, totalBuyUsdc) : null;
+  const approxPnlUsd = completed
+    ? round(redeemUsdc + sellUsdc - totalBuyUsdc, 4)
+    : null;
+  const approxRoiPct =
+    approxPnlUsd != null ? pct(approxPnlUsd, totalBuyUsdc) : null;
 
   const terminalBuyUsdc = sum(terminalBuys, (item) => item.usdcSize);
   const terminalBuyShares = sum(terminalBuys, (item) => item.size);
   const terminalAvg = avgPrice(terminalBuyUsdc, terminalBuyShares);
-  const terminalUpShares = sum(terminalBuys.filter((item) => item.outcome === "up"), (item) => item.size);
-  const terminalDownShares = sum(terminalBuys.filter((item) => item.outcome === "down"), (item) => item.size);
-  const terminalDirection: Outcome = terminalUpShares > terminalDownShares ? "up" : terminalDownShares > terminalUpShares ? "down" : "";
-  const terminalChase = terminalBuyUsdc > 0 && terminalAvg != null && terminalAvg >= 0.85;
+  const terminalUpShares = sum(
+    terminalBuys.filter((item) => item.outcome === "up"),
+    (item) => item.size,
+  );
+  const terminalDownShares = sum(
+    terminalBuys.filter((item) => item.outcome === "down"),
+    (item) => item.size,
+  );
+  const terminalDirection: Outcome =
+    terminalUpShares > terminalDownShares
+      ? "up"
+      : terminalDownShares > terminalUpShares
+        ? "down"
+        : "";
+  const terminalChase =
+    terminalBuyUsdc > 0 && terminalAvg != null && terminalAvg >= 0.85;
   const diffValues = samples
     .map((sample) => sampleNumber(sample.diff))
     .filter((value): value is number => value != null);
@@ -464,7 +546,12 @@ function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
   const tradeTape: BonereaperTradeEvent[] = [];
 
   for (const activity of activities) {
-    if (activity.type !== "TRADE" || activity.side !== "BUY" || !activity.outcome) continue;
+    if (
+      activity.type !== "TRADE" ||
+      activity.side !== "BUY" ||
+      !activity.outcome
+    )
+      continue;
     const matched = nearestSample(samples, activity.timestamp * 1000);
     const sample = matched?.sample ?? null;
     const lagMs = matched?.lagMs ?? null;
@@ -488,10 +575,16 @@ function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
     const pairedAfterShares = Math.min(afterUp, afterDown);
     const upAvgAfter = avgPrice(costUp, afterUp);
     const downAvgAfter = avgPrice(costDown, afterDown);
-    const pairedCostPctAfter = upAvgAfter != null && downAvgAfter != null
-      ? round((upAvgAfter + downAvgAfter) * 100, 3)
-      : null;
-    const tailAfterDirection: Outcome = afterUp > afterDown + 1e-9 ? "up" : afterDown > afterUp + 1e-9 ? "down" : "";
+    const pairedCostPctAfter =
+      upAvgAfter != null && downAvgAfter != null
+        ? round((upAvgAfter + downAvgAfter) * 100, 3)
+        : null;
+    const tailAfterDirection: Outcome =
+      afterUp > afterDown + 1e-9
+        ? "up"
+        : afterDown > afterUp + 1e-9
+          ? "down"
+          : "";
     const tailAfterShares = Math.abs(afterUp - afterDown);
     const motiveTags = buildMotiveTags({
       activity,
@@ -543,32 +636,56 @@ function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
     });
   }
 
-  const trendFollowBuyCount = tradeTape.filter((item) => item.motiveTags.includes("trend_follow")).length;
-  const contrarianBuyCount = tradeTape.filter((item) => item.motiveTags.includes("contrarian")).length;
-  const hedgeBuyCount = tradeTape.filter((item) => item.motiveTags.includes("hedge_or_pair")).length;
-  const tailAddBuyCount = tradeTape.filter((item) => item.motiveTags.includes("tail_add")).length;
-  const panicCatchBuyCount = tradeTape.filter((item) => item.motiveTags.includes("panic_catch")).length;
-  const highConfidenceBuyCount = tradeTape.filter((item) =>
-    item.motiveTags.includes("terminal_chase") || item.motiveTags.includes("late_confidence")
+  const trendFollowBuyCount = tradeTape.filter((item) =>
+    item.motiveTags.includes("trend_follow"),
+  ).length;
+  const contrarianBuyCount = tradeTape.filter((item) =>
+    item.motiveTags.includes("contrarian"),
+  ).length;
+  const hedgeBuyCount = tradeTape.filter((item) =>
+    item.motiveTags.includes("hedge_or_pair"),
+  ).length;
+  const tailAddBuyCount = tradeTape.filter((item) =>
+    item.motiveTags.includes("tail_add"),
+  ).length;
+  const panicCatchBuyCount = tradeTape.filter((item) =>
+    item.motiveTags.includes("panic_catch"),
+  ).length;
+  const highConfidenceBuyCount = tradeTape.filter(
+    (item) =>
+      item.motiveTags.includes("terminal_chase") ||
+      item.motiveTags.includes("late_confidence"),
   ).length;
   const firstTradeDiffSign = diffSign(firstBuyDiff);
-  const lastDiff = tradeTape.map((item) => item.diff).filter((value): value is number => value != null).at(-1) ?? null;
-  const diffFlipped = (minDiff != null && maxDiff != null && minDiff < 0 && maxDiff > 0)
-    || (!!firstTradeDiffSign && !!diffSign(lastDiff) && firstTradeDiffSign !== diffSign(lastDiff));
+  const lastDiff =
+    tradeTape
+      .map((item) => item.diff)
+      .filter((value): value is number => value != null)
+      .at(-1) ?? null;
+  const diffFlipped =
+    (minDiff != null && maxDiff != null && minDiff < 0 && maxDiff > 0) ||
+    (!!firstTradeDiffSign &&
+      !!diffSign(lastDiff) &&
+      firstTradeDiffSign !== diffSign(lastDiff));
   const dualBuy = upBuyShares > 0 && downBuyShares > 0;
-  const likelyArb = dualBuy && pairedCostPct != null && pairedCostPct < 100 && tailShares <= Math.max(5, pairedShares * 0.2);
-  const tailCorrect = resultDirection && tailDirection ? tailDirection === resultDirection : null;
+  const likelyArb =
+    dualBuy &&
+    pairedCostPct != null &&
+    pairedCostPct < 100 &&
+    tailShares <= Math.max(5, pairedShares * 0.2);
+  const tailCorrect =
+    resultDirection && tailDirection ? tailDirection === resultDirection : null;
   const pattern = terminalChase
     ? "terminal_chase"
     : diffFlipped && dualBuy
       ? "reversal_response"
-    : likelyArb
-      ? "paired_arb"
-      : dualBuy
-        ? "dual_inventory"
-        : totalBuyShares > 0
-          ? "single_direction"
-          : "watch";
+      : likelyArb
+        ? "paired_arb"
+        : dualBuy
+          ? "dual_inventory"
+          : totalBuyShares > 0
+            ? "single_direction"
+            : "watch";
 
   return {
     conditionId: window.conditionId,
@@ -618,7 +735,8 @@ function summarizeWindow(window: StoredWindow): BonereaperWindowSummary {
     firstBuyPrice,
     firstOppositeTs,
     firstOppositeRemSec,
-    firstOppositeDiff: firstOppositeDiff != null ? round(firstOppositeDiff, 3) : null,
+    firstOppositeDiff:
+      firstOppositeDiff != null ? round(firstOppositeDiff, 3) : null,
     firstOppositePrice,
     firstOppositeReason,
     minDiff,
@@ -665,19 +783,42 @@ export class BonereaperMonitor {
     this.activityLimit = Math.max(50, Math.round(options.activityLimit || 500));
     this.maxWindows = Math.max(
       20,
-      Math.round(options.maxWindows || Number(process.env.BONEREAPER_MONITOR_MAX_WINDOWS || DEFAULT_MAX_WINDOWS)),
+      Math.round(
+        options.maxWindows ||
+          Number(
+            process.env.BONEREAPER_MONITOR_MAX_WINDOWS || DEFAULT_MAX_WINDOWS,
+          ),
+      ),
     );
     this.sampleWindows = Math.max(
       1,
-      Math.round(options.sampleWindows || Number(process.env.BONEREAPER_MONITOR_SAMPLE_WINDOWS || DEFAULT_SAMPLE_WINDOWS)),
+      Math.round(
+        options.sampleWindows ||
+          Number(
+            process.env.BONEREAPER_MONITOR_SAMPLE_WINDOWS ||
+              DEFAULT_SAMPLE_WINDOWS,
+          ),
+      ),
     );
     this.maxLoadBytes = Math.max(
       1024 * 1024,
-      Math.round(options.maxLoadBytes || Number(process.env.BONEREAPER_MONITOR_MAX_LOAD_BYTES || DEFAULT_MAX_LOAD_BYTES)),
+      Math.round(
+        options.maxLoadBytes ||
+          Number(
+            process.env.BONEREAPER_MONITOR_MAX_LOAD_BYTES ||
+              DEFAULT_MAX_LOAD_BYTES,
+          ),
+      ),
     );
     this.maxSamplesPerWindow = Math.max(
       20,
-      Math.round(options.maxSamplesPerWindow || Number(process.env.BONEREAPER_MONITOR_MAX_SAMPLES_PER_WINDOW || DEFAULT_MAX_SAMPLES_PER_WINDOW)),
+      Math.round(
+        options.maxSamplesPerWindow ||
+          Number(
+            process.env.BONEREAPER_MONITOR_MAX_SAMPLES_PER_WINDOW ||
+              DEFAULT_MAX_SAMPLES_PER_WINDOW,
+          ),
+      ),
     );
     this.load();
   }
@@ -699,10 +840,13 @@ export class BonereaperMonitor {
   async poll(): Promise<void> {
     this.lastPollAt = Date.now();
     try {
-      const res = await fetch(this.activityUrl(), { headers: { accept: "application/json" } });
+      const res = await fetch(this.activityUrl(), {
+        headers: { accept: "application/json" },
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const rows = await res.json() as RawActivity[];
-      if (!Array.isArray(rows)) throw new Error("activity response is not an array");
+      const rows = (await res.json()) as RawActivity[];
+      if (!Array.isArray(rows))
+        throw new Error("activity response is not an array");
       const changed = this.ingest(rows);
       this.lastSuccessAt = Date.now();
       this.lastError = "";
@@ -718,7 +862,9 @@ export class BonereaperMonitor {
   observeMarket(sample: BonereaperMarketSample): void {
     if (!Number.isFinite(sample.windowStart) || sample.windowStart <= 0) return;
     const conditionId = `sample:${sample.windowStart}`;
-    let window = [...this.windows.values()].find((item) => item.windowStart === sample.windowStart);
+    let window = [...this.windows.values()].find(
+      (item) => item.windowStart === sample.windowStart,
+    );
     if (!window) {
       window = {
         conditionId,
@@ -736,7 +882,10 @@ export class BonereaperMonitor {
     if (last && sample.ts <= last.ts) return;
     window.samples.push(sample);
     if (window.samples.length > this.maxSamplesPerWindow) {
-      window.samples.splice(0, window.samples.length - this.maxSamplesPerWindow);
+      window.samples.splice(
+        0,
+        window.samples.length - this.maxSamplesPerWindow,
+      );
     }
     window.summary = summarizeWindow(window);
     if (Date.now() - this.lastPersistAt > 15000) {
@@ -745,19 +894,28 @@ export class BonereaperMonitor {
     }
   }
 
-  getSnapshot(context: BonereaperSnapshotContext = {}): BonereaperMonitorSnapshot {
+  getSnapshot(
+    context: BonereaperSnapshotContext = {},
+  ): BonereaperMonitorSnapshot {
     const all = [...this.windows.values()]
       .map((item) => item.summary)
       .sort((a, b) => b.windowStart - a.windowStart);
-    const recent = all.filter((item) =>
-      item.activityCount > 0 ||
-      (context.currentConditionId && item.conditionId === context.currentConditionId) ||
-      (context.currentWindowStart && item.windowStart === context.currentWindowStart)
+    const recent = all.filter(
+      (item) =>
+        item.activityCount > 0 ||
+        (context.currentConditionId &&
+          item.conditionId === context.currentConditionId) ||
+        (context.currentWindowStart &&
+          item.windowStart === context.currentWindowStart),
     );
-    const current = recent.find((item) =>
-      (context.currentConditionId && item.conditionId === context.currentConditionId) ||
-      (context.currentWindowStart && item.windowStart === context.currentWindowStart)
-    ) || null;
+    const current =
+      recent.find(
+        (item) =>
+          (context.currentConditionId &&
+            item.conditionId === context.currentConditionId) ||
+          (context.currentWindowStart &&
+            item.windowStart === context.currentWindowStart),
+      ) || null;
     const analyzed = recent.filter((item) => item.activityCount > 0);
     const completed = analyzed.filter((item) => item.approxPnlUsd != null);
     const dual = analyzed.filter((item) => item.dualBuy);
@@ -766,9 +924,14 @@ export class BonereaperMonitor {
     const reversal = analyzed.filter((item) => item.diffFlipped);
     const tailKnown = analyzed.filter((item) => item.tailCorrect != null);
     const tailCorrect = analyzed.filter((item) => item.tailCorrect === true);
-    const pairedCostRows = analyzed.filter((item) => item.pairedCostPct != null);
+    const pairedCostRows = analyzed.filter(
+      (item) => item.pairedCostPct != null,
+    );
     const totalBuy = analyzed.reduce((acc, item) => acc + item.totalBuyUsdc, 0);
-    const totalPnl = completed.reduce((acc, item) => acc + (item.approxPnlUsd || 0), 0);
+    const totalPnl = completed.reduce(
+      (acc, item) => acc + (item.approxPnlUsd || 0),
+      0,
+    );
     const wins = completed.filter((item) => (item.approxPnlUsd || 0) > 0);
     return {
       address: this.address,
@@ -794,12 +957,21 @@ export class BonereaperMonitor {
         reversalWindowsPct: pct(reversal.length, analyzed.length),
         tailCorrect: tailCorrect.length,
         tailCorrectPct: pct(tailCorrect.length, tailKnown.length),
-        avgBuyUsdc: analyzed.length ? round(totalBuy / analyzed.length, 2) : null,
+        avgBuyUsdc: analyzed.length
+          ? round(totalBuy / analyzed.length, 2)
+          : null,
         avgPairedCostPct: pairedCostRows.length
-          ? round(pairedCostRows.reduce((acc, item) => acc + (item.pairedCostPct || 0), 0) / pairedCostRows.length, 3)
+          ? round(
+              pairedCostRows.reduce(
+                (acc, item) => acc + (item.pairedCostPct || 0),
+                0,
+              ) / pairedCostRows.length,
+              3,
+            )
           : null,
         approxPnlUsd: completed.length ? round(totalPnl, 2) : null,
-        approxRoiPct: totalBuy > 0 ? round((totalPnl / totalBuy) * 100, 2) : null,
+        approxRoiPct:
+          totalBuy > 0 ? round((totalPnl / totalBuy) * 100, 2) : null,
         winRatePct: pct(wins.length, completed.length),
       },
     };
@@ -824,10 +996,15 @@ export class BonereaperMonitor {
       if (!windowStart || !conditionId) continue;
       const activity = normalizeActivity(row);
       if (!activity) continue;
-      let window = this.windows.get(conditionId)
-        || [...this.windows.values()].find((item) => item.windowStart === windowStart);
+      let window =
+        this.windows.get(conditionId) ||
+        [...this.windows.values()].find(
+          (item) => item.windowStart === windowStart,
+        );
       if (!window) {
-        const slug = String(row.slug || row.eventSlug || `btc-updown-5m-${windowStart}`);
+        const slug = String(
+          row.slug || row.eventSlug || `btc-updown-5m-${windowStart}`,
+        );
         window = {
           conditionId,
           slug,
@@ -841,7 +1018,12 @@ export class BonereaperMonitor {
       } else if (window.conditionId !== conditionId) {
         this.windows.delete(window.conditionId);
         window.conditionId = conditionId;
-        window.slug = String(row.slug || row.eventSlug || window.slug || `btc-updown-5m-${windowStart}`);
+        window.slug = String(
+          row.slug ||
+            row.eventSlug ||
+            window.slug ||
+            `btc-updown-5m-${windowStart}`,
+        );
         window.title = String(row.title || window.title || "");
         this.windows.set(conditionId, window);
       }
@@ -859,7 +1041,9 @@ export class BonereaperMonitor {
   }
 
   private trimWindows(): void {
-    const ordered = [...this.windows.values()].sort((a, b) => b.windowStart - a.windowStart);
+    const ordered = [...this.windows.values()].sort(
+      (a, b) => b.windowStart - a.windowStart,
+    );
     for (const item of ordered.slice(this.maxWindows)) {
       this.windows.delete(item.conditionId);
     }
@@ -874,24 +1058,42 @@ export class BonereaperMonitor {
   }
 
   private load(): void {
-    if (!existsSync(this.file)) return;
     try {
-      const size = statSync(this.file).size;
+      const backupFile = `${this.file}.bak`;
+      const sourceFile =
+        existsSync(this.file) && statSync(this.file).size > 0
+          ? this.file
+          : existsSync(backupFile) && statSync(backupFile).size > 0
+            ? backupFile
+            : null;
+      if (!sourceFile) return;
+      const size = statSync(sourceFile).size;
       if (size > this.maxLoadBytes) {
-        const archive = this.file.replace(/\.json$/i, `.archive-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
-        renameSync(this.file, archive);
+        const archive = sourceFile.replace(
+          /\.json$/i,
+          `.archive-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+        );
+        renameSync(sourceFile, archive);
         console.warn(
           `[Bonereaper] monitor file too large ${(size / 1024 / 1024).toFixed(1)}MB > ${(this.maxLoadBytes / 1024 / 1024).toFixed(1)}MB; archived to ${archive}`,
         );
         return;
       }
-      const raw = JSON.parse(readFileSync(this.file, "utf8")) as PersistedState;
+      const raw = JSON.parse(
+        readFileSync(sourceFile, "utf8"),
+      ) as PersistedState;
       if (!Array.isArray(raw.windows)) return;
       for (const [index, item] of raw.windows.entries()) {
-        if (!item?.conditionId || !Number.isFinite(Number(item.windowStart)) || !Array.isArray(item.activities)) continue;
-        const samples = index < this.sampleWindows && Array.isArray(item.samples)
-          ? item.samples.slice(-this.maxSamplesPerWindow)
-          : [];
+        if (
+          !item?.conditionId ||
+          !Number.isFinite(Number(item.windowStart)) ||
+          !Array.isArray(item.activities)
+        )
+          continue;
+        const samples =
+          index < this.sampleWindows && Array.isArray(item.samples)
+            ? item.samples.slice(-this.maxSamplesPerWindow)
+            : [];
         const window: StoredWindow = {
           conditionId: item.conditionId,
           slug: item.slug || `btc-updown-5m-${item.windowStart}`,
@@ -913,26 +1115,59 @@ export class BonereaperMonitor {
   }
 
   private persist(): void {
+    let tmp: string | null = null;
     try {
       const dir = dirname(this.file);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const tmpPrefix = `${basename(this.file)}.tmp-`;
+      try {
+        const now = Date.now();
+        for (const name of readdirSync(dir)) {
+          if (!name.startsWith(tmpPrefix)) continue;
+          const fullPath = join(dir, name);
+          if (now - statSync(fullPath).mtimeMs > 60_000) unlinkSync(fullPath);
+        }
+      } catch {
+        // best effort stale temp cleanup
+      }
       const windows = [...this.windows.values()]
         .sort((a, b) => b.windowStart - a.windowStart)
         .map((window, index) => ({
           ...window,
-          samples: index < this.sampleWindows
-            ? (window.samples || []).slice(-this.maxSamplesPerWindow)
-            : [],
+          samples:
+            index < this.sampleWindows
+              ? (window.samples || []).slice(-this.maxSamplesPerWindow)
+              : [],
         }));
       const payload: PersistedState = {
         address: this.address,
         updatedAt: Date.now(),
         windows,
       };
-      writeFileSync(this.file, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+      const text = `${JSON.stringify(payload, null, 2)}\n`;
+      if (text.length <= 2) return;
+      tmp = `${this.file}.tmp-${process.pid}-${Date.now()}`;
+      writeFileSync(tmp, text, "utf8");
+      try {
+        if (existsSync(this.file) && statSync(this.file).size > 0) {
+          copyFileSync(this.file, `${this.file}.bak`);
+        }
+      } catch {
+        // best effort backup
+      }
+      renameSync(tmp, this.file);
+      tmp = null;
       this.lastPersistAt = Date.now();
     } catch {
       // The monitor should never take the trading dashboard down because of disk IO.
+    } finally {
+      if (tmp) {
+        try {
+          if (existsSync(tmp)) unlinkSync(tmp);
+        } catch {
+          // best effort cleanup
+        }
+      }
     }
   }
 }
