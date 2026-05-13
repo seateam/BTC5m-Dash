@@ -489,6 +489,7 @@ interface ClientSession {
   stateTimer: NodeJS.Timeout | null;
   stateDirty: boolean;
   stateIncludeHistory: boolean;
+  backpressureWarnAt: number;
 }
 
 interface StatePayloadOptions {
@@ -625,6 +626,8 @@ const BINANCE_OFFSET_EPSILON = 0.01;
 const FULL_DATA_STATE_INTERVAL_MS = 200;
 const LOW_DATA_STATE_INTERVAL_MS = 2000;
 const MAX_WS_BUFFERED_BYTES = 512 * 1024;
+const MAX_WS_CLOSE_BUFFERED_BYTES = 4 * 1024 * 1024;
+const WS_BACKPRESSURE_RETRY_MS = 1000;
 const MAX_BOOK_STALE_MS = 2500;
 const RUNTIME_DATA_DIR = process.env.BTC5M_DATA_DIR || "E:\\BTC5m-Dash-runtime";
 const TRADE_HISTORY_FILE = resolve(RUNTIME_DATA_DIR, ".trade-history.json");
@@ -647,6 +650,9 @@ const PAPER_TRADE_HISTORY_MAX = Math.floor(
 const PAPER_WINDOW_SUMMARY_MAX = 288;
 const EXECUTION_EVENTS_MAX = Math.floor(
   parseNumberEnv("EXECUTION_EVENTS_MAX", 400, 100),
+);
+const PM_PNL_EVENT_BROADCAST_LIMIT = Math.floor(
+  parseNumberEnv("PM_PNL_EVENT_BROADCAST_LIMIT", 800, 100),
 );
 const PERSIST_BACKUP_ENABLED = parseBooleanEnv("PERSIST_BACKUP_ENABLED", false);
 const PENDING_TRADE_META_MAX_AGE_MS = 15 * 60 * 1000;
@@ -965,6 +971,86 @@ const S10_BONEREAPER_CLONE_TERMINAL_PAIR_COMPLETION_MAX_COST =
     108.5,
     90,
   ) / 100;
+const S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX =
+  parseNumberEnv("S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX_PCT", 108.8, 90) /
+  100;
+const S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX_PCT",
+    112,
+    90,
+  ) / 100;
+const S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT",
+  3,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT",
+  12,
+  0,
+);
+const S10_BONEREAPER_CLONE_RESCUE_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MIN_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MIN_REMAINING_SEC",
+  75,
+  0,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MAX_REMAINING_SEC",
+  285,
+  0,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MIN_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MIN_DIFF",
+  55,
+  0,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MIN_ACCEL = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MIN_ACCEL",
+  0.35,
+  0,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MIN_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MIN_LEAD_PCT",
+  42,
+  0,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MAX_INITIAL_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MAX_INITIAL_MULT",
+  8,
+  0.1,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MAX_TOTAL_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MAX_TOTAL_MULT",
+  6,
+  0.1,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MAX_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MAX_ORDER_MULT",
+  3,
+  0.1,
+);
+const S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX_PCT",
+    150,
+    90,
+  ) / 100;
+const S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT",
+  6,
+  0,
+);
+const S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_INCREASE_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_INCREASE_MULT",
+    6,
+    0,
+  );
 const S10_BONEREAPER_CLONE_LIVE_MAX_ORDER_USDC = parseNumberEnv(
   "S10_BONEREAPER_CLONE_LIVE_MAX_ORDER_USDC",
   1200,
@@ -2239,7 +2325,7 @@ function mergePaperFullSet(
 
 function broadcastPmPnl(): void {
   // 全量：前端按 range 过滤，不截断
-  const events = pmPnlManager.getEvents();
+  const events = pmPnlManager.getEvents({ limit: PM_PNL_EVENT_BROADCAST_LIMIT });
   const total = pmPnlManager.getTotalPnl();
   broadcast("pmPnl", {
     events,
@@ -2249,7 +2335,7 @@ function broadcastPmPnl(): void {
 }
 
 function sendPmPnlToClient(ws: WebSocket): void {
-  const events = pmPnlManager.getEvents();
+  const events = pmPnlManager.getEvents({ limit: PM_PNL_EVENT_BROADCAST_LIMIT });
   const total = pmPnlManager.getTotalPnl();
   send(ws, "pmPnl", {
     events,
@@ -2643,6 +2729,7 @@ function send(
   data: Record<string, unknown>,
 ): void {
   if (ws.readyState !== WebSocket.OPEN) return;
+  if (!canSendClientMessage(ws, type)) return;
   ws.send(JSON.stringify({ type, ...data }));
 }
 
@@ -2746,6 +2833,7 @@ function createClientSession(dataMode: ClientDataMode): ClientSession {
     stateTimer: null,
     stateDirty: false,
     stateIncludeHistory: false,
+    backpressureWarnAt: 0,
   };
 }
 
@@ -2792,18 +2880,34 @@ function shouldSendRealtimeEvent(
   ws: WebSocket,
   session: ClientSession,
 ): boolean {
+  if (!canSendClientMessage(ws, type, session)) return false;
   if (
     session.dataMode === "low" &&
     (type === "chainlinkPrice" || type === "binancePrice")
   ) {
     return false;
   }
-  if (
-    (type === "chainlinkPrice" || type === "binancePrice") &&
-    ws.bufferedAmount > MAX_WS_BUFFERED_BYTES
-  ) {
+  return true;
+}
+
+function canSendClientMessage(
+  ws: WebSocket,
+  type: string,
+  session = getClientSession(ws),
+): boolean {
+  if (ws.readyState !== WebSocket.OPEN) return false;
+  if (ws.bufferedAmount > MAX_WS_CLOSE_BUFFERED_BYTES) {
+    const now = Date.now();
+    if (now - session.backpressureWarnAt > 30_000) {
+      session.backpressureWarnAt = now;
+      console.warn(
+        `[WS] close slow client type=${type} buffered=${ws.bufferedAmount}`,
+      );
+    }
+    ws.close(1013, "client backpressure");
     return false;
   }
+  if (ws.bufferedAmount > MAX_WS_BUFFERED_BYTES) return false;
   return true;
 }
 
@@ -3588,10 +3692,17 @@ function scheduleStateToClient(ws: WebSocket, includeHistory = false): void {
     const nextIncludeHistory = latestSession.stateIncludeHistory;
     latestSession.stateDirty = false;
     latestSession.stateIncludeHistory = false;
+    if (ws.bufferedAmount > MAX_WS_CLOSE_BUFFERED_BYTES) {
+      canSendClientMessage(ws, "state", latestSession);
+      return;
+    }
     if (ws.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
       latestSession.stateDirty = true;
       latestSession.stateIncludeHistory = nextIncludeHistory;
-      scheduleStateToClient(ws, nextIncludeHistory);
+      latestSession.stateTimer = setTimeout(() => {
+        latestSession.stateTimer = null;
+        scheduleStateToClient(ws, nextIncludeHistory);
+      }, WS_BACKPRESSURE_RETRY_MS);
       return;
     }
     sendStateToClient(ws, { includeHistory: nextIncludeHistory });
@@ -4712,9 +4823,8 @@ function startMarketWs(
     const msg = data.toString();
     if (msg === "PONG" || msg === "[]") return;
     try {
-      const events = Array.isArray(JSON.parse(msg))
-        ? JSON.parse(msg)
-        : [JSON.parse(msg)];
+      const parsed = JSON.parse(msg);
+      const events = Array.isArray(parsed) ? parsed : [parsed];
       for (const evt of events) {
         if (evt.bids !== undefined && evt.asks !== undefined) {
           if (evt.asset_id && evt.asset_id !== upTokenId) continue;
@@ -6505,24 +6615,24 @@ function getS10BonereaperCloneDynamicMaxAsk(
   const trendFloor =
     diff >= 70 && ctx.rem <= 210
       ? 0.99
-      : diff >= 50 && ctx.rem <= 190
+      : diff >= 60 && ctx.rem <= 190
         ? 0.97
-        : diff >= 35 && ctx.rem <= 180
+        : diff >= 50 && ctx.rem <= 120
           ? 0.94
-          : diff >= 24 && ctx.rem <= 70
-            ? 0.97
-            : diff >= 18 && ctx.rem <= 45
+          : diff >= 42 && ctx.rem <= 60
+            ? 0.9
+            : diff >= 34 && ctx.rem <= 30
               ? 0.9
               : 0;
   const highConviction =
     diff >= 70 && ctx.rem <= 190
       ? 0.99
-      : diff >= 50 && ctx.rem <= 150
+      : diff >= 62 && ctx.rem <= 150
         ? 0.99
-        : diff >= 36 && ctx.rem <= 90
+        : diff >= 55 && ctx.rem <= 90
           ? 0.99
-          : diff >= 24 && ctx.rem <= 45
-            ? 0.99
+          : diff >= 48 && ctx.rem <= 45
+            ? 0.97
             : null;
   if (highConviction != null) {
     return Math.min(S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100, highConviction);
@@ -6637,6 +6747,141 @@ function getS10BonereaperCloneNotionalForAskShares(
   return notional;
 }
 
+function getS10BonereaperCloneAskFillPreview(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+  direction: StrategyDirection,
+  maxPrice: number,
+  targetNotional: number,
+) {
+  const asks = direction === "up" ? ctx.book?.up.asks : ctx.book?.down.asks;
+  if (!asks?.length || !(targetNotional > 0) || !(maxPrice > 0)) {
+    return {
+      complete: false,
+      shares: 0,
+      notional: 0,
+      avgPrice: null as number | null,
+      worstPrice: null as number | null,
+      levelsUsed: 0,
+    };
+  }
+  let remainingNotional = targetNotional;
+  let shares = 0;
+  let notional = 0;
+  let levelsUsed = 0;
+  let worstPrice: number | null = null;
+  for (const level of asks) {
+    if (level.price > maxPrice + 1e-9 || remainingNotional <= 1e-9) break;
+    const levelNotional = level.price * level.size;
+    if (!(levelNotional > 0)) continue;
+    const takeNotional = Math.min(remainingNotional, levelNotional);
+    shares += takeNotional / level.price;
+    notional += takeNotional;
+    remainingNotional -= takeNotional;
+    worstPrice = level.price;
+    levelsUsed += 1;
+  }
+  return {
+    complete: remainingNotional <= Math.max(1e-6, targetNotional * 1e-6),
+    shares,
+    notional,
+    avgPrice: shares > 0 ? notional / shares : null,
+    worstPrice,
+    levelsUsed,
+  };
+}
+
+function getS10BonereaperCloneProjectedPnlGuard(input: {
+  owned: ReturnType<typeof getS10BonereaperCloneOwnedPosition>;
+  direction: StrategyDirection;
+  amount: number;
+  maxPrice: number;
+  fill: ReturnType<typeof getS10BonereaperCloneAskFillPreview>;
+  baseAmount: number;
+  pairCostLimit: number;
+  badLossMultiplier: number;
+  maxWorstLoss?: number;
+  maxWorstLossIncrease?: number;
+}) {
+  const beforeTotalCost = input.owned.totalNotional;
+  const beforeUpWinPnl = input.owned.upShares - beforeTotalCost;
+  const beforeDownWinPnl = input.owned.downShares - beforeTotalCost;
+  const beforeBestPnl = Math.max(beforeUpWinPnl, beforeDownWinPnl);
+  const beforeWorstPnl = Math.min(beforeUpWinPnl, beforeDownWinPnl);
+  const fillShares = input.fill.complete ? input.fill.shares : 0;
+  const fillNotional = input.fill.complete ? input.fill.notional : 0;
+  const upSharesAfter =
+    input.owned.upShares + (input.direction === "up" ? fillShares : 0);
+  const downSharesAfter =
+    input.owned.downShares + (input.direction === "down" ? fillShares : 0);
+  const upNotionalAfter =
+    input.owned.upNotional + (input.direction === "up" ? fillNotional : 0);
+  const downNotionalAfter =
+    input.owned.downNotional + (input.direction === "down" ? fillNotional : 0);
+  const totalCostAfter = beforeTotalCost + fillNotional;
+  const upAvgAfter = upSharesAfter > 0 ? upNotionalAfter / upSharesAfter : null;
+  const downAvgAfter =
+    downSharesAfter > 0 ? downNotionalAfter / downSharesAfter : null;
+  const pairCostAfter =
+    upAvgAfter != null && downAvgAfter != null ? upAvgAfter + downAvgAfter : null;
+  const upWinPnlAfter = upSharesAfter - totalCostAfter;
+  const downWinPnlAfter = downSharesAfter - totalCostAfter;
+  const bestPnlAfter = Math.max(upWinPnlAfter, downWinPnlAfter);
+  const worstPnlAfter = Math.min(upWinPnlAfter, downWinPnlAfter);
+  const badLossLimit =
+    -Math.max(input.baseAmount, input.baseAmount * input.badLossMultiplier);
+  const pairCostBlocked =
+    pairCostAfter != null && pairCostAfter > input.pairCostLimit + 1e-9;
+  const bothOutcomesBad = bestPnlAfter < badLossLimit;
+  const worseThanCurrentWorst = bestPnlAfter < beforeWorstPnl - 1e-6;
+  const maxWorstLossBlocked =
+    input.maxWorstLoss != null && worstPnlAfter < -Math.abs(input.maxWorstLoss);
+  const worstLossIncreaseBlocked =
+    input.maxWorstLossIncrease != null &&
+    worstPnlAfter < beforeWorstPnl - Math.abs(input.maxWorstLossIncrease);
+  const incomplete = input.amount > 0 && !input.fill.complete;
+  const reason = incomplete
+    ? "projected-incomplete-depth"
+    : pairCostBlocked
+      ? "projected-pair-cost"
+      : maxWorstLossBlocked
+        ? "projected-worst-loss"
+        : worstLossIncreaseBlocked
+          ? "projected-worst-loss-expansion"
+          : bothOutcomesBad
+            ? "projected-both-bad"
+            : worseThanCurrentWorst
+              ? "projected-worse-than-current-worst"
+              : null;
+  return {
+    blocked: reason != null,
+    reason,
+    amount: round4(input.amount),
+    fillShares: round4(fillShares),
+    fillNotional: round4(fillNotional),
+    fillAvgPct: input.fill.avgPrice == null ? null : round4(input.fill.avgPrice * 100),
+    fillWorstPct:
+      input.fill.worstPrice == null ? null : round4(input.fill.worstPrice * 100),
+    fillLevels: input.fill.levelsUsed,
+    beforeUpWinPnl: round4(beforeUpWinPnl),
+    beforeDownWinPnl: round4(beforeDownWinPnl),
+    beforeBestPnl: round4(beforeBestPnl),
+    beforeWorstPnl: round4(beforeWorstPnl),
+    upWinPnlAfter: round4(upWinPnlAfter),
+    downWinPnlAfter: round4(downWinPnlAfter),
+    bestPnlAfter: round4(bestPnlAfter),
+    worstPnlAfter: round4(worstPnlAfter),
+    pairCostPctAfter: pairCostAfter == null ? null : round4(pairCostAfter * 100),
+    pairCostLimitPct: round4(input.pairCostLimit * 100),
+    badLossLimit: round4(badLossLimit),
+    maxWorstLoss:
+      input.maxWorstLoss == null ? null : round4(Math.abs(input.maxWorstLoss)),
+    maxWorstLossIncrease:
+      input.maxWorstLossIncrease == null
+        ? null
+        : round4(Math.abs(input.maxWorstLossIncrease)),
+  };
+}
+
 function getS10BonereaperCloneBookBias(
   ctx: import("./strategies/types.js").StrategyTickContext,
 ) {
@@ -6644,6 +6889,21 @@ function getS10BonereaperCloneBookBias(
   const upAsk = ctx.book?.up.asks?.[0]?.price;
   const downBid = ctx.book?.down.bids?.[0]?.price;
   const downAsk = ctx.book?.down.asks?.[0]?.price;
+  const sumAskNotional = (levels?: readonly { price: number; size: number }[]) =>
+    (levels || []).slice(0, 3).reduce((sum, level) => {
+      if (!(level.price > 0) || !(level.size > 0)) return sum;
+      return sum + level.price * level.size;
+    }, 0);
+  const weightedAsk = (levels?: readonly { price: number; size: number }[]) => {
+    let notional = 0;
+    let shares = 0;
+    for (const level of (levels || []).slice(0, 3)) {
+      if (!(level.price > 0) || !(level.size > 0)) continue;
+      notional += level.price * level.size;
+      shares += level.size;
+    }
+    return shares > 0 ? notional / shares : null;
+  };
   const midpoint = (bid?: number, ask?: number): number | null => {
     if (bid != null && ask != null && bid > 0 && ask > 0) return (bid + ask) / 2;
     if (ask != null && ask > 0) return ask;
@@ -6652,7 +6912,7 @@ function getS10BonereaperCloneBookBias(
   };
   const upMid = midpoint(upBid, upAsk);
   const downMid = midpoint(downBid, downAsk);
-  const direction: StrategyDirection | null =
+  const midDirection: StrategyDirection | null =
     upMid == null || downMid == null
       ? null
       : upMid > downMid
@@ -6660,10 +6920,48 @@ function getS10BonereaperCloneBookBias(
         : downMid > upMid
           ? "down"
           : null;
-  const leadPct =
+  const midLeadPct =
     upMid == null || downMid == null ? 0 : Math.abs(upMid - downMid) * 100;
+  const upAskNotional = sumAskNotional(ctx.book?.up.asks);
+  const downAskNotional = sumAskNotional(ctx.book?.down.asks);
+  const shallowNotional = Math.min(upAskNotional, downAskNotional);
+  const totalAskNotional = upAskNotional + downAskNotional;
+  const upWeightedAsk = weightedAsk(ctx.book?.up.asks);
+  const downWeightedAsk = weightedAsk(ctx.book?.down.asks);
+  const weightedDirection: StrategyDirection | null =
+    upWeightedAsk == null || downWeightedAsk == null
+      ? null
+      : upWeightedAsk > downWeightedAsk
+        ? "up"
+        : downWeightedAsk > upWeightedAsk
+          ? "down"
+          : null;
+  const weightedLeadPct =
+    upWeightedAsk == null || downWeightedAsk == null
+      ? 0
+      : Math.abs(upWeightedAsk - downWeightedAsk) * 100;
+  const spreadPenalty =
+    Math.max(0, Number(upAsk ?? 0) - Number(upBid ?? 0)) * 100 +
+    Math.max(0, Number(downAsk ?? 0) - Number(downBid ?? 0)) * 100;
+  const liquidityScore = clampNumber(shallowNotional / 120, 0, 1);
+  const agreementScore = midDirection != null && midDirection === weightedDirection ? 1 : 0;
+  const qualityScore = clampNumber(
+    liquidityScore * 0.55 +
+      agreementScore * 0.3 +
+      clampNumber((30 - spreadPenalty) / 30, 0, 1) * 0.15,
+    0,
+    1,
+  );
+  const direction =
+    qualityScore >= 0.55 && midDirection === weightedDirection
+      ? midDirection
+      : null;
+  const leadPct =
+    direction == null
+      ? 0
+      : Math.min(midLeadPct, weightedLeadPct) * clampNumber(0.65 + qualityScore * 0.35, 0, 1);
   const leadNeed =
-    ctx.rem > 270
+    (ctx.rem > 270
       ? 16
       : ctx.rem > 240
         ? 13
@@ -6675,7 +6973,7 @@ function getS10BonereaperCloneBookBias(
               ? 4.5
               : ctx.rem > 45
                 ? 3.5
-                : 2.5;
+                : 2.5) + (qualityScore < 0.85 ? (1 - qualityScore) * 18 : 0);
   return {
     direction,
     leadPct,
@@ -6683,6 +6981,19 @@ function getS10BonereaperCloneBookBias(
     triggered: direction != null && leadPct >= leadNeed && ctx.rem <= 295,
     upMid,
     downMid,
+    midDirection,
+    midLeadPct,
+    upWeightedAsk,
+    downWeightedAsk,
+    weightedDirection,
+    weightedLeadPct,
+    upAskNotional,
+    downAskNotional,
+    shallowNotional,
+    totalAskNotional,
+    liquidityScore,
+    qualityScore,
+    spreadPenalty,
   };
 }
 
@@ -6739,13 +7050,13 @@ function getS10BonereaperCloneDiffSignalProfile(
         ? 55
         : ctx.rem > 90
           ? 42
-          : ctx.rem > 60
-            ? 32
-            : ctx.rem > 30
-              ? 24
-              : ctx.rem > 15
-                ? 16
-                : 12;
+        : ctx.rem > 60
+            ? 38
+          : ctx.rem > 30
+              ? 32
+            : ctx.rem > 15
+                ? 28
+                : 22;
   const history = Array.isArray(ctx.diffHistory) ? ctx.diffHistory : [];
   const recent = history
     .filter((point) => point.t >= ctx.now - 30_000)
@@ -6765,18 +7076,18 @@ function getS10BonereaperCloneDiffSignalProfile(
     absDiff / Math.max(1, threshold) +
     consistency * 0.22 +
     acceleration * 0.35;
-  const terminalLate = ctx.rem <= 35 && absDiff >= Math.max(12, threshold * 0.72);
+  const terminalLate = ctx.rem <= 35 && absDiff >= Math.max(24, threshold * 0.85);
   const triggered =
     !!direction &&
     (score >= 1 ||
       terminalLate ||
-      (ctx.rem <= 75 && absDiff >= 24 && consistency >= 0.45) ||
+      (ctx.rem <= 75 && absDiff >= 38 && consistency >= 0.55) ||
       (ctx.rem <= 150 && absDiff >= 50));
   const tier = !triggered
     ? "none"
-    : ctx.rem <= 35 && absDiff >= 14
+    : ctx.rem <= 35 && absDiff >= 30
       ? "terminal"
-      : ctx.rem <= 75 && absDiff >= 22
+      : ctx.rem <= 75 && absDiff >= 40
         ? "sweep"
         : ctx.rem <= 150 && absDiff >= 42
           ? "conviction"
@@ -6819,17 +7130,62 @@ function buildS10BonereaperCloneOrder(
   const owned = getS10BonereaperCloneOwnedPosition(state.windowStart);
   const baseAmount = getS10BonereaperCloneBaseAmount();
   const baseWindowCap = getS10BonereaperCloneWindowCap(ctx);
+  const fairUpForPlan = getFairProb(Number(ctx.diff ?? 0), ctx.rem);
+  const fairDirection: StrategyDirection | null =
+    fairUpForPlan == null || Math.abs(Number(fairUpForPlan) - 50) < 1e-9
+      ? null
+      : fairUpForPlan > 50
+        ? "up"
+        : "down";
+  const fairEdgePct =
+    fairUpForPlan == null ? 0 : Math.abs(Number(fairUpForPlan) - 50);
+  const fairConfirmNeed =
+    ctx.rem <= 30 ? 3 : ctx.rem <= 75 ? 5 : ctx.rem <= 150 ? 7 : 10;
+  const fairConfirmsMarket =
+    bookBias.direction != null &&
+    fairDirection === bookBias.direction &&
+    fairEdgePct >= fairConfirmNeed;
+  const diffConfirmNeed =
+    ctx.rem <= 30
+      ? 50
+      : ctx.rem <= 60
+        ? 45
+      : ctx.rem <= 75
+        ? 42
+        : ctx.rem <= 90
+          ? 42
+          : ctx.rem <= 150
+            ? 36
+            : ctx.rem <= 210
+              ? 50
+              : 65;
+  const diffConsistencyNeed =
+    ctx.rem <= 90 ? 0.6 : ctx.rem <= 150 ? 0.5 : 0.35;
+  const diffConfirmsMarket =
+    bookBias.direction != null &&
+    profile.direction === bookBias.direction &&
+    profile.absDiff >= diffConfirmNeed &&
+    profile.consistency >= diffConsistencyNeed;
+  const terminalCertainty =
+    ctx.rem <= 15 &&
+    bookBias.direction != null &&
+    profile.direction === bookBias.direction &&
+    fairDirection === bookBias.direction &&
+    profile.absDiff >= 55 &&
+    fairEdgePct >= 20 &&
+    profile.consistency >= 0.65 &&
+    bookBias.leadPct >= Math.max(65, bookBias.leadNeed);
   const neutralMainDiffLimit = Math.min(
     55,
     Math.max(24, profile.threshold * (ctx.rem <= 90 ? 0.78 : 0.72)),
   );
   const nearNeutralDiff = profile.absDiff <= neutralMainDiffLimit;
+  const marketNonBookCertainty =
+    (diffConfirmsMarket && fairConfirmsMarket) || terminalCertainty;
   const marketBiasTrusted =
     bookBias.triggered &&
     bookBias.direction != null &&
-    (profile.direction === bookBias.direction ||
-      profile.absDiff < (ctx.rem > 150 ? 35 : 24) ||
-      ctx.rem > 210);
+    marketNonBookCertainty;
   const tierWindowScale =
     profile.tier === "terminal"
       ? 1
@@ -7249,6 +7605,52 @@ function buildS10BonereaperCloneOrder(
         currentDominance >= (ctx.rem <= 90 ? 1.35 : 1.5) ||
         directionShareLead * Math.max(ask, 0.01) >=
           baseAmount * (ctx.rem <= 90 ? 3 : 4));
+    const wrongSideNotional = otherNotional;
+    const wrongSideShares = otherShares;
+    const wrongSideSmall =
+      wrongSideNotional >= baseAmount * 0.75 &&
+      wrongSideNotional <=
+        baseAmount * S10_BONEREAPER_CLONE_RESCUE_MAX_INITIAL_MULT &&
+      currentNotional <= baseAmount * S10_BONEREAPER_CLONE_RESCUE_MAX_TOTAL_MULT;
+    const reverseRescue =
+      S10_BONEREAPER_CLONE_RESCUE_ENABLED &&
+      (kind === "signal" || kind === "market") &&
+      wrongSideSmall &&
+      profile.direction === direction &&
+      bookBias.direction === direction &&
+      marketBiasTrusted &&
+      ctx.rem >= S10_BONEREAPER_CLONE_RESCUE_MIN_REMAINING_SEC &&
+      ctx.rem <= S10_BONEREAPER_CLONE_RESCUE_MAX_REMAINING_SEC &&
+      profile.absDiff >= S10_BONEREAPER_CLONE_RESCUE_MIN_DIFF &&
+      profile.acceleration >= S10_BONEREAPER_CLONE_RESCUE_MIN_ACCEL &&
+      bookBias.leadPct >= S10_BONEREAPER_CLONE_RESCUE_MIN_LEAD_PCT;
+    const rescueMaxWorstLoss =
+      baseAmount * S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT;
+    const rescueMaxWorstLossIncrease =
+      baseAmount * S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_INCREASE_MULT;
+    const rescueTotalCap =
+      baseAmount * S10_BONEREAPER_CLONE_RESCUE_MAX_TOTAL_MULT;
+    const rescueOppositeWinPnlBefore =
+      wrongSideShares - wrongSideNotional - currentNotional;
+    const rescueWorstOutcomeCap = Math.max(
+      0,
+      rescueOppositeWinPnlBefore + rescueMaxWorstLoss,
+    );
+    const rescueRemainingLossExpansionCap = Math.max(
+      0,
+      rescueMaxWorstLossIncrease - currentNotional,
+    );
+    const reverseRescueCap = reverseRescue
+      ? Math.max(
+          0,
+          Math.min(
+            baseAmount * S10_BONEREAPER_CLONE_RESCUE_MAX_ORDER_MULT,
+            rescueTotalCap - currentNotional,
+            rescueWorstOutcomeCap,
+            rescueRemainingLossExpansionCap,
+          ),
+        )
+      : Infinity;
     const highPriceLowEdge =
       kind === "market" &&
       ask >= 0.9 &&
@@ -7267,18 +7669,6 @@ function buildS10BonereaperCloneOrder(
       !strongDirectionalAdd &&
       ((ask >= 0.64 && profile.absDiff < 36) ||
         (ask >= 0.58 && bookBias.leadPct < 45));
-    const neutralHeavyMarketBlock =
-      kind === "market" &&
-      nearNeutralDiff &&
-      clearlyHeavyDirection &&
-      !strongDirectionalAdd;
-    const lateNeutralHighMarketBlock =
-      kind === "market" &&
-      ctx.rem < 90 &&
-      ask >= 0.5 &&
-      nearNeutralDiff &&
-      !strongDirectionalAdd &&
-      (clearlyHeavyDirection || owned.totalNotional >= baseAmount * 10);
     const avgWorseningHigh =
       (kind === "market" || kind === "signal") &&
       !strongDirectionalAdd &&
@@ -7289,8 +7679,9 @@ function buildS10BonereaperCloneOrder(
       !strongDirectionalAdd &&
       currentNotional < baseAmount * 5 &&
       ask > 0.58;
-    const avgGuardCap =
-      weakHighMarket || avgWorseningHigh
+    const avgGuardCap = reverseRescue
+      ? Infinity
+      : weakHighMarket || avgWorseningHigh
         ? baseAmount * (ctx.rem > 180 ? 0.45 : 0.75)
         : openingHighMarket
           ? baseAmount * 0.5
@@ -7341,6 +7732,37 @@ function buildS10BonereaperCloneOrder(
               owned.totalNotional,
           )
         : Infinity;
+    const directionDiffConfirmed =
+      profile.direction === direction &&
+      profile.absDiff >= diffConfirmNeed &&
+      profile.consistency >= diffConsistencyNeed;
+    const directionFairConfirmed =
+      fairDirection === direction && fairEdgePct >= fairConfirmNeed;
+    const directionTerminalCertainty =
+      ctx.rem <= 15 &&
+      profile.direction === direction &&
+      fairDirection === direction &&
+      profile.absDiff >= 14 &&
+      fairEdgePct >= 2.5 &&
+      profile.consistency >= 0.35;
+    const bookConfirmsDirection =
+      !bookBias.triggered ||
+      bookBias.direction == null ||
+      bookBias.direction === direction;
+    const directionNonBookCertainty =
+      bookConfirmsDirection &&
+      ((directionDiffConfirmed && directionFairConfirmed) ||
+        directionTerminalCertainty);
+    const directionalLargeCandidate = kind === "signal" || kind === "market";
+    const weakCertaintyOrderCap =
+      directionalLargeCandidate && !directionNonBookCertainty
+        ? baseAmount *
+          (kind === "signal" && profile.triggered
+            ? ctx.rem <= 90
+              ? 1.2
+              : 0.8
+            : 0.55)
+        : Infinity;
     const signalAllowed =
       kind !== "signal" ||
       (profile.triggered && direction === profile.direction);
@@ -7372,13 +7794,16 @@ function buildS10BonereaperCloneOrder(
       highPriceFlip && !strongFlipAllowed
         ? baseAmount * (ctx.rem > 90 ? 5 : 3)
         : Infinity;
+    const marketConfirmationBlock =
+      kind === "market" &&
+      bookBias.triggered &&
+      direction === bookBias.direction &&
+      !marketBiasTrusted;
     const marketAllowed =
       kind !== "market" ||
       (marketBiasTrusted &&
         direction === bookBias.direction &&
         flipAllowed &&
-        !neutralHeavyMarketBlock &&
-        !lateNeutralHighMarketBlock &&
         !highPriceLowEdge &&
         ask <= maxPrice + 1e-9);
     const pairAllowed =
@@ -7394,6 +7819,78 @@ function buildS10BonereaperCloneOrder(
         ask <= 0.58 &&
         Math.abs(profile.diff) >= 8 &&
         used < baseAmount * 8);
+    const riskGateBase = marketConfirmationBlock
+      ? "market-unconfirmed"
+      : directionalLargeCandidate && !directionNonBookCertainty
+        ? "direction-certainty-lite"
+      : highPriceLowEdge
+        ? "high-price-low-edge"
+        : highPriceFlip && !flipAllowed
+          ? "flip-block"
+          : null;
+    const rawAmount =
+      signalAllowed &&
+      marketAllowed &&
+      pairAllowed &&
+      probeAllowed
+        ? Math.min(
+            notionalGap,
+            kind === "pair" ? pairRepairBudget : budgetGap,
+            orderCap,
+            sliceCap,
+            remainingWindow,
+            shallowAvailable,
+            flipCap,
+            highPriceRiskCap,
+            terminalWrongSideRiskCap,
+            avgGuardCap,
+            reverseRescueCap,
+            weakCertaintyOrderCap,
+          )
+        : 0;
+    const terminalStrongProjectedRelax =
+      rawAmount > 0 &&
+      (kind === "signal" || kind === "market") &&
+      profile.direction === direction &&
+      ctx.rem <= 120 &&
+      (profile.tier === "terminal" ||
+        profile.tier === "sweep" ||
+        (profile.tier === "conviction" && profile.absDiff >= 55)) &&
+      profile.absDiff >= (ctx.rem <= 60 ? 26 : 45) &&
+      (bookBias.direction == null || bookBias.direction === direction) &&
+      bookBias.leadPct >= (ctx.rem <= 60 ? 65 : 58);
+    const projectedPairCostLimit = reverseRescue
+      ? S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX
+      : terminalStrongProjectedRelax
+        ? S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX
+        : S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX;
+    const projectedBadLossMultiplier = reverseRescue
+      ? S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT
+      : terminalStrongProjectedRelax
+        ? S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT
+        : S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT;
+    const projectedFill = getS10BonereaperCloneAskFillPreview(
+      ctx,
+      direction,
+      maxPrice,
+      rawAmount,
+    );
+    const projectedPnl = getS10BonereaperCloneProjectedPnlGuard({
+      owned,
+      direction,
+      amount: rawAmount,
+      maxPrice,
+      fill: projectedFill,
+      baseAmount,
+      pairCostLimit: projectedPairCostLimit,
+      badLossMultiplier: projectedBadLossMultiplier,
+      maxWorstLoss: reverseRescue ? rescueMaxWorstLoss : undefined,
+      maxWorstLossIncrease: reverseRescue
+        ? rescueMaxWorstLossIncrease
+        : undefined,
+    });
+    const projectedRiskGate =
+      rawAmount > 0 && projectedPnl.blocked ? projectedPnl.reason : null;
     return {
       direction,
       ask,
@@ -7405,37 +7902,27 @@ function buildS10BonereaperCloneOrder(
       pairMissingShares,
       highPriceRiskCap,
       terminalWrongSideRiskCap,
-      neutralHeavyMarketBlock,
-      lateNeutralHighMarketBlock,
       clearlyHeavyDirection,
       nearNeutralDiff,
       neutralMainDiffLimit,
       directionNotionalLead,
       currentDominance,
-      riskGate: neutralHeavyMarketBlock
-        ? "neutral-heavy-main"
-        : lateNeutralHighMarketBlock
-          ? "late-neutral-high"
-          : highPriceLowEdge
-            ? "high-price-low-edge"
-            : highPriceFlip && !flipAllowed
-              ? "flip-block"
-              : null,
-      amount:
-        signalAllowed && marketAllowed && pairAllowed && probeAllowed
-          ? Math.min(
-              notionalGap,
-              kind === "pair" ? pairRepairBudget : budgetGap,
-              orderCap,
-              sliceCap,
-              remainingWindow,
-              shallowAvailable,
-              flipCap,
-              highPriceRiskCap,
-              terminalWrongSideRiskCap,
-              avgGuardCap,
-            )
-          : 0,
+      marketConfirmationBlock,
+      riskGate: riskGateBase ?? projectedRiskGate,
+      amount: projectedPnl.blocked ? 0 : rawAmount,
+      rawAmount,
+      projectedPnl,
+      projectedPairCostLimit,
+      terminalStrongProjectedRelax,
+      directionNonBookCertainty,
+      directionDiffConfirmed,
+      directionFairConfirmed,
+      directionTerminalCertainty,
+      weakCertaintyOrderCap,
+      reverseRescue,
+      reverseRescueCap,
+      rescueMaxWorstLoss,
+      rescueMaxWorstLossIncrease,
       sliceCap,
       avgGuardCap,
       pairRepairBudget,
@@ -7521,6 +8008,23 @@ function buildS10BonereaperCloneOrder(
     marketDirection: bookBias.direction,
     marketLeadPct: round4(bookBias.leadPct),
     marketLeadNeedPct: round4(bookBias.leadNeed),
+    marketMidDirection: bookBias.midDirection,
+    marketMidLeadPct: round4(bookBias.midLeadPct),
+    marketWeightedDirection: bookBias.weightedDirection,
+    marketWeightedLeadPct: round4(bookBias.weightedLeadPct),
+    marketQualityPct: round4(bookBias.qualityScore * 100),
+    marketLiquidityPct: round4(bookBias.liquidityScore * 100),
+    marketShallowNotional: round4(bookBias.shallowNotional),
+    marketSpreadPenaltyPct: round4(bookBias.spreadPenalty),
+    fairDirection,
+    fairEdgePct: round4(fairEdgePct),
+    fairConfirmNeedPct: round4(fairConfirmNeed),
+    fairConfirmsMarket,
+    diffConfirmNeed: round4(diffConfirmNeed),
+    diffConsistencyNeedPct: round4(diffConsistencyNeed * 100),
+    diffConfirmsMarket,
+    terminalCertainty,
+    marketNonBookCertainty,
     marketBiasTrusted,
     upTargetPct: round4(upTargetPct * 100),
     targetTotal: round4(targetTotal),
@@ -7536,23 +8040,25 @@ function buildS10BonereaperCloneOrder(
     order: selected,
   };
   if (!selected) {
-    const blockedMarket = candidates.find(
+    const projectedBlocked = candidates.find(
       (candidate) =>
-        candidate.kind === "market" &&
-        (candidate.neutralHeavyMarketBlock || candidate.lateNeutralHighMarketBlock),
+        candidate.rawAmount >= S10_BONEREAPER_CLONE_MIN_QUOTE_USDC &&
+        candidate.projectedPnl?.blocked,
     );
-    s10BonereaperCloneLastReason = blockedMarket
-      ? `br-clone neutral-heavy wait ${blockedMarket.direction} gate=${blockedMarket.riskGate} diff=${profile.diff.toFixed(1)} neutral<=${neutralMainDiffLimit.toFixed(1)} heavy=${blockedMarket.clearlyHeavyDirection ? "yes" : "no"} ask=${(blockedMarket.ask * 100).toFixed(1)} used=${used.toFixed(2)}`
-      : profile.triggered
-        ? `br-clone signal wait ${profile.direction} tier=${profile.tier} score=${profile.score.toFixed(2)} gap=${budgetGap.toFixed(2)}`
+    s10BonereaperCloneLastReason = projectedBlocked
+        ? `br-clone projected wait ${projectedBlocked.direction} gate=${projectedBlocked.projectedPnl.reason} pairAfter=${projectedBlocked.projectedPnl.pairCostPctAfter ?? "-"} limit=${projectedBlocked.projectedPnl.pairCostLimitPct} upPnl=${projectedBlocked.projectedPnl.upWinPnlAfter} downPnl=${projectedBlocked.projectedPnl.downWinPnlAfter} raw=${projectedBlocked.rawAmount.toFixed(2)}`
+        : profile.triggered
+          ? `br-clone signal wait ${profile.direction} tier=${profile.tier} score=${profile.score.toFixed(2)} gap=${budgetGap.toFixed(2)}`
         : `br-clone no signal diff=${profile.diff.toFixed(1)} need=${profile.threshold.toFixed(1)} used=${used.toFixed(2)}`;
     return null;
   }
+  const marketConfirmSummary = `marketC=${marketNonBookCertainty ? "yes" : "no"} diffC=${diffConfirmsMarket ? "yes" : "no"}/${diffConfirmNeed.toFixed(0)} c>${(diffConsistencyNeed * 100).toFixed(0)} fairC=${fairConfirmsMarket ? "yes" : "no"}/${fairEdgePct.toFixed(1)}>${fairConfirmNeed.toFixed(1)} termC=${terminalCertainty ? "yes" : "no"} q=${(bookBias.qualityScore * 100).toFixed(0)}`;
+  const directionConfirmSummary = `dirC=${selected.directionNonBookCertainty ? "yes" : "no"} dDiff=${selected.directionDiffConfirmed ? "yes" : "no"} dFair=${selected.directionFairConfirmed ? "yes" : "no"} dTerm=${selected.directionTerminalCertainty ? "yes" : "no"} weakCap=${Number.isFinite(selected.weakCertaintyOrderCap) ? selected.weakCertaintyOrderCap.toFixed(2) : "-"}`;
   return {
     direction: selected.direction,
     amount: selected.amount,
     maxPrice: selected.maxPrice,
-    reason: `br-clone ${selected.kind} ${selected.direction} tier=${profile.tier} rem=${ctx.rem.toFixed(1)} diff=${ctx.diff == null ? "-" : Number(ctx.diff).toFixed(1)} score=${profile.score.toFixed(2)} market=${bookBias.direction ?? "-"} lead=${bookBias.leadPct.toFixed(1)}/${bookBias.leadNeed.toFixed(1)} ask=${(selected.ask * 100).toFixed(1)} maxPx=${(selected.maxPrice * 100).toFixed(1)} amount=${selected.amount.toFixed(2)} slice=${selected.sliceCap.toFixed(2)} avg=${selected.directionAvg == null ? "-" : (selected.directionAvg * 100).toFixed(1)} avgCap=${Number.isFinite(selected.avgGuardCap) ? selected.avgGuardCap.toFixed(2) : "-"} neutral=${selected.nearNeutralDiff ? "yes" : "no"}/${selected.neutralMainDiffLimit.toFixed(1)} heavy=${selected.clearlyHeavyDirection ? "yes" : "no"} gate=${selected.riskGate ?? "-"} pairBudget=${selected.pairRepairBudget.toFixed(2)} termRisk=${Number.isFinite(selected.terminalWrongSideRiskCap) ? selected.terminalWrongSideRiskCap.toFixed(2) : "-"} depth=${selected.depthLevels}/${(selected.depthPriceLift * 100).toFixed(1)}pt used=${used.toFixed(2)} cap=${windowCap.toFixed(2)}`,
+    reason: `br-clone ${selected.kind} ${selected.direction} tier=${profile.tier} rem=${ctx.rem.toFixed(1)} diff=${ctx.diff == null ? "-" : Number(ctx.diff).toFixed(1)} score=${profile.score.toFixed(2)} market=${bookBias.direction ?? "-"} lead=${bookBias.leadPct.toFixed(1)}/${bookBias.leadNeed.toFixed(1)} ${marketConfirmSummary} ${directionConfirmSummary} ask=${(selected.ask * 100).toFixed(1)} maxPx=${(selected.maxPrice * 100).toFixed(1)} amount=${selected.amount.toFixed(2)} slice=${selected.sliceCap.toFixed(2)} avg=${selected.directionAvg == null ? "-" : (selected.directionAvg * 100).toFixed(1)} avgCap=${Number.isFinite(selected.avgGuardCap) ? selected.avgGuardCap.toFixed(2) : "-"} neutral=${selected.nearNeutralDiff ? "yes" : "no"}/${selected.neutralMainDiffLimit.toFixed(1)} heavy=${selected.clearlyHeavyDirection ? "yes" : "no"} gate=${selected.riskGate ?? "-"} rescue=${selected.reverseRescue ? "yes" : "no"} rescueCap=${Number.isFinite(selected.reverseRescueCap) ? selected.reverseRescueCap.toFixed(2) : "-"} proj=ok upPnl=${selected.projectedPnl.upWinPnlAfter} downPnl=${selected.projectedPnl.downWinPnlAfter} pairAfter=${selected.projectedPnl.pairCostPctAfter ?? "-"} pairLimit=${selected.projectedPnl.pairCostLimitPct} worstCap=${selected.projectedPnl.maxWorstLoss ?? "-"} worstInc=${selected.projectedPnl.maxWorstLossIncrease ?? "-"} termRelax=${selected.terminalStrongProjectedRelax ? "yes" : "no"} pairBudget=${selected.pairRepairBudget.toFixed(2)} termRisk=${Number.isFinite(selected.terminalWrongSideRiskCap) ? selected.terminalWrongSideRiskCap.toFixed(2) : "-"} depth=${selected.depthLevels}/${(selected.depthPriceLift * 100).toFixed(1)}pt used=${used.toFixed(2)} cap=${windowCap.toFixed(2)}`,
   };
 }
 
@@ -7571,6 +8077,27 @@ function getS10BonereaperCloneStatus(): Record<string, unknown> {
       pairCompletionMaxCostPct: S10_BONEREAPER_CLONE_PAIR_COMPLETION_MAX_COST * 100,
       terminalPairCompletionMaxCostPct:
         S10_BONEREAPER_CLONE_TERMINAL_PAIR_COMPLETION_MAX_COST * 100,
+      projectedPairCostMaxPct:
+        S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX * 100,
+      projectedTerminalPairCostMaxPct:
+        S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX * 100,
+      projectedBadLossMult: S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT,
+      projectedTerminalBadLossMult:
+        S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT,
+      rescueEnabled: S10_BONEREAPER_CLONE_RESCUE_ENABLED,
+      rescueMinRemainingSec: S10_BONEREAPER_CLONE_RESCUE_MIN_REMAINING_SEC,
+      rescueMaxRemainingSec: S10_BONEREAPER_CLONE_RESCUE_MAX_REMAINING_SEC,
+      rescueMinDiff: S10_BONEREAPER_CLONE_RESCUE_MIN_DIFF,
+      rescueMinAccel: S10_BONEREAPER_CLONE_RESCUE_MIN_ACCEL,
+      rescueMinLeadPct: S10_BONEREAPER_CLONE_RESCUE_MIN_LEAD_PCT,
+      rescueMaxInitialMult: S10_BONEREAPER_CLONE_RESCUE_MAX_INITIAL_MULT,
+      rescueMaxTotalMult: S10_BONEREAPER_CLONE_RESCUE_MAX_TOTAL_MULT,
+      rescueMaxOrderMult: S10_BONEREAPER_CLONE_RESCUE_MAX_ORDER_MULT,
+      rescueProjectedPairCostMaxPct:
+        S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX * 100,
+      rescueMaxWorstLossMult: S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT,
+      rescueMaxWorstLossIncreaseMult:
+        S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_INCREASE_MULT,
       liveMaxOrderUsdc: S10_BONEREAPER_CLONE_LIVE_MAX_ORDER_USDC,
     },
     plan: s10BonereaperCloneLastPlan,

@@ -444,6 +444,48 @@
       display: none;
     }
 
+    .paper-pager {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 10px 0;
+      font-size: 11px;
+      color: #7a8a9a;
+    }
+
+    .paper-pager.hidden {
+      display: none;
+    }
+
+    .paper-pager-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .paper-pager button,
+    .paper-pager select {
+      border: 1px solid #30363d;
+      background: #0d1117;
+      color: #c9d1d9;
+      border-radius: 4px;
+      font-size: 11px;
+      padding: 3px 7px;
+    }
+
+    .paper-pager button {
+      cursor: pointer;
+    }
+
+    .paper-pager button:disabled {
+      color: #4d5560;
+      border-color: #202833;
+      cursor: not-allowed;
+    }
+
     .paper-window-list {
       display: flex;
       flex-direction: column;
@@ -2712,6 +2754,24 @@
       <button class="paper-tab-btn active" id="paper-tab-windows" onclick="setPaperTab('windows')">盘口汇总</button>
       <button class="paper-tab-btn" id="paper-tab-trades" onclick="setPaperTab('trades')">逐笔成交</button>
     </div>
+    <div id="paper-window-summary-pager" class="paper-pager">
+      <span id="paper-window-summary-page-info">-</span>
+      <div class="paper-pager-controls">
+        <label>&#27599;&#39029;
+          <select id="paper-window-summary-page-size" onchange="setPaperWindowSummaryPageSize(this.value)">
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <button id="paper-window-summary-first" onclick="setPaperWindowSummaryPage('first')">&#39318;&#39029;</button>
+        <button id="paper-window-summary-prev" onclick="setPaperWindowSummaryPage('prev')">&#19978;&#19968;&#39029;</button>
+        <button id="paper-window-summary-next" onclick="setPaperWindowSummaryPage('next')">&#19979;&#19968;&#39029;</button>
+        <button id="paper-window-summary-last" onclick="setPaperWindowSummaryPage('last')">&#26411;&#39029;</button>
+      </div>
+    </div>
     <div id="paper-window-summary-list" class="paper-view paper-window-list">
       <div style="color:#444;font-size:12px">暂无盘口汇总</div>
     </div>
@@ -2870,6 +2930,7 @@
 
     const LOW_DATA_STORAGE_KEY = 'btc5m.lowDataMode';
     const STRATEGY_DETAILS_STORAGE_KEY = 'btc5m.strategyDetailsExpanded';
+    const PAPER_WINDOW_PAGE_SIZE_STORAGE_KEY = 'btc5m.paperWindowSummaryPageSize';
 
     function loadLowDataModePreference() {
       try {
@@ -2887,6 +2948,15 @@
       }
     }
 
+    function loadPaperWindowSummaryPageSize() {
+      try {
+        const saved = Number(localStorage.getItem(PAPER_WINDOW_PAGE_SIZE_STORAGE_KEY));
+        return [5, 10, 20, 50, 100].includes(saved) ? saved : 20;
+      } catch {
+        return 20;
+      }
+    }
+
     function persistLowDataModePreference() {
       try {
         localStorage.setItem(LOW_DATA_STORAGE_KEY, lowDataMode ? '1' : '0');
@@ -2896,6 +2966,12 @@
     function persistStrategyDetailsPreference() {
       try {
         localStorage.setItem(STRATEGY_DETAILS_STORAGE_KEY, strategyDetailsExpanded ? '1' : '0');
+      } catch { }
+    }
+
+    function persistPaperWindowSummaryPageSize() {
+      try {
+        localStorage.setItem(PAPER_WINDOW_PAGE_SIZE_STORAGE_KEY, String(paperWindowSummaryPageSize));
       } catch { }
     }
 
@@ -2909,7 +2985,11 @@
     let executionEvents = [];
     let paperActiveTab = 'windows';
     const PAPER_WINDOW_SUMMARY_LIMIT = 288;
+    const PAPER_WINDOW_SUMMARY_DEFAULT_PAGE_SIZE = 20;
     const PAPER_TRADE_ROW_LIMIT = 500;
+    let paperWindowSummaryPage = 1;
+    let paperWindowSummaryTotalPages = 1;
+    let paperWindowSummaryPageSize = loadPaperWindowSummaryPageSize();
     let liveActiveTab = 'windows';
     let bonereaperMonitor = null;
     let brBodyLastKey = '';
@@ -3471,9 +3551,33 @@
       renderPaperPanel();
     }
 
+    function normalizePaperWindowSummaryPageSize(value) {
+      const size = Number(value);
+      return [5, 10, 20, 50, 100].includes(size) ? size : PAPER_WINDOW_SUMMARY_DEFAULT_PAGE_SIZE;
+    }
+
+    function setPaperWindowSummaryPageSize(value) {
+      paperWindowSummaryPageSize = normalizePaperWindowSummaryPageSize(value);
+      paperWindowSummaryPage = 1;
+      persistPaperWindowSummaryPageSize();
+      renderPaperWindowSummary();
+      if ($paperWindowSummaryList) $paperWindowSummaryList.scrollTop = 0;
+    }
+
+    function setPaperWindowSummaryPage(action) {
+      if (action === 'first') paperWindowSummaryPage = 1;
+      else if (action === 'prev') paperWindowSummaryPage -= 1;
+      else if (action === 'next') paperWindowSummaryPage += 1;
+      else if (action === 'last') paperWindowSummaryPage = paperWindowSummaryTotalPages;
+      else paperWindowSummaryPage = Number(action) || 1;
+      renderPaperWindowSummary();
+      if ($paperWindowSummaryList) $paperWindowSummaryList.scrollTop = 0;
+    }
+
     function updatePaperTabs() {
       if ($paperTabWindows) $paperTabWindows.classList.toggle('active', paperActiveTab === 'windows');
       if ($paperTabTrades) $paperTabTrades.classList.toggle('active', paperActiveTab === 'trades');
+      if ($paperWindowSummaryPager) $paperWindowSummaryPager.classList.toggle('hidden', paperActiveTab !== 'windows');
       if ($paperWindowSummaryList) $paperWindowSummaryList.classList.toggle('hidden', paperActiveTab !== 'windows');
       if ($paperHistoryList) $paperHistoryList.classList.toggle('hidden', paperActiveTab !== 'trades');
     }
@@ -3745,10 +3849,41 @@
       return NaN;
     }
 
+    function renderPaperWindowSummaryPager(totalRows, pageStart, pageEnd) {
+      const hasRows = totalRows > 0;
+      if ($paperWindowSummaryPager) {
+        $paperWindowSummaryPager.classList.toggle('hidden', paperActiveTab !== 'windows' || !hasRows);
+      }
+      if ($paperWindowSummaryPageSize) {
+        $paperWindowSummaryPageSize.value = String(paperWindowSummaryPageSize);
+      }
+      if ($paperWindowSummaryPageInfo) {
+        $paperWindowSummaryPageInfo.textContent = hasRows
+          ? `\u7b2c ${paperWindowSummaryPage}/${paperWindowSummaryTotalPages} \u9875 \u00b7 ${pageStart + 1}-${pageEnd} / ${totalRows} \u6761`
+          : `0 \u6761`;
+      }
+      const atFirst = paperWindowSummaryPage <= 1;
+      const atLast = paperWindowSummaryPage >= paperWindowSummaryTotalPages;
+      for (const btn of [$paperWindowSummaryFirst, $paperWindowSummaryPrev]) {
+        if (btn) btn.disabled = !hasRows || atFirst;
+      }
+      for (const btn of [$paperWindowSummaryNext, $paperWindowSummaryLast]) {
+        if (btn) btn.disabled = !hasRows || atLast;
+      }
+    }
+
     function renderPaperWindowSummary() {
       if (!$paperWindowSummaryList) return;
-      const rows = buildPaperWindowRows().slice(0, PAPER_WINDOW_SUMMARY_LIMIT);
-      if (!rows.length) {
+      paperWindowSummaryPageSize = normalizePaperWindowSummaryPageSize(paperWindowSummaryPageSize);
+      const allRows = buildPaperWindowRows().slice(0, PAPER_WINDOW_SUMMARY_LIMIT);
+      const totalRows = allRows.length;
+      paperWindowSummaryTotalPages = Math.max(1, Math.ceil(totalRows / paperWindowSummaryPageSize));
+      paperWindowSummaryPage = Math.max(1, Math.min(paperWindowSummaryTotalPages, Math.floor(Number(paperWindowSummaryPage) || 1)));
+      const pageStart = (paperWindowSummaryPage - 1) * paperWindowSummaryPageSize;
+      const pageEnd = Math.min(totalRows, pageStart + paperWindowSummaryPageSize);
+      const rows = allRows.slice(pageStart, pageEnd);
+      renderPaperWindowSummaryPager(totalRows, pageStart, pageEnd);
+      if (!totalRows) {
         $paperWindowSummaryList.innerHTML = '<div style="color:#444;font-size:12px">暂无盘口汇总</div>';
         return;
       }
@@ -4882,6 +5017,13 @@
     const $paperStatLatency = document.getElementById('paper-stat-latency');
     const $paperLastFill = document.getElementById('paper-last-fill');
     const $paperWindowSummaryList = document.getElementById('paper-window-summary-list');
+    const $paperWindowSummaryPager = document.getElementById('paper-window-summary-pager');
+    const $paperWindowSummaryPageInfo = document.getElementById('paper-window-summary-page-info');
+    const $paperWindowSummaryPageSize = document.getElementById('paper-window-summary-page-size');
+    const $paperWindowSummaryFirst = document.getElementById('paper-window-summary-first');
+    const $paperWindowSummaryPrev = document.getElementById('paper-window-summary-prev');
+    const $paperWindowSummaryNext = document.getElementById('paper-window-summary-next');
+    const $paperWindowSummaryLast = document.getElementById('paper-window-summary-last');
     const $paperHistoryList = document.getElementById('paper-history-list');
     const $paperTabWindows = document.getElementById('paper-tab-windows');
     const $paperTabTrades = document.getElementById('paper-tab-trades');
