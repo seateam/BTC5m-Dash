@@ -552,6 +552,13 @@
       text-overflow: ellipsis;
     }
 
+    .paper-window-box .box-main.active-order-main {
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+      line-height: 1.45;
+    }
+
     .paper-window-box .box-sub {
       white-space: nowrap;
       overflow: hidden;
@@ -571,6 +578,10 @@
       color: #8b949e;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .paper-window-box .box-main.active-order-main .active-order-item {
+      color: #d0d7de;
     }
 
     #bonereaper-panel {
@@ -2726,6 +2737,26 @@
         <div class="value" id="paper-stat-pnl">$0.00</div>
       </div>
       <div class="paper-metric">
+        <div class="label">手续费总消耗</div>
+        <div class="value" id="paper-stat-fee">$0.00</div>
+      </div>
+      <div class="paper-metric">
+        <div class="label">NoLottery PnL</div>
+        <div class="value" id="paper-stat-no-lottery">$0.00</div>
+      </div>
+      <div class="paper-metric">
+        <div class="label">Lottery PnL</div>
+        <div class="value" id="paper-stat-lottery">$0.00</div>
+      </div>
+      <div class="paper-metric">
+        <div class="label">Maker / Taker</div>
+        <div class="value" id="paper-stat-maker-taker">$0.00 / $0.00</div>
+      </div>
+      <div class="paper-metric">
+        <div class="label">Conservative</div>
+        <div class="value" id="paper-stat-conservative">$0.00</div>
+      </div>
+      <div class="paper-metric">
         <div class="label">模拟 USDC</div>
         <div class="value" id="paper-stat-usdc">$1000.00</div>
       </div>
@@ -2793,6 +2824,10 @@
       <div class="paper-metric">
         <div class="label">已实现盈亏</div>
         <div class="value" id="live-stat-pnl">-</div>
+      </div>
+      <div class="paper-metric">
+        <div class="label">手续费总消耗</div>
+        <div class="value" id="live-stat-fee">-</div>
       </div>
       <div class="paper-metric">
         <div class="label">真实持仓</div>
@@ -3295,7 +3330,8 @@
       if (!s) return { text: '手动', cls: 'manual' };
       if (s.includes('maker-merge') || s.endsWith('merge')) return { text: 'S10合并', cls: 'merge' };
       if (s === 'strategy10bonereaper') return { text: 'BR-Clone', cls: 'strategy' };
-      if (s === 'strategy10maker') return { text: 'S10Maker', cls: 'strategy' };
+      if (s === 'strategy10bonereaper-maker') return { text: 'BR-CloneM', cls: 'strategy' };
+      if (s === 'strategy10maker' || s.startsWith('strategy10maker:') || (s.startsWith('strategy10') && s.includes('-maker'))) return { text: 'S10Maker', cls: 'strategy' };
       if (s.startsWith('strategy')) {
         const num = s.replace('strategy', '') || '?';
         return { text: `策略${num}`, cls: 'strategy' };
@@ -3414,11 +3450,17 @@
       }
 
       if (reason.startsWith('br-clone')) {
+        const makerLike =
+          isMakerTradeSource(source) ||
+          String(r?.feeMode || '').toLowerCase() === 'maker' ||
+          status.includes('SIM_MAKER') ||
+          reason.includes('post_only') ||
+          reason.includes('bid1_entry');
         const tag = status.includes('REJECT')
           ? 'BR-Clone reject'
-          : reason.includes('taker')
-            ? 'BR-Clone taker'
-            : 'BR-Clone maker';
+          : makerLike
+            ? 'BR-Clone maker'
+            : 'BR-Clone FOK/taker';
         const detailParts = [
           getReasonToken(reason, 'rem') ? `rem ${getReasonToken(reason, 'rem')}` : '',
           getReasonToken(reason, 'diff') ? `diff ${getReasonToken(reason, 'diff')}` : '',
@@ -3433,7 +3475,7 @@
           getReasonToken(reason, 'cap') ? `cap ${getReasonToken(reason, 'cap')}` : '',
           rejectReason ? `reject ${rejectReason}` : '',
         ].filter(Boolean);
-        return { tag, cls: status.includes('REJECT') ? 'reject' : 'rebalance', detail: detailParts.join(' · '), title };
+        return { tag, cls: status.includes('REJECT') ? 'reject' : makerLike ? 'open' : 'rebalance', detail: detailParts.join(' · '), title };
       }
 
       if (source === 'strategy10maker' || reason.includes('maker-')) {
@@ -3623,6 +3665,7 @@
               pricePct: Number(order?.pricePct),
               shares: Number(order?.shares),
               remainingShares: Number(order?.remainingShares),
+              filledShares: Number(order?.filledShares),
               notional: Number(order?.notional),
               activeMs: Number(order?.activeMs),
               expiresInMs: Number(order?.expiresInMs),
@@ -3683,32 +3726,63 @@
     }
 
     function formatActiveOrderDetails(orders) {
-      if (!Array.isArray(orders) || !orders.length) return '';
-      return orders.slice(0, 6).map((order) => {
-        const dir = order.direction === 'down' ? '跌' : '涨';
-        const pricePct = Number.isFinite(order.pricePct)
-          ? order.pricePct
-          : Number.isFinite(order.price)
-            ? order.price * 100
-            : NaN;
-        const remaining = Number(order.remainingShares);
-        const original = Number(order.shares);
-        const qtyText = Number.isFinite(remaining)
-          ? fmtSize(remaining)
-          : '-';
-        const originalText = Number.isFinite(original) && Math.abs(original - remaining) > 0.01
-          ? `/${fmtSize(original)}`
-          : '';
-        const notional = Number(order.notional);
-        const activeMs = Number(order.activeMs);
-        const ageText = Number.isFinite(activeMs) ? ` · ${(activeMs / 1000).toFixed(1)}s` : '';
-        return `<div class="active-order-item">${dir} ${Number.isFinite(pricePct) ? pricePct.toFixed(1) + '%' : '-'} · 买量 ${qtyText}${originalText} · ${moneyText(notional)}${ageText}</div>`;
-      }).join('');
+      const normalizedOrders = Array.isArray(orders) ? orders : [];
+      const summarize = (direction) => {
+        const sideOrders = normalizedOrders.filter((order) => order.direction === direction);
+        if (!sideOrders.length) return { priceText: '-', filled: 0, total: 0 };
+        const best = sideOrders.reduce((chosen, order) => {
+          const price = Number(order.price);
+          const chosenPrice = Number(chosen?.price);
+          if (!chosen || (Number.isFinite(price) && (!Number.isFinite(chosenPrice) || price > chosenPrice))) return order;
+          return chosen;
+        }, null);
+        const filled = sideOrders.reduce((sum, order) => {
+          const explicit = Number(order.filledShares);
+          if (Number.isFinite(explicit) && explicit >= 0) return sum + explicit;
+          const total = Number(order.shares);
+          const remaining = Number(order.remainingShares);
+          return sum + (Number.isFinite(total) && Number.isFinite(remaining) ? Math.max(0, total - remaining) : 0);
+        }, 0);
+        const total = sideOrders.reduce((sum, order) => sum + Math.max(0, tradeNumber(order.shares)), 0);
+        const price = Number(best?.price);
+        return {
+          priceText: Number.isFinite(price) ? `$${price.toFixed(2)}` : '-',
+          filled,
+          total,
+        };
+      };
+      const up = summarize('up');
+      const down = summarize('down');
+      return [
+        `<div class="active-order-item">涨： ${up.priceText}   ${fmtSize(up.filled)}/${fmtSize(up.total)}</div>`,
+        `<div class="active-order-item">跌： ${down.priceText}   ${fmtSize(down.filled)}/${fmtSize(down.total)}</div>`,
+      ].join('');
+    }
+
+    function isMakerTradeSource(source) {
+      const src = String(source || '').toLowerCase();
+      return (
+        src === 'strategy10maker' ||
+        src.startsWith('strategy10maker:') ||
+        (src.startsWith('strategy10') && src.includes('-maker')) ||
+        src.includes('post_only')
+      );
     }
 
     function getTradeFee(r) {
-      return ['fee', 'fees', 'gas', 'gasFee', 'gasCost', 'commission', 'makerFee', 'takerFee', 'protocolFee']
+      const explicit = ['fee', 'fees', 'gas', 'gasFee', 'gasCost', 'commission', 'makerFee', 'takerFee', 'protocolFee']
         .reduce((sum, key) => sum + tradeNumber(r?.[key]), 0);
+      const source = String(r?.source || r?.strategySource || '').toLowerCase();
+      if (source === 'paper-settlement' || source === 'settlement' || source === 'merge') return 0;
+      if (isMakerTradeSource(source)) return 0;
+      const shares = getTradeShares(r);
+      const price = tradeNumber(r?.avgPrice ?? r?.price ?? r?.worstPrice);
+      const side = String(r?.side || '').toLowerCase();
+      if ((side === 'buy' || side === 'sell') && shares > 0 && price > 0) {
+        const p = Math.max(0, Math.min(1, price));
+        return shares * 0.07 * p * (1 - p);
+      }
+      return explicit;
     }
 
     function parseTradeResult(r) {
@@ -3794,7 +3868,7 @@
           row.fills += 1;
           row.filledShares += shares;
           row.filledNotional += notional;
-          if (String(r?.source || '') === 'strategy10maker') row.makerFills += 1;
+          if (isMakerTradeSource(r?.source)) row.makerFills += 1;
           if (String(r?.source || '') === 'strategy10sweep' || r?.roundEntry === 'terminal-sweep') row.sweepFills += 1;
           const impactPct = tradeNumber(r?.priceImpactPct);
           if (r.direction === 'up') {
@@ -3911,15 +3985,13 @@
         const netPnlText = Number.isFinite(netPnl) ? `${netPnl >= 0 ? '+' : ''}${moneyText(netPnl)}` : '-';
         const activeOrderText = row.activeOrders > 0
           ? `挂 ${row.activeOrders} · 涨${row.activeUpOrders}/跌${row.activeDownOrders}`
-          : '无活跃挂单';
+          : '-';
         const activeVolumeText = row.activeOrders > 0
           ? `${fmtSize(row.activeShares)} / ${moneyText(row.activeNotional)}`
           : '-';
         const activeBidText = `涨 ${formatPct0(row.activeUpBidPct)} / 跌 ${formatPct0(row.activeDownBidPct)}`;
         const activeOrderDetailHtml = formatActiveOrderDetails(row.activeOrderDetails);
-        const activeOrderSubHtml = activeOrderDetailHtml
-          ? `<div class="active-order-list">${activeOrderDetailHtml}</div>`
-          : `${activeVolumeText} · ${activeBidText}`;
+        const activeOrderSubHtml = `<div class="active-order-list">${activeOrderDetailHtml}</div>`;
         const fillVolumeText = `${fmtSize(row.filledShares)} / ${moneyText(row.filledNotional)}`;
         const fillBreakdownText = `maker ${row.makerFills} · sweep ${row.sweepFills} · 拒 ${row.rejects}`;
         const makerReason = row.makerReason
@@ -3958,8 +4030,8 @@
             </div>
             <div class="paper-window-box">
               <div class="box-title">当前挂单</div>
-              <div class="box-main">${activeOrderText}</div>
-              <div class="box-sub">${activeOrderSubHtml}</div>
+              <div class="box-main active-order-main">${activeOrderSubHtml}</div>
+              <div class="box-sub">${activeOrderText}</div>
             </div>
             <div class="paper-window-box">
               <div class="box-title">成交量</div>
@@ -4064,6 +4136,7 @@
         upOrders: 0,
         downOrders: 0,
         payout: 0,
+        fees: 0,
         realizedPnl: 0,
         hasRealizedPnl: false,
         posted: 0,
@@ -4084,6 +4157,7 @@
         activeDownNotional: 0,
         activeUpBidPct: NaN,
         activeDownBidPct: NaN,
+        activeOrderDetails: [],
         makerModule: '',
         makerMode: '',
         makerReason: '',
@@ -4105,6 +4179,7 @@
         const row = ensure(windowStart);
         const shares = getTradeShares(r);
         const notional = getTradeNotional(r);
+        row.fees += getTradeFee(r);
         if (r?.side === 'buy' && shares > 0) {
           row.filledNotional += notional;
           if (r.direction === 'up') {
@@ -4188,8 +4263,8 @@
         const upMark = getLiveWindowMark(row, 'up');
         const downMark = getLiveWindowMark(row, 'down');
         const markValue = (Number.isFinite(upMark) ? row.upShares * upMark : 0) + (Number.isFinite(downMark) ? row.downShares * downMark : 0);
-        const estimatedPnl = row.payout + markValue - totalCost;
-        const netPnl = row.hasRealizedPnl ? row.realizedPnl : estimatedPnl;
+        const estimatedPnl = row.payout + markValue - totalCost - row.fees;
+        const netPnl = row.hasRealizedPnl ? row.realizedPnl - row.fees : estimatedPnl;
         const roi = totalCost > 0 ? netPnl / totalCost * 100 : NaN;
         const pnlCls = netPnl > 0 ? 'up' : netPnl < 0 ? 'down' : 'gray';
         const statusText = row.windowStart === currentWindowStart ? '进行中' : row.hasRealizedPnl ? '已兑付' : '待结算';
@@ -4204,6 +4279,9 @@
         const activeBidText = row.activeOrders > 0
           ? `bid 涨${formatPct0(row.activeUpBidPct)} / 跌${formatPct0(row.activeDownBidPct)}`
           : 'bid -';
+        const activeOrderDetailHtml = formatActiveOrderDetails(row.activeOrderDetails);
+        const activeOrderSubHtml = `<div class="active-order-list">${activeOrderDetailHtml}</div>`;
+        const feeText = moneyText(row.fees);
         const liveFillVolumeText = `${fmtSize(row.upShares + row.downShares)} / ${moneyText(row.filledNotional || totalCost)}`;
         const liveMakerReason = row.makerReason ? escapeHtml(row.makerReason).slice(0, 88) : reason;
         return `<div class="paper-window-row">
@@ -4228,14 +4306,19 @@
               <div class="box-sub">ROI ${Number.isFinite(roi) ? `${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%` : '-'} · 成本 ${moneyText(totalCost)}</div>
             </div>
             <div class="paper-window-box">
+              <div class="box-title">手续费</div>
+              <div class="box-main">${feeText}</div>
+              <div class="box-sub">已从收益扣除</div>
+            </div>
+            <div class="paper-window-box">
               <div class="box-title">执行</div>
               <div class="box-main">挂 ${row.posted} / 成 ${row.eventFills}</div>
               <div class="box-sub">撤 ${row.canceled} · 拒 ${row.rejected} · 失败 ${row.cancelFailed}</div>
             </div>
             <div class="paper-window-box">
               <div class="box-title">当前挂单</div>
-              <div class="box-main">${activeOrderText}</div>
-              <div class="box-sub">${activeVolumeText} · ${activeBidText}</div>
+              <div class="box-main active-order-main">${activeOrderSubHtml}</div>
+              <div class="box-sub">${activeOrderText}</div>
             </div>
             <div class="paper-window-box">
               <div class="box-title">成交量</div>
@@ -4303,7 +4386,9 @@
     function renderLivePanel() {
       const liveTrades = (Array.isArray(tradeHistory) ? tradeHistory : []).filter(isLiveTrade);
       const liveEvents = getLiveEvents();
-      const realizedPnl = liveTrades.reduce((sum, trade) => sum + (Number.isFinite(Number(trade.pnl)) ? Number(trade.pnl) : 0), 0);
+      const grossPnl = liveTrades.reduce((sum, trade) => sum + (Number.isFinite(Number(trade.pnl)) ? Number(trade.pnl) : 0), 0);
+      const liveFees = liveTrades.reduce((sum, trade) => sum + getTradeFee(trade), 0);
+      const realizedPnl = grossPnl - liveFees;
       const rejects = liveEvents.filter((event) => String(event.event || '').includes('rejected')).length;
       const cancels = liveEvents.filter((event) => String(event.event || '').includes('canceled')).length;
       const activeMaker = Number(liveSafety?.s10LiveMakerActiveOrders);
@@ -4312,6 +4397,10 @@
       if ($liveStatPnl) {
         $liveStatPnl.textContent = `${realizedPnl >= 0 ? '+' : ''}${moneyText(realizedPnl)}`;
         $liveStatPnl.style.color = realizedPnl > 0 ? '#3fb950' : realizedPnl < 0 ? '#f85149' : '#8b949e';
+      }
+      if ($liveStatFee) {
+        $liveStatFee.textContent = moneyText(liveFees);
+        $liveStatFee.style.color = liveFees > 0 ? '#f0a500' : '#8b949e';
       }
       if ($liveStatPos) $liveStatPos.textContent = `涨 ${fmtSize(curUpLocal)} / 跌 ${fmtSize(curDnLocal)}`;
       if ($liveStatTrades) $liveStatTrades.textContent = String(liveTrades.length);
@@ -4655,7 +4744,24 @@
       const latency = p.latencyRangeMs || {};
       const latencyModel = p.latencyModel || {};
       const count = Array.isArray(paperTradeHistory) ? paperTradeHistory.length : 0;
+      const totalFees = Number.isFinite(Number(p.totalFees))
+        ? Number(p.totalFees)
+        : (Array.isArray(paperTradeHistory) ? paperTradeHistory.reduce((sum, trade) => sum + getTradeFee(trade), 0) : 0);
       const pnlColor = pnl > 0 ? '#3fb950' : pnl < 0 ? '#f85149' : '#888';
+      const ledger = p.pnlLedger || {};
+      const baselineLedger = ledger.baseline || {};
+      const conservativeLedger = ledger.conservative || {};
+      const ledgerValue = (bucket, key = 'markPnl') => {
+        const value = Number(bucket?.[key]);
+        return Number.isFinite(value) ? value : 0;
+      };
+      const setPnlMetric = (el, value, title = '') => {
+        if (!el) return;
+        const color = value > 0 ? '#3fb950' : value < 0 ? '#f85149' : '#8b949e';
+        el.textContent = `${value >= 0 ? '+' : '-'}$${Math.abs(value).toFixed(2)}`;
+        el.style.color = color;
+        el.title = title;
+      };
 
       if ($paperEquity) $paperEquity.textContent = moneyText(equity);
       if ($paperUsdc) $paperUsdc.textContent = moneyText(usdc);
@@ -4666,6 +4772,35 @@
         $paperStatPnl.textContent = `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`;
         $paperStatPnl.style.color = pnlColor;
       }
+      if ($paperStatFee) {
+        $paperStatFee.textContent = moneyText(totalFees);
+        $paperStatFee.style.color = totalFees > 0 ? '#f0a500' : '#8b949e';
+      }
+      const coverageText = ledger.partial
+        ? 'ledger partial: rebuilt from retained history, full source split starts from this build'
+        : 'ledger full since paper reset';
+      setPnlMetric(
+        $paperStatNoLottery,
+        ledgerValue(baselineLedger.withoutLottery),
+        coverageText,
+      );
+      setPnlMetric(
+        $paperStatLottery,
+        ledgerValue(baselineLedger.lottery),
+        coverageText,
+      );
+      if ($paperStatMakerTaker) {
+        const maker = ledgerValue(baselineLedger.byFeeMode?.maker);
+        const taker = ledgerValue(baselineLedger.byFeeMode?.taker);
+        $paperStatMakerTaker.textContent = `${maker >= 0 ? '+' : '-'}$${Math.abs(maker).toFixed(2)} / ${taker >= 0 ? '+' : '-'}$${Math.abs(taker).toFixed(2)}`;
+        $paperStatMakerTaker.style.color = maker + taker > 0 ? '#3fb950' : maker + taker < 0 ? '#f85149' : '#8b949e';
+        $paperStatMakerTaker.title = `maker / taker; ${coverageText}`;
+      }
+      setPnlMetric(
+        $paperStatConservative,
+        ledgerValue(conservativeLedger.total),
+        `maker-fill haircut scenario; ${coverageText}`,
+      );
       if ($paperStatUsdc) $paperStatUsdc.textContent = moneyText(usdc);
       if ($paperStatPos) {
         $paperStatPos.textContent = pendingShares > 0.01
@@ -5010,6 +5145,11 @@
     const $paperPanel = document.getElementById('paper-panel');
     const $paperStatEquity = document.getElementById('paper-stat-equity');
     const $paperStatPnl = document.getElementById('paper-stat-pnl');
+    const $paperStatFee = document.getElementById('paper-stat-fee');
+    const $paperStatNoLottery = document.getElementById('paper-stat-no-lottery');
+    const $paperStatLottery = document.getElementById('paper-stat-lottery');
+    const $paperStatMakerTaker = document.getElementById('paper-stat-maker-taker');
+    const $paperStatConservative = document.getElementById('paper-stat-conservative');
     const $paperStatUsdc = document.getElementById('paper-stat-usdc');
     const $paperStatPos = document.getElementById('paper-stat-pos');
     const $paperStatPending = document.getElementById('paper-stat-pending');
@@ -5031,6 +5171,7 @@
     const $liveModeSummary = document.getElementById('live-mode-summary');
     const $liveStatUsdc = document.getElementById('live-stat-usdc');
     const $liveStatPnl = document.getElementById('live-stat-pnl');
+    const $liveStatFee = document.getElementById('live-stat-fee');
     const $liveStatPos = document.getElementById('live-stat-pos');
     const $liveStatTrades = document.getElementById('live-stat-trades');
     const $liveStatEvents = document.getElementById('live-stat-events');

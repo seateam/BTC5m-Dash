@@ -24,7 +24,7 @@ const API_BASE = "https://data-api.polymarket.com";
 const API_HEADERS = { "User-Agent": "Mozilla/5.0" };
 const PAGE_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 15000;
-const CRYPTO_FEE_RATE = 0.072;
+const CRYPTO_FEE_RATE = 0.07;
 
 // ── 类型 ────────────────────────────────────────────────────
 export interface PmTrade {
@@ -193,10 +193,33 @@ export async function fetchRedeemsSince(proxy: string, sinceSec: number): Promis
 }
 
 // ── 手续费公式 ───────────────────────────────────────────────
-function feeOf(side: "BUY" | "SELL", size: number, price: number): number {
-  return side === "BUY"
-    ? size * CRYPTO_FEE_RATE * (1 - price)
-    : size * CRYPTO_FEE_RATE * price;
+function isMakerFeeSource(source?: string | null): boolean {
+  const src = String(source || "").toLowerCase();
+  return (
+    src === "strategy10maker" ||
+    src.startsWith("strategy10maker:") ||
+    (src.startsWith("strategy10") && src.includes("-maker")) ||
+    src.includes("post_only")
+  );
+}
+
+function isNoFeeSource(source?: string | null): boolean {
+  const src = String(source || "").toLowerCase();
+  return src === "settlement" || src === "paper-settlement" || src === "merge";
+}
+
+function tradeSource(
+  strategySources: Map<string, string>,
+  transactionHash?: string,
+): string | undefined {
+  if (!transactionHash) return undefined;
+  return strategySources.get(transactionHash.toLowerCase());
+}
+
+function feeOf(side: "BUY" | "SELL", size: number, price: number, source?: string | null): number {
+  if (isNoFeeSource(source) || isMakerFeeSource(source)) return 0;
+  const p = Math.max(0, Math.min(1, price));
+  return size * CRYPTO_FEE_RATE * p * (1 - p);
 }
 
 // ── 仓位配对 ─────────────────────────────────────────────────
@@ -265,8 +288,8 @@ export function summarizePositions(
     g.sellRevenue = g.sells.reduce((s, x) => s + x.size * x.price, 0);
     g.redeemRevenue = rs.reduce((s, r) => s + r.usdcSize, 0);
     g.totalFee =
-      g.buys.reduce((s, b) => s + feeOf("BUY", b.size, b.price), 0) +
-      g.sells.reduce((s, x) => s + feeOf("SELL", x.size, x.price), 0);
+      g.buys.reduce((s, b) => s + feeOf("BUY", b.size, b.price, tradeSource(strategySources, b.transactionHash)), 0) +
+      g.sells.reduce((s, x) => s + feeOf("SELL", x.size, x.price, tradeSource(strategySources, x.transactionHash)), 0);
 
     g.netPnl = g.sellRevenue + g.redeemRevenue - g.buyCost - g.totalFee;
 
@@ -277,7 +300,7 @@ export function summarizePositions(
 
     // 策略来源：用第一笔 buy 的 txHash 查
     if (g.buys.length) {
-      const src = strategySources.get(g.buys[0].transactionHash.toLowerCase());
+      const src = tradeSource(strategySources, g.buys[0].transactionHash);
       if (src) g.strategySource = src;
     }
   }
@@ -438,7 +461,8 @@ export class PmPnlManager {
     const events: PnlEvent[] = [];
     for (const s of summaries) {
       for (const b of s.buys) {
-        const fee = b.size * CRYPTO_FEE_RATE * (1 - b.price);
+        const source = tradeSource(this.strategySources, b.transactionHash) || s.strategySource;
+        const fee = feeOf("BUY", b.size, b.price, source);
         const cost = b.size * b.price;
         events.push({
           ts: b.timestamp,
@@ -452,11 +476,12 @@ export class PmPnlManager {
           cost, fee,
           netAmount: -(cost + fee),
           transactionHash: b.transactionHash,
-          strategySource: s.strategySource,
+          strategySource: source,
         });
       }
       for (const x of s.sells) {
-        const fee = x.size * CRYPTO_FEE_RATE * x.price;
+        const source = tradeSource(this.strategySources, x.transactionHash) || s.strategySource;
+        const fee = feeOf("SELL", x.size, x.price, source);
         const revenue = x.size * x.price;
         events.push({
           ts: x.timestamp,
@@ -470,7 +495,7 @@ export class PmPnlManager {
           cost: revenue, fee,
           netAmount: revenue - fee,
           transactionHash: x.transactionHash,
-          strategySource: s.strategySource,
+          strategySource: source,
           positionPnl: s.netPnl,
           positionStatus: s.status,
         });
@@ -534,7 +559,7 @@ export class PmPnlManager {
       if (sinceSec > 0 && t.timestamp < sinceSec) continue;
       if (t.side === "BUY") totalBuy += t.size * t.price;
       else totalSell += t.size * t.price;
-      totalFee += feeOf(t.side, t.size, t.price);
+      totalFee += feeOf(t.side, t.size, t.price, tradeSource(this.strategySources, t.transactionHash));
       count++;
     }
     for (const r of this.redeems) {

@@ -263,6 +263,9 @@ interface TradeHistoryItem {
   filledShares?: number | null;
   filledNotional?: number | null;
   avgPrice?: number | null;
+  fee?: number | null;
+  feeRate?: number | null;
+  feeMode?: "maker" | "taker" | "none" | null;
   topBid?: number | null;
   topAsk?: number | null;
   spread?: number | null;
@@ -295,6 +298,10 @@ interface TradeHistoryItem {
   makerTrigger?: string | null;
   makerQueueFillRatio?: number | null;
   makerActiveMs?: number | null;
+  makerQueueAheadShares?: number | null;
+  makerFillModel?: string | null;
+  makerMaxSeenBid?: number | null;
+  makerMinSeenAsk?: number | null;
   paperAction?: "order" | "merge" | "settlement";
 }
 
@@ -338,6 +345,8 @@ interface ExecutionEventItem {
   notional?: number | null;
   requestedNotional?: number | null;
   filledNotional?: number | null;
+  fee?: number | null;
+  feeMode?: "maker" | "taker" | "none" | null;
   topBid?: number | null;
   topAsk?: number | null;
   spread?: number | null;
@@ -349,6 +358,14 @@ interface ExecutionEventItem {
   bookLatencyMs?: number | null;
   latencyMs?: number | null;
   totalLatencyMs?: number | null;
+  makerLimitPrice?: number | null;
+  makerTrigger?: string | null;
+  makerQueueFillRatio?: number | null;
+  makerActiveMs?: number | null;
+  makerQueueAheadShares?: number | null;
+  makerFillModel?: string | null;
+  makerMaxSeenBid?: number | null;
+  makerMinSeenAsk?: number | null;
 }
 
 interface BookLevel {
@@ -423,6 +440,68 @@ interface PaperAccountState {
   resetAt: number;
   lastTradeAt: number;
   windows: Record<string, PaperWindowInfo>;
+  pnlLedger: PaperPnlLedgerState;
+}
+
+type PaperPnlFeeMode = "maker" | "taker" | "none";
+type PaperPnlCategory = "lottery" | "withoutLottery";
+
+interface PaperPnlBucket {
+  tradeCount: number;
+  buyCount: number;
+  sellCount: number;
+  rejectCount: number;
+  buyShares: number;
+  buyNotional: number;
+  sellShares: number;
+  sellNotional: number;
+  fee: number;
+  makerFee: number;
+  takerFee: number;
+  grossRealizedPnl: number;
+  realizedPnl: number;
+}
+
+interface PaperPnlBucketSet {
+  total: PaperPnlBucket;
+  lottery: PaperPnlBucket;
+  withoutLottery: PaperPnlBucket;
+  bySource: Record<string, PaperPnlBucket>;
+  byFeeMode: Record<string, PaperPnlBucket>;
+  bySourceFeeMode: Record<string, PaperPnlBucket>;
+  byWindow: Record<string, PaperPnlBucket>;
+}
+
+interface PaperPnlLot {
+  id: string;
+  windowStart: number;
+  direction: StrategyDirection;
+  source: string;
+  feeMode: PaperPnlFeeMode;
+  category: PaperPnlCategory;
+  shares: number;
+  cost: number;
+  fee: number;
+  openedAt: number;
+  makerTrigger?: string | null;
+}
+
+interface PaperPnlLedgerState {
+  version: number;
+  partial: boolean;
+  rebuildSource: string;
+  createdAt: number;
+  updatedAt: number;
+  firstTradeTs: number;
+  lastTradeTs: number;
+  tradeCount: number;
+  rejectCount: number;
+  unmatchedSellShares: number;
+  unmatchedSellNotional: number;
+  baseline: PaperPnlBucketSet;
+  conservative: PaperPnlBucketSet;
+  openLots: PaperPnlLot[];
+  conservativeOpenLots: PaperPnlLot[];
 }
 
 interface PendingTradeMeta {
@@ -448,6 +527,7 @@ interface ConsumedPendingTradeMeta extends PendingTradeMeta {
 interface PaperMakerOrder {
   id: string;
   strategy: StrategyNumber;
+  source: string;
   windowStart: number;
   direction: StrategyDirection;
   price: number;
@@ -459,15 +539,21 @@ interface PaperMakerOrder {
   reason: string;
   lastSeenBid: number | null;
   lastSeenAsk: number | null;
+  maxSeenBid?: number | null;
+  minSeenAsk?: number | null;
   lastTouchAt: number;
   touchStartedAt: number;
   touchCount: number;
+  queueAheadShares?: number;
+  minActiveMs?: number;
+  queueFullFillMs?: number;
 }
 
 interface LiveMakerOrder {
   id: string;
   orderId: string;
   strategy: StrategyNumber;
+  source: string;
   windowStart: number;
   tokenId: string;
   direction: StrategyDirection;
@@ -516,6 +602,26 @@ function parseNumberEnv(
   if (!Number.isFinite(value)) return fallback;
   if (minimum != null && value < minimum) return fallback;
   return value;
+}
+
+function parseNumberListEnv(
+  name: string,
+  fallback: number[],
+  minimum?: number,
+  maximum?: number,
+): number[] {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const values = raw
+    .split(",")
+    .map((item) => Number(item.trim()))
+    .filter((value) => {
+      if (!Number.isFinite(value)) return false;
+      if (minimum != null && value < minimum) return false;
+      if (maximum != null && value > maximum) return false;
+      return true;
+    });
+  return values.length ? values : fallback;
 }
 
 function parseBooleanLike(value: unknown): boolean | null {
@@ -654,6 +760,12 @@ const EXECUTION_EVENTS_MAX = Math.floor(
 const PM_PNL_EVENT_BROADCAST_LIMIT = Math.floor(
   parseNumberEnv("PM_PNL_EVENT_BROADCAST_LIMIT", 800, 100),
 );
+const POLYMARKET_CRYPTO_FEE_RATE = parseNumberEnv(
+  "POLYMARKET_CRYPTO_FEE_RATE",
+  0.07,
+  0,
+);
+const PAPER_PNL_LEDGER_VERSION = 1;
 const PERSIST_BACKUP_ENABLED = parseBooleanEnv("PERSIST_BACKUP_ENABLED", false);
 const PENDING_TRADE_META_MAX_AGE_MS = 15 * 60 * 1000;
 
@@ -848,6 +960,78 @@ const S10_MAKER_TOUCH_HOLD_FULL_MS = parseNumberEnv(
   2200,
   200,
 );
+const S10_MAKER_ORDER_TTL_MS = parseNumberEnv(
+  "S10_MAKER_ORDER_TTL_MS",
+  20000,
+  1000,
+);
+const PAPER_MAKER_REALISTIC_FILL_ENABLED = parseBooleanEnv(
+  "PAPER_MAKER_REALISTIC_FILL_ENABLED",
+  true,
+);
+const PAPER_MAKER_TOUCH_FILL_ENABLED = parseBooleanEnv(
+  "PAPER_MAKER_TOUCH_FILL_ENABLED",
+  false,
+);
+const PAPER_LOTTERY_MAKER_TOUCH_FILL_ENABLED = parseBooleanEnv(
+  "PAPER_LOTTERY_MAKER_TOUCH_FILL_ENABLED",
+  false,
+);
+const PAPER_MAKER_QUEUE_AHEAD_MULT = parseNumberEnv(
+  "PAPER_MAKER_QUEUE_AHEAD_MULT",
+  1.5,
+  0,
+);
+const PAPER_LOTTERY_MAKER_QUEUE_AHEAD_MULT = parseNumberEnv(
+  "PAPER_LOTTERY_MAKER_QUEUE_AHEAD_MULT",
+  3,
+  0,
+);
+const PAPER_MAKER_CROSSED_BASE_FILL_RATIO = parseNumberEnv(
+  "PAPER_MAKER_CROSSED_BASE_FILL_RATIO",
+  0.65,
+  0,
+);
+const PAPER_MAKER_SWEEP_BASE_FILL_RATIO = parseNumberEnv(
+  "PAPER_MAKER_SWEEP_BASE_FILL_RATIO",
+  0.35,
+  0,
+);
+const PAPER_MAKER_TOUCH_BASE_FILL_RATIO = parseNumberEnv(
+  "PAPER_MAKER_TOUCH_BASE_FILL_RATIO",
+  0.08,
+  0,
+);
+const PAPER_LOTTERY_MAKER_CROSSED_BASE_FILL_RATIO = parseNumberEnv(
+  "PAPER_LOTTERY_MAKER_CROSSED_BASE_FILL_RATIO",
+  0.45,
+  0,
+);
+const PAPER_LOTTERY_MAKER_SWEEP_BASE_FILL_RATIO = parseNumberEnv(
+  "PAPER_LOTTERY_MAKER_SWEEP_BASE_FILL_RATIO",
+  0.18,
+  0,
+);
+const S10_MAKER_QUEUE_FULL_FILL_MS = parseNumberEnv(
+  "S10_MAKER_QUEUE_FULL_FILL_MS",
+  20000,
+  1000,
+);
+const S10_ENTRY_MAKER_MIN_ACTIVE_MS = parseNumberEnv(
+  "S10_ENTRY_MAKER_MIN_ACTIVE_MS",
+  900,
+  0,
+);
+const S10_ENTRY_MAKER_MIN_REMAINING_SEC = parseNumberEnv(
+  "S10_ENTRY_MAKER_MIN_REMAINING_SEC",
+  75,
+  0,
+);
+const S10_ENTRY_MAKER_POLL_MS = parseNumberEnv(
+  "S10_ENTRY_MAKER_POLL_MS",
+  250,
+  50,
+);
 const PAPER_S10_LIVE_PARITY_ENABLED = parseBooleanEnv(
   "PAPER_S10_LIVE_PARITY_ENABLED",
   true,
@@ -963,23 +1147,62 @@ const S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT = parseNumberEnv(
   1,
 );
 const S10_BONEREAPER_CLONE_PAIR_COMPLETION_MAX_COST =
-  parseNumberEnv("S10_BONEREAPER_CLONE_PAIR_COMPLETION_MAX_COST_PCT", 104.5, 90) /
+  parseNumberEnv("S10_BONEREAPER_CLONE_PAIR_COMPLETION_MAX_COST_PCT", 102.5, 90) /
   100;
 const S10_BONEREAPER_CLONE_TERMINAL_PAIR_COMPLETION_MAX_COST =
   parseNumberEnv(
     "S10_BONEREAPER_CLONE_TERMINAL_PAIR_COMPLETION_MAX_COST_PCT",
-    108.5,
+    104,
     90,
   ) / 100;
 const S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX =
-  parseNumberEnv("S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX_PCT", 108.8, 90) /
+  parseNumberEnv("S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX_PCT", 103, 90) /
   100;
 const S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX =
   parseNumberEnv(
     "S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX_PCT",
-    112,
+    104.5,
     90,
   ) / 100;
+const S10_BONEREAPER_CLONE_SWEEP_START_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_SWEEP_START_REMAINING_SEC",
+  75,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC",
+  40,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROJECTED_RELAX_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROJECTED_RELAX_MAX_REMAINING_SEC",
+  75,
+  0,
+);
+const S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_MULT",
+  1,
+  0,
+);
+const S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_COST_PCT =
+  parseNumberEnv("S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_COST_PCT", 1.8, 0) /
+  100;
+const S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_HIGH_PRICE_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_HIGH_PRICE_MULT",
+    1.8,
+    0,
+  );
+const S10_BONEREAPER_CLONE_PROFIT_FLOOR_ASK_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROFIT_FLOOR_ASK_PCT",
+  72,
+  1,
+);
+const S10_BONEREAPER_CLONE_PROFIT_FLOOR_POSITION_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROFIT_FLOOR_POSITION_MULT",
+  2.5,
+  0,
+);
 const S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT = parseNumberEnv(
   "S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT",
   3,
@@ -987,12 +1210,521 @@ const S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT = parseNumberEnv(
 );
 const S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT = parseNumberEnv(
   "S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT",
+  18,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_SLICE_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_SLICE_MULT",
+  24,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_LATE_SLICE_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_LATE_SLICE_MULT",
+    32,
+    0,
+  );
+const S10_BONEREAPER_CLONE_SWEEP_CONFIRMED_SLICE_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_SWEEP_CONFIRMED_SLICE_MULT",
   12,
   0,
 );
+const S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_BAD_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_BAD_LOSS_MULT",
+    18,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_PARTIAL_BAD_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_PARTIAL_BAD_LOSS_MULT",
+  8,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_WEAK_BAD_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_WEAK_BAD_LOSS_MULT",
+  3,
+  0,
+);
+const S10_BONEREAPER_CLONE_PAIR_WORST_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PAIR_WORST_LOSS_MULT",
+  6,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_PAIR_WORST_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_PAIR_WORST_LOSS_MULT",
+  8,
+  0,
+);
+const S10_BONEREAPER_CLONE_PAIR_MAX_COVERAGE = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PAIR_MAX_COVERAGE",
+  1.12,
+  0.1,
+);
+const S10_BONEREAPER_CLONE_FAST_HEDGE_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_FAST_HEDGE_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_REMAINING_SEC",
+  45,
+  0,
+);
+const S10_BONEREAPER_CLONE_FAST_HEDGE_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_FAST_HEDGE_MAX_REMAINING_SEC",
+  285,
+  0,
+);
+const S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_EXPOSURE_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_EXPOSURE_MULT",
+  0.18,
+  0,
+);
+const S10_BONEREAPER_CLONE_FAST_HEDGE_TARGET_COVERAGE = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_FAST_HEDGE_TARGET_COVERAGE",
+  0.38,
+  0.05,
+);
+const S10_BONEREAPER_CLONE_FAST_HEDGE_PAIR_COST_MAX =
+  parseNumberEnv("S10_BONEREAPER_CLONE_FAST_HEDGE_PAIR_COST_MAX_PCT", 101, 90) /
+  100;
+const S10_BONEREAPER_CLONE_FAST_HEDGE_RETAIN_PROFIT_PCT =
+  parseNumberEnv("S10_BONEREAPER_CLONE_FAST_HEDGE_RETAIN_PROFIT_PCT", 35, 0) /
+  100;
+const S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_RETAIN_PROFIT_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_RETAIN_PROFIT_MULT",
+  0.2,
+  0,
+);
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_DUAL_INSURANCE_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_REMAINING_SEC",
+    35,
+    0,
+  );
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_MAX_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_MAX_REMAINING_SEC",
+    295,
+    0,
+  );
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_EXPOSURE_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_EXPOSURE_MULT",
+    0.08,
+    0,
+  );
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_TARGET_COVERAGE =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_TARGET_COVERAGE",
+    0.68,
+    0.05,
+  );
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_TARGET_COVERAGE =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_TARGET_COVERAGE",
+    0.96,
+    0.05,
+  );
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_PAIR_COST_MAX =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_PAIR_COST_MAX_PCT",
+    115,
+    90,
+  ) / 100;
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_HARD_PAIR_COST_MAX =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_HARD_PAIR_COST_MAX_PCT",
+    122,
+    90,
+  ) / 100;
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_DUAL_INSURANCE_ORDER_MULT",
+  10,
+  0,
+);
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_ORDER_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_ORDER_MULT",
+    16,
+    0,
+  );
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_RETAIN_PROFIT_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_RETAIN_PROFIT_PCT",
+    18,
+    0,
+  ) / 100;
+const S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_RETAIN_PROFIT_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_RETAIN_PROFIT_MULT",
+    -0.45,
+    -20,
+  );
+const S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_ENABLED =
+  parseBooleanEnv(
+    "S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_ENABLED",
+    true,
+  );
+const S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MAX_ASK_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MAX_ASK_PCT",
+    6,
+    1,
+  );
+const S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_WORST_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_WORST_LOSS_MULT",
+    8,
+    0,
+  );
+const S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_PROTECTED_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_PROTECTED_MULT",
+    -0.35,
+    -20,
+  );
+const S10_BONEREAPER_CLONE_WORST_LOSS_GUARD_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_WORST_LOSS_GUARD_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_MAX_WORST_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_MAX_WORST_LOSS_MULT",
+  6,
+  0,
+);
+const S10_BONEREAPER_CLONE_MAX_WORST_LOSS_INCREASE_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_MAX_WORST_LOSS_INCREASE_MULT",
+  2.5,
+  0,
+);
+const S10_BONEREAPER_CLONE_MID_HIGH_PRICE_GUARD_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_MID_HIGH_PRICE_GUARD_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_MID_HIGH_PRICE_MIN_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_MID_HIGH_PRICE_MIN_REMAINING_SEC",
+    60,
+    0,
+  );
+const S10_BONEREAPER_CLONE_MID_HIGH_PRICE_ASK_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_MID_HIGH_PRICE_ASK_PCT",
+  75,
+  1,
+);
+const S10_BONEREAPER_CLONE_MID_HIGH_PRICE_CAP_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_MID_HIGH_PRICE_CAP_MULT",
+  2,
+  0,
+);
+const S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_ASK_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_ASK_PCT",
+  88,
+  1,
+);
+const S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_CAP_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_CAP_MULT",
+  0.7,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_RESCUE_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_RESCUE_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MIN_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MIN_REMAINING_SEC",
+  6,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MAX_REMAINING_SEC",
+  90,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_AGGRESSIVE_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_AGGRESSIVE_REMAINING_SEC",
+    45,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_CHEAP_MAX_ASK_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_CHEAP_MAX_ASK_PCT",
+  12,
+  1,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MAX_PRICE_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MAX_PRICE_PCT",
+  99,
+  1,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_PROJECTED_PAIR_COST_MAX =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_PROJECTED_PAIR_COST_MAX_PCT",
+    220,
+    90,
+  ) / 100;
+const S10_BONEREAPER_CLONE_LOTTERY_RETAIN_PROFIT_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_RETAIN_PROFIT_MULT",
+  2,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_PROFIT_SPEND_PCT =
+  parseNumberEnv("S10_BONEREAPER_CLONE_LOTTERY_PROFIT_SPEND_PCT", 55, 0) /
+  100;
+const S10_BONEREAPER_CLONE_LOTTERY_EXTREME_PROFIT_SPEND_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_EXTREME_PROFIT_SPEND_PCT",
+    80,
+    0,
+  ) / 100;
+const S10_BONEREAPER_CLONE_LOTTERY_CHEAP_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_CHEAP_ORDER_MULT",
+  4,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MAX_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MAX_ORDER_MULT",
+  18,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MIN_BOOK_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MIN_BOOK_LEAD_PCT",
+  24,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MIN_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MIN_DIFF",
+  18,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MIN_FAIR_EDGE_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MIN_FAIR_EDGE_PCT",
+  5,
+  0,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_SOURCE =
+  "strategy10bonereaper-lottery-maker";
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MAKER_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_LEVELS =
+  parseNumberListEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_LEVELS",
+    [0.01, 0.02, 0.03, 0.05],
+    0.01,
+    0.99,
+  )
+    .map((value) => Math.round(value * 10000) / 10000)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .sort((a, b) => a - b);
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_REMAINING_SEC",
+    8,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_REMAINING_SEC",
+    210,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_TTL_MS = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LOTTERY_MAKER_TTL_MS",
+  90000,
+  1000,
+);
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_QUEUE_FULL_FILL_MS =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_QUEUE_FULL_FILL_MS",
+    30000,
+    1000,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_WINDOW_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_WINDOW_MULT",
+    2.5,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_PER_LEVEL_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_PER_LEVEL_MULT",
+    0.4,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_FIXED_RISK_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_FIXED_RISK_MULT",
+    0.45,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_PROFIT_SPEND_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_PROFIT_SPEND_PCT",
+    35,
+    0,
+  ) / 100;
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_RETAIN_PROFIT_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_RETAIN_PROFIT_MULT",
+    0.5,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_POSITION_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_POSITION_MULT",
+    3,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_WORST_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_WORST_LOSS_MULT",
+    2,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_ACTIVE_PER_SIDE = Math.max(
+  1,
+  Math.round(
+    parseNumberEnv(
+      "S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_ACTIVE_PER_SIDE",
+      S10_BONEREAPER_CLONE_LOTTERY_MAKER_LEVELS.length,
+      1,
+    ),
+  ),
+);
+const S10_BONEREAPER_CLONE_TAIL_BOOK_CONFIRM_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TAIL_BOOK_CONFIRM_LEAD_PCT",
+  22,
+  0,
+);
+const S10_BONEREAPER_CLONE_TAIL_HARD_BOOK_CONFIRM_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TAIL_HARD_BOOK_CONFIRM_LEAD_PCT",
+  35,
+  0,
+);
+const S10_BONEREAPER_CLONE_TAIL_OPPOSING_BOOK_BLOCK_LEAD_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TAIL_OPPOSING_BOOK_BLOCK_LEAD_PCT",
+    30,
+    0,
+  );
+const S10_BONEREAPER_CLONE_OPPOSING_BOOK_BLOCK_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_OPPOSING_BOOK_BLOCK_LEAD_PCT",
+  55,
+  0,
+);
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_REMAINING_SEC",
+    75,
+    0,
+  );
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_LEAD_PCT",
+  55,
+  0,
+);
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_QUALITY_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_QUALITY_PCT",
+  84,
+  0,
+);
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_SHALLOW_NOTIONAL =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_SHALLOW_NOTIONAL",
+    50,
+    0,
+  );
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_SPREAD_PENALTY_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_SPREAD_PENALTY_PCT",
+    12,
+    0,
+  );
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_DIFF",
+  32,
+  0,
+);
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_FAIR_EDGE_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_FAIR_EDGE_PCT",
+    8,
+    0,
+  );
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_WINDOW_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_WINDOW_MULT",
+    10,
+    0,
+  );
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_ORDER_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_ORDER_MULT",
+    4,
+    0,
+  );
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_LEAD_PCT",
+  82,
+  0,
+);
+const S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_QUALITY_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_QUALITY_PCT",
+    92,
+    0,
+  );
+const S10_BONEREAPER_CLONE_BOOK_CONFLICT_PAIR_BUDGET_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_BOOK_CONFLICT_PAIR_BUDGET_MULT",
+  3.5,
+  0,
+);
+const S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_LEAD_PCT",
+  85,
+  0,
+);
+const S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_DIFF",
+  55,
+  0,
+);
+const S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_BAD_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_BAD_LOSS_MULT",
+    22,
+    0,
+  );
+const S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_LEAD_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_LEAD_PCT",
+    75,
+    0,
+  );
+const S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_DIFF",
+  45,
+  0,
+);
+const S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_BAD_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_BAD_LOSS_MULT",
+    30,
+    0,
+  );
 const S10_BONEREAPER_CLONE_RESCUE_ENABLED = parseBooleanEnv(
   "S10_BONEREAPER_CLONE_RESCUE_ENABLED",
-  true,
+  false,
 );
 const S10_BONEREAPER_CLONE_RESCUE_MIN_REMAINING_SEC = parseNumberEnv(
   "S10_BONEREAPER_CLONE_RESCUE_MIN_REMAINING_SEC",
@@ -1037,7 +1769,7 @@ const S10_BONEREAPER_CLONE_RESCUE_MAX_ORDER_MULT = parseNumberEnv(
 const S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX =
   parseNumberEnv(
     "S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX_PCT",
-    150,
+    101.5,
     90,
   ) / 100;
 const S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT = parseNumberEnv(
@@ -1048,6 +1780,369 @@ const S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT = parseNumberEnv(
 const S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_INCREASE_MULT =
   parseNumberEnv(
     "S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_INCREASE_MULT",
+    6,
+    0,
+  );
+const S10_BONEREAPER_CLONE_LATE_CHASE_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_MAX_REMAINING_SEC",
+  75,
+  0,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_REMAINING_SEC",
+  25,
+  0,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_MIN_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_MIN_DIFF",
+  28,
+  0,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_MIN_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_MIN_DIFF",
+  34,
+  0,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_MIN_CONSISTENCY =
+  parseNumberEnv("S10_BONEREAPER_CLONE_LATE_CHASE_MIN_CONSISTENCY_PCT", 35, 0) /
+  100;
+const S10_BONEREAPER_CLONE_LATE_CHASE_MIN_FAIR_EDGE_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_MIN_FAIR_EDGE_PCT",
+  6,
+  0,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_MIN_BOOK_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_MIN_BOOK_LEAD_PCT",
+  22,
+  0,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_ORDER_MULT",
+  70,
+  0,
+);
+const S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_ORDER_MULT",
+  95,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_REQUIRE_DUAL_PROTECTION =
+  parseBooleanEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_REQUIRE_DUAL_PROTECTION",
+    true,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_DUAL_MIN_COVERAGE =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_DUAL_MIN_COVERAGE",
+    0.24,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_ORDER_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_ORDER_MULT",
+    4,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_MAX_ASK_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_MAX_ASK_PCT",
+    72,
+    1,
+  );
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_COVERAGE =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_COVERAGE",
+    0.45,
+    0,
+  );
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_DIFF",
+  24,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_FAIR_EDGE_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_FAIR_EDGE_PCT",
+    6,
+    0,
+  );
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_BOOK_LEAD_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_BOOK_LEAD_PCT",
+    34,
+    0,
+  );
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_PAIR_COST_MAX =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_PAIR_COST_MAX_PCT",
+    118,
+    90,
+  ) / 100;
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ORDER_MULT",
+  36,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_TERMINAL_ORDER_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_TERMINAL_ORDER_MULT",
+    60,
+    0,
+  );
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_BAD_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_BAD_LOSS_MULT",
+    16,
+    0,
+  );
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_MULT",
+    14,
+    0,
+  );
+const S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_INCREASE_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_INCREASE_MULT",
+    10,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_SCALP_SWEEP_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_SCALP_SWEEP_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ASK_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ASK_PCT",
+  96,
+  1,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_SCALP_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_SCALP_MAX_REMAINING_SEC",
+  45,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ROI_PCT =
+  parseNumberEnv("S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ROI_PCT", 0.35, 0) /
+  100;
+const S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_PROFIT_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_PROFIT_MULT",
+  0.25,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_BURST_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_REMAINING_SEC",
+    5,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MAX_REMAINING_SEC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_BURST_MAX_REMAINING_SEC",
+    50,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ASK_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ASK_PCT",
+  94,
+  1,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_DIFF",
+  32,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_FAIR_EDGE_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_FAIR_EDGE_PCT",
+    10,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_BOOK_LEAD_PCT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_BOOK_LEAD_PCT",
+    62,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_GUIDE_TAIL_USDC =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_GUIDE_TAIL_USDC",
+    80,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_BURST_ORDER_MULT",
+  90,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_SLICE_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_TERMINAL_BURST_SLICE_MULT",
+  70,
+  0,
+);
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_PAIR_COST_MAX =
+  parseNumberEnv("S10_BONEREAPER_CLONE_TERMINAL_BURST_PAIR_COST_MAX_PCT", 132, 90) /
+  100;
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_BAD_LOSS_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_BURST_BAD_LOSS_MULT",
+    28,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_PROFIT_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_PROFIT_MULT",
+    0.08,
+    0,
+  );
+const S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ROI_PCT =
+  parseNumberEnv("S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ROI_PCT", 0.12, 0) /
+  100;
+const S10_BONEREAPER_CLONE_GUIDE_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_GUIDE_CUTOFF_GRACE_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_CUTOFF_GRACE_SEC",
+  4,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_MAX_LAG_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_MAX_LAG_SEC",
+  35,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_MIN_TOTAL_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_MIN_TOTAL_MULT",
+  8,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_TARGET_SCALE = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_TARGET_SCALE",
+  0.22,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_TARGET_MAX_PROGRESS = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_TARGET_MAX_PROGRESS",
+  0.68,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_BLEND_MAX = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_BLEND_MAX",
+  0.62,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_USDC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_USDC",
+  45,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_RATIO = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_RATIO",
+  0.16,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_SWEEP_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_SWEEP_MAX_REMAINING_SEC",
+  90,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_SWEEP_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_SWEEP_ORDER_MULT",
+  18,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_TERMINAL_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_GUIDE_TERMINAL_ORDER_MULT",
+  45,
+  0,
+);
+const S10_BONEREAPER_CLONE_GUIDE_PAIR_COST_MAX =
+  parseNumberEnv("S10_BONEREAPER_CLONE_GUIDE_PAIR_COST_MAX_PCT", 116, 90) /
+  100;
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_ENABLED = parseBooleanEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_ENABLED",
+  true,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_REMAINING_SEC",
+  55,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_REMAINING_SEC = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_REMAINING_SEC",
+  240,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_WRONG_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_WRONG_MULT",
+  0.35,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_IMBALANCE_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_IMBALANCE_MULT",
+  0.25,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_TARGET_COVERAGE = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_TARGET_COVERAGE",
+  0.82,
+  0.05,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_COVERAGE = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_COVERAGE",
+  1.02,
+  0.05,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_DIFF = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_DIFF",
+  18,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_FAIR_EDGE_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_FAIR_EDGE_PCT",
+  4,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_BOOK_LEAD_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_BOOK_LEAD_PCT",
+  18,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_ASK_PCT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_ASK_PCT",
+  82,
+  1,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_ORDER_MULT",
+  8,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_ORDER_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_ORDER_MULT",
+  12,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_BAD_LOSS_MULT = parseNumberEnv(
+  "S10_BONEREAPER_CLONE_PROGRESS_CHASE_BAD_LOSS_MULT",
+  8,
+  0,
+);
+const S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_WORST_LOSS_INCREASE_MULT =
+  parseNumberEnv(
+    "S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_WORST_LOSS_INCREASE_MULT",
     6,
     0,
   );
@@ -1421,6 +2516,8 @@ let s10BonereaperCloneLastAt = 0;
 let s10BonereaperCloneLastReason = "init";
 let s10BonereaperCloneLastPlan: Record<string, unknown> | null = null;
 let s10BonereaperCloneWindowStart = 0;
+let s10BonereaperLotteryMakerLiveReconciling = false;
+let s10BonereaperLotteryMakerLastReason = "";
 
 function loadTradeHistory(): TradeHistoryItem[] {
   if (!existsSync(TRADE_HISTORY_FILE)) return [];
@@ -1480,12 +2577,91 @@ function round4(value: number): number {
   return Math.round(value * 10000) / 10000;
 }
 
+function isMakerFeeSource(source: unknown): boolean {
+  const normalized = String(source || "").toLowerCase();
+  return (
+    /^strategy10maker/.test(normalized) ||
+    /^strategy10.*-maker\b/.test(normalized) ||
+    normalized.includes("post_only")
+  );
+}
+
+function isNoFeeSource(source: unknown): boolean {
+  const normalized = String(source || "").toLowerCase();
+  return (
+    normalized.startsWith("paper-settlement") ||
+    normalized.includes("settlement") ||
+    normalized.includes("merge")
+  );
+}
+
+function isS10BonereaperCloneSource(source: unknown): boolean {
+  const normalized = String(source || "").toLowerCase();
+  return (
+    normalized === "strategy10bonereaper" ||
+    normalized.startsWith("strategy10bonereaper-") ||
+    normalized.startsWith("strategy10bonereaper:")
+  );
+}
+
+function isS10BonereaperLotteryMakerSource(source: unknown): boolean {
+  return (
+    String(source || "").toLowerCase() ===
+    S10_BONEREAPER_CLONE_LOTTERY_MAKER_SOURCE
+  );
+}
+
+function getTradeFeeMode(source: unknown, side?: "buy" | "sell"): "maker" | "taker" | "none" {
+  if (!side || isNoFeeSource(source)) return "none";
+  return isMakerFeeSource(source) ? "maker" : "taker";
+}
+
+function calcPolymarketFee(
+  side: "buy" | "sell",
+  shares: number,
+  price: number,
+  source?: unknown,
+): number {
+  if (!(shares > 0) || !(price > 0)) return 0;
+  if (getTradeFeeMode(source, side) !== "taker") return 0;
+  const clampedPrice = clampNumber(price, 0, 1);
+  const raw =
+    shares * POLYMARKET_CRYPTO_FEE_RATE * clampedPrice * (1 - clampedPrice);
+  return round4(Math.max(0, raw));
+}
+
+function getTradeRecordFee(item: Partial<TradeHistoryItem>): number {
+  const shares = Number(item.filledShares ?? item.amount ?? 0);
+  const price = Number(item.avgPrice ?? item.price ?? item.worstPrice ?? 0);
+  const side = item.side === "buy" || item.side === "sell" ? item.side : null;
+  if (side) return calcPolymarketFee(side, shares, price, item.source);
+  if (typeof item.fee === "number" && Number.isFinite(item.fee)) {
+    return Math.max(0, item.fee);
+  }
+  return 0;
+}
+
+function withTradeFee<T extends Omit<TradeHistoryItem, "id">>(item: T): T {
+  const feeMode = item.feeMode ?? getTradeFeeMode(item.source, item.side);
+  const computedFee = getTradeRecordFee(item);
+  return {
+    ...item,
+    fee: computedFee,
+    feeRate: feeMode === "taker" ? POLYMARKET_CRYPTO_FEE_RATE : 0,
+    feeMode,
+  };
+}
+
 function applyTradeHistoryMetrics(
   items: TradeHistoryItem[],
 ): TradeHistoryItem[] {
   const lots = new Map<string, Array<{ amount: number; price: number }>>();
   const ordered = [...items].sort((a, b) => a.ts - b.ts);
   for (const item of ordered) {
+    item.feeMode = getTradeFeeMode(item.source, item.side);
+    item.fee = getTradeRecordFee(item);
+    item.feeRate =
+      item.feeMode === "taker" ? POLYMARKET_CRYPTO_FEE_RATE : 0;
     const price = getTradeHistoryPrice(item);
     item.price = price;
     item.pnl = null;
@@ -1515,6 +2691,625 @@ function applyTradeHistoryMetrics(
     }
   }
   return items.sort((a, b) => b.ts - a.ts);
+}
+
+function createPaperPnlBucket(): PaperPnlBucket {
+  return {
+    tradeCount: 0,
+    buyCount: 0,
+    sellCount: 0,
+    rejectCount: 0,
+    buyShares: 0,
+    buyNotional: 0,
+    sellShares: 0,
+    sellNotional: 0,
+    fee: 0,
+    makerFee: 0,
+    takerFee: 0,
+    grossRealizedPnl: 0,
+    realizedPnl: 0,
+  };
+}
+
+function createPaperPnlBucketSet(): PaperPnlBucketSet {
+  return {
+    total: createPaperPnlBucket(),
+    lottery: createPaperPnlBucket(),
+    withoutLottery: createPaperPnlBucket(),
+    bySource: {},
+    byFeeMode: {},
+    bySourceFeeMode: {},
+    byWindow: {},
+  };
+}
+
+function createPaperPnlLedgerState(
+  partial = false,
+  rebuildSource = "live",
+): PaperPnlLedgerState {
+  const now = Date.now();
+  return {
+    version: PAPER_PNL_LEDGER_VERSION,
+    partial,
+    rebuildSource,
+    createdAt: now,
+    updatedAt: now,
+    firstTradeTs: 0,
+    lastTradeTs: 0,
+    tradeCount: 0,
+    rejectCount: 0,
+    unmatchedSellShares: 0,
+    unmatchedSellNotional: 0,
+    baseline: createPaperPnlBucketSet(),
+    conservative: createPaperPnlBucketSet(),
+    openLots: [],
+    conservativeOpenLots: [],
+  };
+}
+
+function sanitizePaperPnlKey(value: unknown, fallback: string): string {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function normalizePaperPnlFeeMode(value: unknown): PaperPnlFeeMode {
+  return value === "maker" || value === "taker" || value === "none"
+    ? value
+    : "none";
+}
+
+function isPaperLotterySource(source: unknown): boolean {
+  const normalized = String(source || "").toLowerCase();
+  return normalized.includes("lottery");
+}
+
+function getPaperPnlCategory(source: unknown): PaperPnlCategory {
+  return isPaperLotterySource(source) ? "lottery" : "withoutLottery";
+}
+
+function getPaperTradeFilledShares(record: TradeHistoryItem): number {
+  const shares = Number(record.filledShares ?? record.amount ?? 0);
+  return Number.isFinite(shares) && shares > 0 ? shares : 0;
+}
+
+function getPaperTradeNotional(record: TradeHistoryItem): number {
+  const direct = Number(record.filledNotional);
+  if (Number.isFinite(direct) && direct >= 0) return direct;
+  const shares = getPaperTradeFilledShares(record);
+  const price = Number(record.avgPrice ?? record.price ?? record.worstPrice ?? 0);
+  return Number.isFinite(price) && price >= 0 ? shares * price : 0;
+}
+
+function isRejectedPaperTrade(record: TradeHistoryItem): boolean {
+  return String(record.status || "").toUpperCase().includes("REJECT");
+}
+
+function getConservativePaperPnlScale(record: TradeHistoryItem): number {
+  if (record.side !== "buy") return 1;
+  const source = String(record.source || "");
+  const trigger = String(record.makerTrigger || "");
+  if (isPaperLotterySource(source)) {
+    if (trigger === "crossed_ask") return 1;
+    if (trigger === "bid_swept") return 0.25;
+    if (trigger === "book_touch" || trigger === "book_hold") return 0.1;
+    return 0.1;
+  }
+  if (record.feeMode === "maker" || isMakerFeeSource(source)) {
+    if (trigger === "crossed_ask") return 1;
+    if (trigger === "bid_swept") return 0.5;
+    if (trigger === "book_touch" || trigger === "book_hold") return 0.35;
+  }
+  return 1;
+}
+
+function getPaperPnlBucket(map: Record<string, PaperPnlBucket>, key: string) {
+  const normalized = sanitizePaperPnlKey(key, "-");
+  if (!map[normalized]) map[normalized] = createPaperPnlBucket();
+  return map[normalized];
+}
+
+function getPaperPnlBucketRefs(
+  buckets: PaperPnlBucketSet,
+  source: string,
+  feeMode: PaperPnlFeeMode,
+  windowStart: number,
+  category: PaperPnlCategory,
+): PaperPnlBucket[] {
+  return [
+    buckets.total,
+    category === "lottery" ? buckets.lottery : buckets.withoutLottery,
+    getPaperPnlBucket(buckets.bySource, source),
+    getPaperPnlBucket(buckets.byFeeMode, feeMode),
+    getPaperPnlBucket(buckets.bySourceFeeMode, `${source}|${feeMode}`),
+    getPaperPnlBucket(buckets.byWindow, String(windowStart || 0)),
+  ];
+}
+
+function addPaperPnlFeeToBucket(
+  bucket: PaperPnlBucket,
+  fee: number,
+  feeMode: PaperPnlFeeMode,
+): void {
+  if (!(fee > 0)) return;
+  bucket.fee += fee;
+  if (feeMode === "maker") bucket.makerFee += fee;
+  else if (feeMode === "taker") bucket.takerFee += fee;
+}
+
+function notePaperPnlTrade(
+  ledger: PaperPnlLedgerState,
+  record: TradeHistoryItem,
+): void {
+  ledger.updatedAt = Math.max(ledger.updatedAt || 0, record.ts || Date.now());
+  ledger.lastTradeTs = Math.max(ledger.lastTradeTs || 0, record.ts || 0);
+  if (!ledger.firstTradeTs || record.ts < ledger.firstTradeTs) {
+    ledger.firstTradeTs = record.ts || Date.now();
+  }
+  ledger.tradeCount += 1;
+  if (isRejectedPaperTrade(record)) ledger.rejectCount += 1;
+}
+
+function updatePaperPnlBucketsForReject(
+  buckets: PaperPnlBucketSet,
+  record: TradeHistoryItem,
+): void {
+  const source = sanitizePaperPnlKey(record.source, "-");
+  const feeMode = normalizePaperPnlFeeMode(record.feeMode);
+  const category = getPaperPnlCategory(source);
+  const refs = getPaperPnlBucketRefs(
+    buckets,
+    source,
+    feeMode,
+    record.windowStart,
+    category,
+  );
+  for (const bucket of refs) {
+    bucket.tradeCount += 1;
+    bucket.rejectCount += 1;
+  }
+}
+
+function updatePaperPnlBucketsForBuy(
+  buckets: PaperPnlBucketSet,
+  openLots: PaperPnlLot[],
+  record: TradeHistoryItem,
+  scale: number,
+): void {
+  if (scale <= 0) return;
+  const source = sanitizePaperPnlKey(record.source, "-");
+  const feeMode = normalizePaperPnlFeeMode(record.feeMode);
+  const category = getPaperPnlCategory(source);
+  const shares = getPaperTradeFilledShares(record) * scale;
+  if (!(shares > 0)) return;
+  const notional = getPaperTradeNotional(record) * scale;
+  const fee = getTradeRecordFee(record) * scale;
+  const refs = getPaperPnlBucketRefs(
+    buckets,
+    source,
+    feeMode,
+    record.windowStart,
+    category,
+  );
+  for (const bucket of refs) {
+    bucket.tradeCount += 1;
+    bucket.buyCount += 1;
+    bucket.buyShares += shares;
+    bucket.buyNotional += notional;
+    addPaperPnlFeeToBucket(bucket, fee, feeMode);
+  }
+  openLots.push({
+    id: record.id,
+    windowStart: record.windowStart,
+    direction: record.direction,
+    source,
+    feeMode,
+    category,
+    shares,
+    cost: notional,
+    fee,
+    openedAt: record.ts,
+    makerTrigger: record.makerTrigger ?? null,
+  });
+}
+
+function consumePaperPnlLots(
+  ledger: PaperPnlLedgerState,
+  buckets: PaperPnlBucketSet,
+  openLots: PaperPnlLot[],
+  windowStart: number,
+  direction: StrategyDirection,
+  shares: number,
+  proceeds: number,
+  exitFee: number,
+): void {
+  if (!(shares > 0)) return;
+  let remainingShares = shares;
+  const price = proceeds > 0 ? proceeds / shares : 0;
+  const exitFeePerShare = exitFee > 0 ? exitFee / shares : 0;
+  for (const lot of openLots) {
+    if (remainingShares <= 1e-9) break;
+    if (lot.windowStart !== windowStart || lot.direction !== direction) continue;
+    if (!(lot.shares > 1e-9)) continue;
+    const matched = Math.min(remainingShares, lot.shares);
+    const ratio = matched / lot.shares;
+    const costPart = lot.cost * ratio;
+    const entryFeePart = lot.fee * ratio;
+    const exitFeePart = exitFeePerShare * matched;
+    const feePart = entryFeePart + exitFeePart;
+    const proceedsPart = price * matched;
+    const grossPnl = proceedsPart - costPart;
+    const netPnl = grossPnl - feePart;
+    const refs = getPaperPnlBucketRefs(
+      buckets,
+      lot.source,
+      lot.feeMode,
+      lot.windowStart,
+      lot.category,
+    );
+    for (const bucket of refs) {
+      bucket.tradeCount += 1;
+      bucket.sellCount += 1;
+      bucket.sellShares += matched;
+      bucket.sellNotional += proceedsPart;
+      bucket.grossRealizedPnl += grossPnl;
+      bucket.realizedPnl += netPnl;
+      if (exitFeePart > 0) addPaperPnlFeeToBucket(bucket, exitFeePart, "taker");
+    }
+    lot.shares -= matched;
+    lot.cost -= costPart;
+    lot.fee -= entryFeePart;
+    remainingShares -= matched;
+  }
+  if (remainingShares > 1e-6) {
+    ledger.unmatchedSellShares += remainingShares;
+    ledger.unmatchedSellNotional += price * remainingShares;
+  }
+  for (let i = openLots.length - 1; i >= 0; i -= 1) {
+    if (openLots[i].shares <= 1e-8) openLots.splice(i, 1);
+  }
+}
+
+function applyPaperTradeToPnlLedgerScenario(
+  ledger: PaperPnlLedgerState,
+  buckets: PaperPnlBucketSet,
+  openLots: PaperPnlLot[],
+  record: TradeHistoryItem,
+  scale: number,
+): void {
+  if (isRejectedPaperTrade(record)) {
+    updatePaperPnlBucketsForReject(buckets, record);
+    return;
+  }
+  if (record.side === "buy") {
+    updatePaperPnlBucketsForBuy(buckets, openLots, record, scale);
+    return;
+  }
+  const shares = getPaperTradeFilledShares(record);
+  const proceeds = getPaperTradeNotional(record);
+  const exitFee = getTradeRecordFee(record);
+  if (record.paperAction === "merge" || String(record.status).includes("MERGED")) {
+    const halfProceeds = proceeds / 2;
+    consumePaperPnlLots(
+      ledger,
+      buckets,
+      openLots,
+      record.windowStart,
+      "up",
+      shares,
+      halfProceeds,
+      exitFee / 2,
+    );
+    consumePaperPnlLots(
+      ledger,
+      buckets,
+      openLots,
+      record.windowStart,
+      "down",
+      shares,
+      halfProceeds,
+      exitFee / 2,
+    );
+    return;
+  }
+  consumePaperPnlLots(
+    ledger,
+    buckets,
+    openLots,
+    record.windowStart,
+    record.direction,
+    shares,
+    proceeds,
+    exitFee,
+  );
+}
+
+function applyPaperTradeToPnlLedger(
+  ledger: PaperPnlLedgerState,
+  record: TradeHistoryItem,
+): void {
+  notePaperPnlTrade(ledger, record);
+  applyPaperTradeToPnlLedgerScenario(
+    ledger,
+    ledger.baseline,
+    ledger.openLots,
+    record,
+    1,
+  );
+  applyPaperTradeToPnlLedgerScenario(
+    ledger,
+    ledger.conservative,
+    ledger.conservativeOpenLots,
+    record,
+    getConservativePaperPnlScale(record),
+  );
+}
+
+function rebuildPaperPnlLedgerFromHistory(
+  history: TradeHistoryItem[],
+  partial: boolean,
+): PaperPnlLedgerState {
+  const ledger = createPaperPnlLedgerState(partial, "retained-history");
+  const ordered = [...history].sort((a, b) => a.ts - b.ts);
+  for (const record of ordered) applyPaperTradeToPnlLedger(ledger, record);
+  ledger.partial = partial;
+  ledger.rebuildSource = "retained-history";
+  return ledger;
+}
+
+function normalizePaperPnlBucket(raw: unknown): PaperPnlBucket {
+  const bucket = createPaperPnlBucket();
+  if (!isRecord(raw)) return bucket;
+  for (const key of Object.keys(bucket) as Array<keyof PaperPnlBucket>) {
+    const value = Number(raw[key]);
+    if (Number.isFinite(value)) bucket[key] = value;
+  }
+  return bucket;
+}
+
+function normalizePaperPnlBucketMap(
+  raw: unknown,
+): Record<string, PaperPnlBucket> {
+  const out: Record<string, PaperPnlBucket> = {};
+  if (!isRecord(raw)) return out;
+  for (const [key, value] of Object.entries(raw)) {
+    out[sanitizePaperPnlKey(key, "-")] = normalizePaperPnlBucket(value);
+  }
+  return out;
+}
+
+function normalizePaperPnlBucketSet(raw: unknown): PaperPnlBucketSet {
+  if (!isRecord(raw)) return createPaperPnlBucketSet();
+  return {
+    total: normalizePaperPnlBucket(raw.total),
+    lottery: normalizePaperPnlBucket(raw.lottery),
+    withoutLottery: normalizePaperPnlBucket(raw.withoutLottery),
+    bySource: normalizePaperPnlBucketMap(raw.bySource),
+    byFeeMode: normalizePaperPnlBucketMap(raw.byFeeMode),
+    bySourceFeeMode: normalizePaperPnlBucketMap(raw.bySourceFeeMode),
+    byWindow: normalizePaperPnlBucketMap(raw.byWindow),
+  };
+}
+
+function normalizePaperPnlLots(raw: unknown): PaperPnlLot[] {
+  if (!Array.isArray(raw)) return [];
+  const lots: PaperPnlLot[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const direction = item.direction === "up" || item.direction === "down"
+      ? item.direction
+      : null;
+    if (!direction) continue;
+    const shares = Number(item.shares);
+    const cost = Number(item.cost);
+    const fee = Number(item.fee);
+    const windowStart = Number(item.windowStart);
+    if (
+      !Number.isFinite(windowStart) ||
+      !(shares > 0) ||
+      !Number.isFinite(cost) ||
+      !Number.isFinite(fee)
+    )
+      continue;
+    const source = sanitizePaperPnlKey(item.source, "-");
+    const category =
+      item.category === "lottery" || item.category === "withoutLottery"
+        ? item.category
+        : getPaperPnlCategory(source);
+    lots.push({
+      id: sanitizePaperPnlKey(item.id, `lot-${lots.length}`),
+      windowStart,
+      direction,
+      source,
+      feeMode: normalizePaperPnlFeeMode(item.feeMode),
+      category,
+      shares,
+      cost,
+      fee,
+      openedAt: Number(item.openedAt) || 0,
+      makerTrigger:
+        typeof item.makerTrigger === "string" ? item.makerTrigger : null,
+    });
+  }
+  return lots;
+}
+
+function normalizePaperPnlLedgerState(raw: unknown): PaperPnlLedgerState | null {
+  if (!isRecord(raw)) return null;
+  const ledger = createPaperPnlLedgerState(
+    raw.partial === true,
+    typeof raw.rebuildSource === "string" ? raw.rebuildSource : "persisted",
+  );
+  ledger.version = Number(raw.version) || PAPER_PNL_LEDGER_VERSION;
+  ledger.createdAt = Number(raw.createdAt) || ledger.createdAt;
+  ledger.updatedAt = Number(raw.updatedAt) || ledger.updatedAt;
+  ledger.firstTradeTs = Number(raw.firstTradeTs) || 0;
+  ledger.lastTradeTs = Number(raw.lastTradeTs) || 0;
+  ledger.tradeCount = Number(raw.tradeCount) || 0;
+  ledger.rejectCount = Number(raw.rejectCount) || 0;
+  ledger.unmatchedSellShares = Number(raw.unmatchedSellShares) || 0;
+  ledger.unmatchedSellNotional = Number(raw.unmatchedSellNotional) || 0;
+  ledger.baseline = normalizePaperPnlBucketSet(raw.baseline);
+  ledger.conservative = normalizePaperPnlBucketSet(raw.conservative);
+  ledger.openLots = normalizePaperPnlLots(raw.openLots);
+  ledger.conservativeOpenLots = normalizePaperPnlLots(raw.conservativeOpenLots);
+  return ledger;
+}
+
+function clonePaperPnlBucketForSummary(bucket: PaperPnlBucket) {
+  return {
+    tradeCount: bucket.tradeCount,
+    buyCount: bucket.buyCount,
+    sellCount: bucket.sellCount,
+    rejectCount: bucket.rejectCount,
+    buyShares: round4(bucket.buyShares),
+    buyNotional: roundMoney(bucket.buyNotional),
+    sellShares: round4(bucket.sellShares),
+    sellNotional: roundMoney(bucket.sellNotional),
+    fee: round4(bucket.fee),
+    makerFee: round4(bucket.makerFee),
+    takerFee: round4(bucket.takerFee),
+    grossRealizedPnl: roundMoney(bucket.grossRealizedPnl),
+    realizedPnl: roundMoney(bucket.realizedPnl),
+    openShares: 0,
+    openCost: 0,
+    openFee: 0,
+    openMarkValue: 0,
+    markPnl: roundMoney(bucket.realizedPnl),
+  };
+}
+
+function clonePaperPnlBucketMapForSummary(
+  map: Record<string, PaperPnlBucket>,
+) {
+  const out: Record<string, ReturnType<typeof clonePaperPnlBucketForSummary>> =
+    {};
+  for (const [key, bucket] of Object.entries(map)) {
+    out[key] = clonePaperPnlBucketForSummary(bucket);
+  }
+  return out;
+}
+
+function clonePaperPnlBucketSetForSummary(buckets: PaperPnlBucketSet) {
+  return {
+    total: clonePaperPnlBucketForSummary(buckets.total),
+    lottery: clonePaperPnlBucketForSummary(buckets.lottery),
+    withoutLottery: clonePaperPnlBucketForSummary(buckets.withoutLottery),
+    bySource: clonePaperPnlBucketMapForSummary(buckets.bySource),
+    byFeeMode: clonePaperPnlBucketMapForSummary(buckets.byFeeMode),
+    bySourceFeeMode: clonePaperPnlBucketMapForSummary(buckets.bySourceFeeMode),
+    byWindow: clonePaperPnlBucketMapForSummary(buckets.byWindow),
+  };
+}
+
+function getPaperPnlSummaryBucket(
+  map: Record<string, ReturnType<typeof clonePaperPnlBucketForSummary>>,
+  key: string,
+) {
+  const normalized = sanitizePaperPnlKey(key, "-");
+  if (!map[normalized]) map[normalized] = clonePaperPnlBucketForSummary(createPaperPnlBucket());
+  return map[normalized];
+}
+
+function getPaperPnlSummaryRefs(
+  buckets: ReturnType<typeof clonePaperPnlBucketSetForSummary>,
+  lot: PaperPnlLot,
+) {
+  return [
+    buckets.total,
+    lot.category === "lottery" ? buckets.lottery : buckets.withoutLottery,
+    getPaperPnlSummaryBucket(buckets.bySource, lot.source),
+    getPaperPnlSummaryBucket(buckets.byFeeMode, lot.feeMode),
+    getPaperPnlSummaryBucket(buckets.bySourceFeeMode, `${lot.source}|${lot.feeMode}`),
+    getPaperPnlSummaryBucket(buckets.byWindow, String(lot.windowStart || 0)),
+  ];
+}
+
+function addPaperPnlOpenMarkToBucket(
+  bucket: ReturnType<typeof clonePaperPnlBucketForSummary>,
+  lot: PaperPnlLot,
+  markValue: number,
+): void {
+  bucket.openShares = round4(bucket.openShares + lot.shares);
+  bucket.openCost = roundMoney(bucket.openCost + lot.cost);
+  bucket.openFee = round4(bucket.openFee + lot.fee);
+  bucket.openMarkValue = roundMoney(bucket.openMarkValue + markValue);
+  bucket.markPnl = roundMoney(
+    bucket.realizedPnl + bucket.openMarkValue - bucket.openCost - bucket.openFee,
+  );
+}
+
+function getPaperPnlLotMarkPrice(
+  lot: PaperPnlLot,
+  currentUpMark: number | null,
+  currentDownMark: number | null,
+): number {
+  if (lot.windowStart === state.windowStart) {
+    const current = lot.direction === "up" ? currentUpMark : currentDownMark;
+    if (current != null && Number.isFinite(current)) return clampNumber(current, 0, 1);
+  }
+  const info = paperAccount.windows[String(lot.windowStart)];
+  const result = info?.result ?? info?.localResult ?? null;
+  if (result) return lot.direction === result ? 1 : 0;
+  const mark = lot.direction === "up" ? info?.upMark : info?.downMark;
+  if (typeof mark === "number" && Number.isFinite(mark)) {
+    return clampNumber(mark, 0, 1);
+  }
+  return lot.shares > 0 ? clampNumber(lot.cost / lot.shares, 0, 1) : 0;
+}
+
+function addPaperPnlOpenLotsToSummary(
+  buckets: ReturnType<typeof clonePaperPnlBucketSetForSummary>,
+  lots: PaperPnlLot[],
+  currentUpMark: number | null,
+  currentDownMark: number | null,
+): void {
+  for (const lot of lots) {
+    if (!(lot.shares > 1e-9)) continue;
+    const markPrice = getPaperPnlLotMarkPrice(lot, currentUpMark, currentDownMark);
+    const markValue = lot.shares * markPrice;
+    for (const bucket of getPaperPnlSummaryRefs(buckets, lot)) {
+      addPaperPnlOpenMarkToBucket(bucket, lot, markValue);
+    }
+  }
+}
+
+function getPaperPnlLedgerSummary(
+  currentUpMark: number | null,
+  currentDownMark: number | null,
+) {
+  const baseline = clonePaperPnlBucketSetForSummary(paperAccount.pnlLedger.baseline);
+  const conservative = clonePaperPnlBucketSetForSummary(
+    paperAccount.pnlLedger.conservative,
+  );
+  addPaperPnlOpenLotsToSummary(
+    baseline,
+    paperAccount.pnlLedger.openLots,
+    currentUpMark,
+    currentDownMark,
+  );
+  addPaperPnlOpenLotsToSummary(
+    conservative,
+    paperAccount.pnlLedger.conservativeOpenLots,
+    currentUpMark,
+    currentDownMark,
+  );
+  return {
+    version: paperAccount.pnlLedger.version,
+    partial: paperAccount.pnlLedger.partial,
+    rebuildSource: paperAccount.pnlLedger.rebuildSource,
+    createdAt: paperAccount.pnlLedger.createdAt,
+    updatedAt: paperAccount.pnlLedger.updatedAt,
+    firstTradeTs: paperAccount.pnlLedger.firstTradeTs,
+    lastTradeTs: paperAccount.pnlLedger.lastTradeTs,
+    tradeCount: paperAccount.pnlLedger.tradeCount,
+    rejectCount: paperAccount.pnlLedger.rejectCount,
+    unmatchedSellShares: round4(paperAccount.pnlLedger.unmatchedSellShares),
+    unmatchedSellNotional: roundMoney(paperAccount.pnlLedger.unmatchedSellNotional),
+    openLotCount: paperAccount.pnlLedger.openLots.length,
+    conservativeOpenLotCount: paperAccount.pnlLedger.conservativeOpenLots.length,
+    baseline,
+    conservative,
+  };
 }
 
 function normalizeExecutionEventItem(item: unknown): ExecutionEventItem | null {
@@ -1599,7 +3394,7 @@ function getExecutionEventFromTrade(
     return "paper_order_filled";
   }
   if (
-    /^strategy10maker/.test(String(record.source || "")) &&
+    isMakerFeeSource(record.source) &&
     status.includes("MINED")
   ) {
     return "live_maker_filled";
@@ -1640,6 +3435,8 @@ function recordExecutionEventFromTrade(record: TradeHistoryItem): void {
     notional: filledNotional,
     requestedNotional: finiteOrNull(record.requestedAmount),
     filledNotional,
+    fee: getTradeRecordFee(record),
+    feeMode: getTradeFeeMode(record.source, record.side),
     topBid: finiteOrNull(record.topBid),
     topAsk: finiteOrNull(record.topAsk),
     spread: finiteOrNull(record.spread),
@@ -1651,6 +3448,14 @@ function recordExecutionEventFromTrade(record: TradeHistoryItem): void {
     bookLatencyMs: finiteOrNull(record.bookLatencyMs),
     latencyMs: finiteOrNull(record.simLatencyMs),
     totalLatencyMs: finiteOrNull(record.totalLatencyMs),
+    makerLimitPrice: finiteOrNull(record.makerLimitPrice),
+    makerTrigger: record.makerTrigger ?? null,
+    makerQueueFillRatio: finiteOrNull(record.makerQueueFillRatio),
+    makerActiveMs: finiteOrNull(record.makerActiveMs),
+    makerQueueAheadShares: finiteOrNull(record.makerQueueAheadShares),
+    makerFillModel: record.makerFillModel ?? null,
+    makerMaxSeenBid: finiteOrNull(record.makerMaxSeenBid),
+    makerMinSeenAsk: finiteOrNull(record.makerMinSeenAsk),
   });
 }
 
@@ -1658,10 +3463,11 @@ function recordExecutionEventFromTrade(record: TradeHistoryItem): void {
 const pmPnlManager = new PmPnlManager(PROXY_ADDRESS);
 
 function recordTradeHistory(item: Omit<TradeHistoryItem, "id">): void {
+  const itemWithFee = withTradeFee(item);
   const record: TradeHistoryItem = {
-    id: `${item.ts}-${item.side}-${item.direction}-${item.source}-${Math.random().toString(36).slice(2, 8)}`,
-    executionMode: item.executionMode ?? "live",
-    ...item,
+    id: `${itemWithFee.ts}-${itemWithFee.side}-${itemWithFee.direction}-${itemWithFee.source}-${Math.random().toString(36).slice(2, 8)}`,
+    executionMode: itemWithFee.executionMode ?? "live",
+    ...itemWithFee,
   };
   tradeHistory.unshift(record);
   if (tradeHistory.length > TRADE_HISTORY_MAX) {
@@ -1710,6 +3516,7 @@ function createPaperAccountState(): PaperAccountState {
     resetAt: Date.now(),
     lastTradeAt: 0,
     windows: {},
+    pnlLedger: createPaperPnlLedgerState(false, "fresh"),
   };
 }
 
@@ -1838,6 +3645,17 @@ function loadPaperAccountState(): PaperAccountState {
         }
       }
     }
+    const persistedLedger = normalizePaperPnlLedgerState(raw.pnlLedger);
+    next.pnlLedger =
+      persistedLedger ??
+      rebuildPaperPnlLedgerFromHistory(
+        paperTradeHistory,
+        paperTradeHistory.length >= PAPER_TRADE_HISTORY_MAX,
+      );
+    if (!persistedLedger) {
+      next.pnlLedger.partial = paperTradeHistory.length >= PAPER_TRADE_HISTORY_MAX;
+      next.pnlLedger.rebuildSource = "retained-history";
+    }
     return next;
   } catch {
     return createPaperAccountState();
@@ -1853,21 +3671,20 @@ function persistPaperAccountState(): void {
 }
 
 function recordPaperTradeHistory(item: Omit<TradeHistoryItem, "id">): void {
+  const itemWithFee = withTradeFee(item);
   const record: TradeHistoryItem = {
-    id: `${item.ts}-${item.side}-${item.direction}-${item.source}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `${itemWithFee.ts}-${itemWithFee.side}-${itemWithFee.direction}-${itemWithFee.source}-${Math.random().toString(36).slice(2, 8)}`,
     executionMode: "paper",
-    ...item,
+    ...itemWithFee,
   };
+  applyPaperTradeToPnlLedger(paperAccount.pnlLedger, record);
   paperTradeHistory.unshift(record);
   if (paperTradeHistory.length > PAPER_TRADE_HISTORY_MAX) {
     paperTradeHistory = paperTradeHistory.slice(0, PAPER_TRADE_HISTORY_MAX);
   }
   paperTradeHistory = applyTradeHistoryMetrics(paperTradeHistory);
   paperAccount.realizedPnl = roundMoney(
-    paperTradeHistory.reduce(
-      (sum, trade) => sum + (typeof trade.pnl === "number" ? trade.pnl : 0),
-      0,
-    ),
+    paperAccount.pnlLedger.baseline.total.realizedPnl,
   );
   persistPaperTradeHistory();
   persistPaperAccountState();
@@ -2100,6 +3917,67 @@ function getPaperPositionValuation(
   return { equityPrice: 0, markPrice: 0, source: "unpriced", projected: false };
 }
 
+function getPaperTotalFees(): number {
+  if (paperAccount.pnlLedger?.baseline?.total) {
+    return round4(paperAccount.pnlLedger.baseline.total.fee);
+  }
+  return round4(
+    paperTradeHistory.reduce((sum, trade) => sum + getTradeRecordFee(trade), 0),
+  );
+}
+
+function getActiveMakerOrderPayload(): Array<Record<string, unknown>> {
+  const now = Date.now();
+  const paperOrders = paperMakerOrders
+    .filter(
+      (order) =>
+        order.windowStart === state.windowStart &&
+        order.remainingShares > 0.01 &&
+        order.expiresAt > now,
+    )
+    .map((order) => ({
+      id: order.id,
+      source: order.source,
+      mode: "paper",
+      direction: order.direction,
+      windowStart: order.windowStart,
+      price: order.price,
+      pricePct: order.price * 100,
+      shares: order.shares,
+      remainingShares: order.remainingShares,
+      filledShares: Math.max(0, order.shares - order.remainingShares),
+      queueAheadShares: order.queueAheadShares ?? null,
+      notional: order.remainingShares * order.price,
+      activeMs: Math.max(0, now - order.activeAt),
+      expiresInMs: Math.max(0, order.expiresAt - now),
+    }));
+  const liveOrders = liveMakerOrders
+    .filter(
+      (order) =>
+        order.windowStart === state.windowStart &&
+        (order.status === "open" || order.status === "unknown") &&
+        order.remainingShares > 0.01,
+    )
+    .map((order) => ({
+      id: order.id,
+      orderId: order.orderId,
+      source: order.source,
+      mode: "live",
+      direction: order.direction,
+      windowStart: order.windowStart,
+      price: order.price,
+      pricePct: order.price * 100,
+      shares: order.shares,
+      remainingShares: order.remainingShares,
+      filledShares: Math.max(0, order.shares - order.remainingShares),
+      notional: order.remainingShares * order.price,
+      activeMs: Math.max(0, now - order.postedAt),
+      expiresInMs: Math.max(0, order.expiresAt - now),
+      status: order.status,
+    }));
+  return strategyConfig.executionMode === "live" ? liveOrders : paperOrders;
+}
+
 function getPaperSummary(): Record<string, unknown> {
   const upSize = state.upTokenId
     ? (paperAccount.localSize[state.upTokenId] ?? 0)
@@ -2182,14 +4060,18 @@ function getPaperSummary(): Record<string, unknown> {
     };
   });
 
+  const pnlLedger = getPaperPnlLedgerSummary(currentUpMark, currentDownMark);
+  const totalFees = round4(pnlLedger.baseline.total.fee);
   return {
     usdc: roundMoney(paperAccount.usdc),
     equity: roundMoney(equity),
     markEquity: roundMoney(markEquity),
     initialUsdc: PAPER_INITIAL_USDC,
-    realizedPnl: roundMoney(paperAccount.realizedPnl),
-    totalPnl: roundMoney(equity - PAPER_INITIAL_USDC),
-    markPnl: roundMoney(markEquity - PAPER_INITIAL_USDC),
+    realizedPnl: roundMoney(pnlLedger.baseline.total.realizedPnl),
+    totalFees,
+    totalPnl: roundMoney(equity - PAPER_INITIAL_USDC - totalFees),
+    grossPnl: roundMoney(equity - PAPER_INITIAL_USDC),
+    markPnl: roundMoney(markEquity - PAPER_INITIAL_USDC - totalFees),
     upLocalSize: upSize,
     downLocalSize: downSize,
     totalUpLocalSize: totalUpSize,
@@ -2201,10 +4083,12 @@ function getPaperSummary(): Record<string, unknown> {
     pendingSettlementProjected: pendingProjected,
     openPositions: positionSummaries.slice(0, 20),
     windowSummaries,
+    activeMakerOrders: getActiveMakerOrderPayload(),
     lastTradeAt: paperAccount.lastTradeAt,
     resetAt: paperAccount.resetAt,
     latencyRangeMs: { min: PAPER_MIN_LATENCY_MS, max: PAPER_MAX_LATENCY_MS },
     latencyModel: getPaperLatencyModelSnapshot(),
+    pnlLedger,
   };
 }
 
@@ -3393,6 +5277,12 @@ function hasConfirmedLockPosition(): boolean {
 function canReleaseUnconfirmedBuy(now = Date.now()): boolean {
   if (now - strategyRuntime.actionTs < FILL_RECONCILE_TIMEOUT_MS) return false;
   if (!strategyRuntime.direction) return true;
+  if (strategyConfig.executionMode === "paper") {
+    return (
+      getDirectionLocalSize(strategyRuntime.direction) <=
+      strategyRuntime.posBeforeBuy + 0.01
+    );
+  }
   if ((positions.lastApiSyncAt ?? 0) <= strategyRuntime.actionTs) return false;
   return (
     getDirectionApiSize(strategyRuntime.direction) <=
@@ -6657,12 +8547,19 @@ function getS10BonereaperCloneDynamicMaxAsk(
 function getS10BonereaperCloneOwnedPosition(windowStart: number) {
   const sourceHistory =
     strategyConfig.executionMode === "paper" ? paperTradeHistory : tradeHistory;
-  const out = { upShares: 0, downShares: 0, upNotional: 0, downNotional: 0 };
+  const out = {
+    upShares: 0,
+    downShares: 0,
+    upNotional: 0,
+    downNotional: 0,
+    upFees: 0,
+    downFees: 0,
+  };
   for (const trade of sourceHistory) {
     if (
       trade.windowStart !== windowStart ||
       trade.side !== "buy" ||
-      trade.source !== "strategy10bonereaper"
+      !isS10BonereaperCloneSource(trade.source)
     )
       continue;
     const status = String(trade.status || "").toUpperCase();
@@ -6675,20 +8572,395 @@ function getS10BonereaperCloneOwnedPosition(windowStart: number) {
           shares * (Number(trade.price) || 0),
       ) || 0;
     if (!(shares > 0) || !(notional > 0)) continue;
+    const fee = getTradeRecordFee(trade);
     if (trade.direction === "up") {
       out.upShares += shares;
       out.upNotional += notional;
+      out.upFees += fee;
     } else {
       out.downShares += shares;
       out.downNotional += notional;
+      out.downFees += fee;
     }
   }
   return {
     ...out,
     totalNotional: out.upNotional + out.downNotional,
+    totalFees: out.upFees + out.downFees,
     upAvg: out.upShares > 0 ? out.upNotional / out.upShares : null,
     downAvg: out.downShares > 0 ? out.downNotional / out.downShares : null,
   };
+}
+
+function getS10BonereaperLotteryMakerWindowNotional(
+  mode: ExecutionMode,
+  windowStart: number,
+): number {
+  const sourceHistory = mode === "paper" ? paperTradeHistory : tradeHistory;
+  const filled = sourceHistory.reduce((sum, trade) => {
+    if (
+      trade.windowStart === windowStart &&
+      trade.side === "buy" &&
+      isS10BonereaperLotteryMakerSource(trade.source)
+    ) {
+      const status = String(trade.status || "").toUpperCase();
+      if (!status.includes("FILLED") && !status.includes("MINED")) return sum;
+      return (
+        sum +
+        (Number(trade.filledNotional ?? trade.requestedAmount ?? 0) || 0)
+      );
+    }
+    return sum;
+  }, 0);
+  const activeOrders = mode === "paper" ? paperMakerOrders : liveMakerOrders;
+  const active = activeOrders.reduce((sum, order) => {
+    if (
+      order.windowStart !== windowStart ||
+      !isS10BonereaperLotteryMakerSource(order.source) ||
+      order.remainingShares <= 0.01
+    )
+      return sum;
+    if ("status" in order && order.status !== "open" && order.status !== "unknown")
+      return sum;
+    return sum + order.remainingShares * order.price;
+  }, 0);
+  return filled + active;
+}
+
+function buildS10BonereaperLotteryMakerQuotes(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+): MakerQuoteSignal[] {
+  if (
+    !S10_BONEREAPER_CLONE_ENABLED ||
+    !S10_BONEREAPER_CLONE_LOTTERY_MAKER_ENABLED ||
+    !strategyConfig.enabled.s10 ||
+    S10_BONEREAPER_CLONE_LOTTERY_MAKER_LEVELS.length === 0
+  )
+    return [];
+  if (
+    ctx.bookAgeMs == null ||
+    ctx.bookAgeMs > S10_BONEREAPER_CLONE_MAX_BOOK_AGE_MS ||
+    ctx.rem < S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_REMAINING_SEC ||
+    ctx.rem > S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_REMAINING_SEC
+  )
+    return [];
+
+  const owned = getS10BonereaperCloneOwnedPosition(state.windowStart);
+  const baseAmount = getS10BonereaperCloneBaseAmount();
+  if (
+    owned.totalNotional <
+    baseAmount * S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_POSITION_MULT
+  )
+    return [];
+
+  const totalNetCost = owned.totalNotional + owned.totalFees;
+  const upNetWinPnlNow = owned.upShares - totalNetCost;
+  const downNetWinPnlNow = owned.downShares - totalNetCost;
+  const bestNetWinPnlNow = Math.max(upNetWinPnlNow, downNetWinPnlNow);
+  const worstNetWinPnlNow = Math.min(upNetWinPnlNow, downNetWinPnlNow);
+  const worstOutcomeDirection: StrategyDirection =
+    upNetWinPnlNow <= downNetWinPnlNow ? "up" : "down";
+  const top = getStateTopBookForDirection(worstOutcomeDirection);
+  if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS || !(top.ask > 0))
+    return [];
+
+  const profitRoom = Math.max(
+    0,
+    bestNetWinPnlNow -
+      baseAmount * S10_BONEREAPER_CLONE_LOTTERY_MAKER_RETAIN_PROFIT_MULT,
+  );
+  const fixedRiskBudget =
+    worstNetWinPnlNow <=
+    -baseAmount * S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_WORST_LOSS_MULT
+      ? baseAmount * S10_BONEREAPER_CLONE_LOTTERY_MAKER_FIXED_RISK_MULT
+      : 0;
+  const maxWindowBudget =
+    baseAmount * S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_WINDOW_MULT;
+  const targetBudget = Math.min(
+    maxWindowBudget,
+    fixedRiskBudget +
+      profitRoom * S10_BONEREAPER_CLONE_LOTTERY_MAKER_PROFIT_SPEND_PCT,
+  );
+  const usedBudget = getS10BonereaperLotteryMakerWindowNotional(
+    strategyConfig.executionMode,
+    state.windowStart,
+  );
+  let remainingBudget = Math.max(0, targetBudget - usedBudget);
+  if (remainingBudget < S10_BONEREAPER_CLONE_MIN_QUOTE_USDC) return [];
+
+  const profile = getS10BonereaperCloneDiffSignalProfile(ctx);
+  const quotes: MakerQuoteSignal[] = [];
+  const levels = S10_BONEREAPER_CLONE_LOTTERY_MAKER_LEVELS;
+  for (let i = 0; i < levels.length; i += 1) {
+    const price = levels[i];
+    if (!(price > 0) || price >= 1) continue;
+    const slotsLeft = levels.length - i;
+    const levelBudget = Math.min(
+      remainingBudget,
+      Math.max(
+        S10_BONEREAPER_CLONE_MIN_QUOTE_USDC,
+        Math.min(
+          baseAmount * S10_BONEREAPER_CLONE_LOTTERY_MAKER_PER_LEVEL_MULT,
+          remainingBudget / slotsLeft,
+        ),
+      ),
+    );
+    if (levelBudget < S10_BONEREAPER_CLONE_MIN_QUOTE_USDC) break;
+    const shares = floorToDecimals(levelBudget / price, 2);
+    if (shares <= 0.01) continue;
+    quotes.push({
+      direction: worstOutcomeDirection,
+      price,
+      shares,
+      ttlMs: S10_BONEREAPER_CLONE_LOTTERY_MAKER_TTL_MS,
+      reason:
+        `br-clone lottery_maker ${worstOutcomeDirection} level=${(price * 100).toFixed(0)}c ` +
+        `rem=${ctx.rem.toFixed(1)} diff=${ctx.diff == null ? "-" : Number(ctx.diff).toFixed(1)} ` +
+        `tier=${profile.tier} worstNet=${worstNetWinPnlNow.toFixed(2)} ` +
+        `bestNet=${bestNetWinPnlNow.toFixed(2)} budget=${targetBudget.toFixed(2)} ` +
+        `used=${usedBudget.toFixed(2)} inv=insurance post_only`,
+    });
+    remainingBudget -= levelBudget;
+    if (remainingBudget < S10_BONEREAPER_CLONE_MIN_QUOTE_USDC) break;
+  }
+  return quotes;
+}
+
+function reconcilePaperS10BonereaperLotteryMakerOrders(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+): void {
+  if (strategyConfig.executionMode !== "paper") return;
+  const now = Date.now();
+  paperMakerOrders = paperMakerOrders.filter((order) => {
+    if (!isS10BonereaperLotteryMakerSource(order.source)) return true;
+    return (
+      order.windowStart === state.windowStart &&
+      order.remainingShares > 0.01 &&
+      order.expiresAt > now
+    );
+  });
+  const quotes = buildS10BonereaperLotteryMakerQuotes(ctx);
+  const tickSize = PAPER_S10_LIVE_PARITY_TICK_SIZE;
+  const decimals = getDecimalPlaces(tickSize);
+  const desiredKeys = new Set<string>();
+  const effectiveQuotes: MakerQuoteSignal[] = [];
+  for (const quote of quotes) {
+    const top = getStateTopBookForDirection(quote.direction);
+    if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS) continue;
+    const safePrice = getPostOnlySafeMakerPrice(
+      quote.price,
+      top.bid,
+      top.ask,
+      tickSize,
+      decimals,
+    );
+    if (!safePrice) continue;
+    const price = clampNumber(safePrice.price, 0.01, 0.99);
+    const safeQuote: MakerQuoteSignal = {
+      ...quote,
+      price,
+      reason: safePrice.adjusted
+        ? appendMakerReason(quote.reason, `lottery_post_only_px=${price.toFixed(decimals)}`)
+        : quote.reason,
+    };
+    desiredKeys.add(`${safeQuote.direction}:${safeQuote.price.toFixed(decimals)}`);
+    effectiveQuotes.push(safeQuote);
+  }
+
+  const beforeCancel = paperMakerOrders.length;
+  paperMakerOrders = paperMakerOrders.filter((order) => {
+    if (!isS10BonereaperLotteryMakerSource(order.source)) return true;
+    return desiredKeys.has(`${order.direction}:${order.price.toFixed(decimals)}`);
+  });
+  const canceled = beforeCancel - paperMakerOrders.length;
+  if (canceled > 0) {
+    s10BonereaperLotteryMakerLastReason = `lottery maker cancel stale ${canceled}`;
+    paperMakerLastReason = s10BonereaperLotteryMakerLastReason;
+  }
+
+  for (const quote of effectiveQuotes) {
+    const activeSameSide = paperMakerOrders.filter(
+      (order) =>
+        order.windowStart === state.windowStart &&
+        order.direction === quote.direction &&
+        isS10BonereaperLotteryMakerSource(order.source),
+    );
+    if (
+      activeSameSide.length >=
+      S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_ACTIVE_PER_SIDE
+    )
+      continue;
+    const duplicate = activeSameSide.some(
+      (order) =>
+        Math.abs(order.price - quote.price) < S10_MAKER_DUPLICATE_PRICE_EPS,
+    );
+    if (duplicate) continue;
+    const usedBudget = getS10BonereaperLotteryMakerWindowNotional(
+      "paper",
+      state.windowStart,
+    );
+    const quoteNotional = quote.price * quote.shares;
+    const maxBudget =
+      getS10BonereaperCloneBaseAmount() *
+      S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_WINDOW_MULT;
+    if (usedBudget + quoteNotional > maxBudget + 1e-9) continue;
+    if (paperAccount.usdc + 1e-9 < quoteNotional) continue;
+    const top = getStateTopBookForDirection(quote.direction);
+    if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS) continue;
+    const latency = samplePaperLatency();
+    const activeAt = now + latency.delayMs;
+    const price = clampNumber(quote.price, 0.01, 0.99);
+    paperMakerOrders.push({
+      id: `pmk-lottery-${state.windowStart}-${quote.direction}-${now}-${Math.random().toString(36).slice(2, 7)}`,
+      strategy: 10,
+      source: S10_BONEREAPER_CLONE_LOTTERY_MAKER_SOURCE,
+      windowStart: state.windowStart,
+      direction: quote.direction,
+      price,
+      shares: quote.shares,
+      remainingShares: quote.shares,
+      createdAt: now,
+      activeAt,
+      expiresAt: activeAt + S10_BONEREAPER_CLONE_LOTTERY_MAKER_TTL_MS,
+      reason: quote.reason || "",
+      lastSeenBid: top.bid,
+      lastSeenAsk: top.ask,
+      maxSeenBid: null,
+      minSeenAsk: null,
+      lastTouchAt: 0,
+      touchStartedAt: 0,
+      touchCount: 0,
+      queueAheadShares: estimateMakerQueueAheadShares(quote.direction, price),
+      minActiveMs: S10_MAKER_MIN_ACTIVE_MS,
+      queueFullFillMs: S10_BONEREAPER_CLONE_LOTTERY_MAKER_QUEUE_FULL_FILL_MS,
+    });
+    s10BonereaperLotteryMakerLastReason = `lottery maker posted ${quote.direction} ${(quote.price * 100).toFixed(1)}%/${quote.shares.toFixed(2)}`;
+    paperMakerLastReason = s10BonereaperLotteryMakerLastReason;
+  }
+
+  for (const order of [...paperMakerOrders]) {
+    if (!isS10BonereaperLotteryMakerSource(order.source)) continue;
+    const probe = makerOrderFillProbe(order, now);
+    if (!probe) continue;
+    recordPaperMakerFill(
+      order,
+      probe.fillShares,
+      probe.trigger,
+      probe.ratio,
+      probe.quote,
+    );
+  }
+  paperMakerOrders = paperMakerOrders.filter(
+    (order) => order.remainingShares > 0.01 && order.expiresAt > now,
+  );
+}
+
+async function reconcileLiveS10BonereaperLotteryMakerOrders(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+): Promise<void> {
+  if (
+    s10BonereaperLotteryMakerLiveReconciling ||
+    strategyConfig.executionMode !== "live" ||
+    !S10_BONEREAPER_CLONE_LOTTERY_MAKER_ENABLED ||
+    !liveTradingEnabled ||
+    !s10LiveMakerEnabled
+  )
+    return;
+  s10BonereaperLotteryMakerLiveReconciling = true;
+  try {
+    await syncLiveMakerOrdersFromRest();
+    const rawQuotes = buildS10BonereaperLotteryMakerQuotes(ctx);
+    const tickSize = getCachedOrFallbackLiveTickSize();
+    const decimals = getDecimalPlaces(tickSize);
+    const quotes: MakerQuoteSignal[] = [];
+    for (const quote of rawQuotes) {
+      const top = getStateTopBookForDirection(quote.direction);
+      if (!top || top.ageMs > S10_MAKER_MAX_BOOK_AGE_MS) continue;
+      const safePrice = getPostOnlySafeMakerPrice(
+        quote.price,
+        top.bid,
+        top.ask,
+        tickSize,
+        decimals,
+      );
+      if (!safePrice) continue;
+      const price = clampNumber(safePrice.price, 0.01, 0.99);
+      quotes.push({
+        ...quote,
+        price,
+        reason: safePrice.adjusted
+          ? appendMakerReason(
+              quote.reason,
+              `lottery_ws_post_only_px=${price.toFixed(decimals)}`,
+            )
+          : quote.reason,
+      });
+    }
+    const desired = new Set(
+      quotes.map(
+        (quote) => `${quote.direction}:${quote.price.toFixed(decimals)}`,
+      ),
+    );
+    for (const order of [...liveMakerOrders]) {
+      if (
+        order.windowStart !== state.windowStart ||
+        !isS10BonereaperLotteryMakerSource(order.source) ||
+        order.status === "canceling"
+      )
+        continue;
+      const key = `${order.direction}:${order.price.toFixed(decimals)}`;
+      if (!desired.has(key) || order.expiresAt <= Date.now()) {
+        await cancelLiveMakerOrder(order, "lottery maker stale");
+      }
+    }
+    for (const quote of quotes) {
+      const activeSameSide = liveMakerOrders.filter(
+        (order) =>
+          order.windowStart === state.windowStart &&
+          order.direction === quote.direction &&
+          isS10BonereaperLotteryMakerSource(order.source) &&
+          (order.status === "open" || order.status === "unknown"),
+      );
+      if (
+        activeSameSide.length >=
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_ACTIVE_PER_SIDE
+      )
+        continue;
+      const duplicate = activeSameSide.some(
+        (order) =>
+          Math.abs(order.price - quote.price) < S10_MAKER_DUPLICATE_PRICE_EPS,
+      );
+      if (duplicate) continue;
+      const usedBudget = getS10BonereaperLotteryMakerWindowNotional(
+        "live",
+        state.windowStart,
+      );
+      const quoteNotional = quote.price * quote.shares;
+      const maxBudget =
+        getS10BonereaperCloneBaseAmount() *
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_WINDOW_MULT;
+      if (usedBudget + quoteNotional > maxBudget + 1e-9) continue;
+      const posted = await placeLiveMakerQuote(quote, {
+        source: S10_BONEREAPER_CLONE_LOTTERY_MAKER_SOURCE,
+        ttlMs: S10_BONEREAPER_CLONE_LOTTERY_MAKER_TTL_MS,
+      });
+      if (posted) {
+        s10BonereaperLotteryMakerLastReason = `live lottery maker posted ${quote.direction} ${(posted.price * 100).toFixed(1)}%`;
+      }
+    }
+  } finally {
+    s10BonereaperLotteryMakerLiveReconciling = false;
+  }
+}
+
+function reconcileS10BonereaperLotteryMakerOrders(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+): void {
+  if (strategyConfig.executionMode === "paper") {
+    reconcilePaperS10BonereaperLotteryMakerOrders(ctx);
+  } else {
+    void reconcileLiveS10BonereaperLotteryMakerOrders(ctx);
+  }
 }
 
 function getS10BonereaperCloneAvailableAskNotional(
@@ -6799,16 +9071,30 @@ function getS10BonereaperCloneProjectedPnlGuard(input: {
   baseAmount: number;
   pairCostLimit: number;
   badLossMultiplier: number;
+  additionalFee?: number;
+  protectedDirection?: StrategyDirection | null;
+  minProtectedWinProfit?: number;
+  requireProtectedWinProfit?: boolean;
   maxWorstLoss?: number;
   maxWorstLossIncrease?: number;
 }) {
   const beforeTotalCost = input.owned.totalNotional;
+  const beforeFees = input.owned.totalFees ?? 0;
+  const beforeNetCost = beforeTotalCost + beforeFees;
   const beforeUpWinPnl = input.owned.upShares - beforeTotalCost;
   const beforeDownWinPnl = input.owned.downShares - beforeTotalCost;
+  const beforeUpNetWinPnl = input.owned.upShares - beforeNetCost;
+  const beforeDownNetWinPnl = input.owned.downShares - beforeNetCost;
   const beforeBestPnl = Math.max(beforeUpWinPnl, beforeDownWinPnl);
   const beforeWorstPnl = Math.min(beforeUpWinPnl, beforeDownWinPnl);
+  const beforeBestNetPnl = Math.max(beforeUpNetWinPnl, beforeDownNetWinPnl);
+  const beforeWorstNetPnl = Math.min(beforeUpNetWinPnl, beforeDownNetWinPnl);
   const fillShares = input.fill.complete ? input.fill.shares : 0;
   const fillNotional = input.fill.complete ? input.fill.notional : 0;
+  const additionalFee =
+    input.fill.complete && input.additionalFee != null
+      ? Math.max(0, input.additionalFee)
+      : 0;
   const upSharesAfter =
     input.owned.upShares + (input.direction === "up" ? fillShares : 0);
   const downSharesAfter =
@@ -6827,17 +9113,35 @@ function getS10BonereaperCloneProjectedPnlGuard(input: {
   const downWinPnlAfter = downSharesAfter - totalCostAfter;
   const bestPnlAfter = Math.max(upWinPnlAfter, downWinPnlAfter);
   const worstPnlAfter = Math.min(upWinPnlAfter, downWinPnlAfter);
+  const totalNetCostAfter = totalCostAfter + beforeFees + additionalFee;
+  const upNetWinPnlAfter = upSharesAfter - totalNetCostAfter;
+  const downNetWinPnlAfter = downSharesAfter - totalNetCostAfter;
+  const bestNetPnlAfter = Math.max(upNetWinPnlAfter, downNetWinPnlAfter);
+  const worstNetPnlAfter = Math.min(upNetWinPnlAfter, downNetWinPnlAfter);
+  const protectedWinPnlAfter =
+    input.protectedDirection === "up"
+      ? upNetWinPnlAfter
+      : input.protectedDirection === "down"
+        ? downNetWinPnlAfter
+        : null;
+  const minProtectedWinProfit = Math.max(0, input.minProtectedWinProfit ?? 0);
   const badLossLimit =
     -Math.max(input.baseAmount, input.baseAmount * input.badLossMultiplier);
   const pairCostBlocked =
     pairCostAfter != null && pairCostAfter > input.pairCostLimit + 1e-9;
-  const bothOutcomesBad = bestPnlAfter < badLossLimit;
-  const worseThanCurrentWorst = bestPnlAfter < beforeWorstPnl - 1e-6;
+  const protectedProfitBlocked =
+    !!input.requireProtectedWinProfit &&
+    protectedWinPnlAfter != null &&
+    protectedWinPnlAfter < minProtectedWinProfit - 1e-6;
+  const bothOutcomesBad = bestNetPnlAfter < badLossLimit;
+  const worseThanCurrentWorst = bestNetPnlAfter < beforeWorstNetPnl - 1e-6;
   const maxWorstLossBlocked =
-    input.maxWorstLoss != null && worstPnlAfter < -Math.abs(input.maxWorstLoss);
+    input.maxWorstLoss != null &&
+    worstNetPnlAfter < -Math.abs(input.maxWorstLoss);
   const worstLossIncreaseBlocked =
     input.maxWorstLossIncrease != null &&
-    worstPnlAfter < beforeWorstPnl - Math.abs(input.maxWorstLossIncrease);
+    worstNetPnlAfter <
+      beforeWorstNetPnl - Math.abs(input.maxWorstLossIncrease);
   const incomplete = input.amount > 0 && !input.fill.complete;
   const reason = incomplete
     ? "projected-incomplete-depth"
@@ -6847,6 +9151,8 @@ function getS10BonereaperCloneProjectedPnlGuard(input: {
         ? "projected-worst-loss"
         : worstLossIncreaseBlocked
           ? "projected-worst-loss-expansion"
+          : protectedProfitBlocked
+            ? "projected-profit-floor"
           : bothOutcomesBad
             ? "projected-both-bad"
             : worseThanCurrentWorst
@@ -6862,14 +9168,28 @@ function getS10BonereaperCloneProjectedPnlGuard(input: {
     fillWorstPct:
       input.fill.worstPrice == null ? null : round4(input.fill.worstPrice * 100),
     fillLevels: input.fill.levelsUsed,
+    beforeFees: round4(beforeFees),
+    projectedFee: round4(additionalFee),
     beforeUpWinPnl: round4(beforeUpWinPnl),
     beforeDownWinPnl: round4(beforeDownWinPnl),
     beforeBestPnl: round4(beforeBestPnl),
     beforeWorstPnl: round4(beforeWorstPnl),
+    beforeUpNetWinPnl: round4(beforeUpNetWinPnl),
+    beforeDownNetWinPnl: round4(beforeDownNetWinPnl),
+    beforeBestNetPnl: round4(beforeBestNetPnl),
+    beforeWorstNetPnl: round4(beforeWorstNetPnl),
     upWinPnlAfter: round4(upWinPnlAfter),
     downWinPnlAfter: round4(downWinPnlAfter),
     bestPnlAfter: round4(bestPnlAfter),
     worstPnlAfter: round4(worstPnlAfter),
+    upNetWinPnlAfter: round4(upNetWinPnlAfter),
+    downNetWinPnlAfter: round4(downNetWinPnlAfter),
+    bestNetPnlAfter: round4(bestNetPnlAfter),
+    worstNetPnlAfter: round4(worstNetPnlAfter),
+    protectedDirection: input.protectedDirection ?? null,
+    protectedWinPnlAfter:
+      protectedWinPnlAfter == null ? null : round4(protectedWinPnlAfter),
+    minProtectedWinProfit: round4(minProtectedWinProfit),
     pairCostPctAfter: pairCostAfter == null ? null : round4(pairCostAfter * 100),
     pairCostLimitPct: round4(input.pairCostLimit * 100),
     badLossLimit: round4(badLossLimit),
@@ -7036,6 +9356,170 @@ function getS10BonereaperCloneUpTargetPct(
   return clampNumber(target, 0.035, 0.965);
 }
 
+interface S10BonereaperCloneGuide {
+  active: boolean;
+  reason: string;
+  totalUsdc: number;
+  upUsdc: number;
+  downUsdc: number;
+  upShares: number;
+  downShares: number;
+  targetTotal: number;
+  targetUpPct: number | null;
+  tailDirection: StrategyDirection | null;
+  tailUsdc: number;
+  tailShares: number;
+  lastDirection: StrategyDirection | null;
+  lastPrice: number | null;
+  lastTimestamp: number | null;
+  lagSec: number | null;
+  pairedCostPct: number | null;
+  tradeCount: number;
+}
+
+function getS10BonereaperCloneGuide(
+  ctx: import("./strategies/types.js").StrategyTickContext,
+  baseAmount: number,
+  windowCap: number,
+): S10BonereaperCloneGuide {
+  const empty: S10BonereaperCloneGuide = {
+    active: false,
+    reason: "disabled",
+    totalUsdc: 0,
+    upUsdc: 0,
+    downUsdc: 0,
+    upShares: 0,
+    downShares: 0,
+    targetTotal: 0,
+    targetUpPct: null,
+    tailDirection: null,
+    tailUsdc: 0,
+    tailShares: 0,
+    lastDirection: null,
+    lastPrice: null,
+    lastTimestamp: null,
+    lagSec: null,
+    pairedCostPct: null,
+    tradeCount: 0,
+  };
+  if (!S10_BONEREAPER_CLONE_GUIDE_ENABLED || !BONEREAPER_MONITOR_ENABLED) {
+    return empty;
+  }
+  const snapshot = bonereaperMonitor.getSnapshot({
+    currentConditionId: state.conditionId,
+    currentWindowStart: state.windowStart,
+  });
+  const current = snapshot.current;
+  if (!current || current.windowStart !== state.windowStart) {
+    return { ...empty, reason: "no-current" };
+  }
+  const elapsedSec = clampNumber(300 - ctx.rem, 0, 300);
+  const cutoffSec =
+    state.windowStart +
+    elapsedSec +
+    S10_BONEREAPER_CLONE_GUIDE_CUTOFF_GRACE_SEC;
+  const tape = (Array.isArray(current.tradeTape) ? current.tradeTape : [])
+    .filter(
+      (item) =>
+        item &&
+        item.type === "TRADE" &&
+        item.side === "BUY" &&
+        (item.outcome === "up" || item.outcome === "down") &&
+        Number.isFinite(Number(item.timestamp)) &&
+        Number(item.timestamp) <= cutoffSec &&
+        Number.isFinite(Number(item.usdcSize)) &&
+        Number(item.usdcSize) > 0,
+    )
+    .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+  if (!tape.length) {
+    return { ...empty, reason: "no-tape" };
+  }
+  let upUsdc = 0;
+  let downUsdc = 0;
+  let upShares = 0;
+  let downShares = 0;
+  for (const item of tape) {
+    const usdc = Math.max(0, Number(item.usdcSize) || 0);
+    const shares = Math.max(0, Number(item.size) || 0);
+    if (item.outcome === "up") {
+      upUsdc += usdc;
+      upShares += shares;
+    } else if (item.outcome === "down") {
+      downUsdc += usdc;
+      downShares += shares;
+    }
+  }
+  const totalUsdc = upUsdc + downUsdc;
+  const totalShares = upShares + downShares;
+  const last = tape.at(-1) ?? null;
+  const lastDirection =
+    last?.outcome === "up" || last?.outcome === "down"
+      ? last.outcome
+      : null;
+  const lastTimestamp =
+    last && Number.isFinite(Number(last.timestamp)) ? Number(last.timestamp) : null;
+  const nowSec = state.windowStart + elapsedSec;
+  const lagSec =
+    lastTimestamp == null ? null : Math.max(0, Math.round(nowSec - lastTimestamp));
+  const tailDirection: StrategyDirection | null =
+    upShares > downShares + 0.5
+      ? "up"
+      : downShares > upShares + 0.5
+        ? "down"
+        : null;
+  const tailShares = Math.abs(upShares - downShares);
+  const upAvg = upShares > 0 ? upUsdc / upShares : null;
+  const downAvg = downShares > 0 ? downUsdc / downShares : null;
+  const tailUsdc =
+    tailDirection === "up" && upAvg != null
+      ? tailShares * upAvg
+      : tailDirection === "down" && downAvg != null
+        ? tailShares * downAvg
+        : 0;
+  const pairedCostPct =
+    upAvg != null && downAvg != null ? (upAvg + downAvg) * 100 : null;
+  const targetTotal =
+    totalUsdc >= baseAmount * S10_BONEREAPER_CLONE_GUIDE_MIN_TOTAL_MULT
+      ? clampNumber(
+          Math.max(
+            baseAmount * S10_BONEREAPER_CLONE_GUIDE_MIN_TOTAL_MULT,
+            totalUsdc * S10_BONEREAPER_CLONE_GUIDE_TARGET_SCALE,
+          ),
+          0,
+          windowCap * S10_BONEREAPER_CLONE_GUIDE_TARGET_MAX_PROGRESS,
+        )
+      : 0;
+  const guide = {
+    active:
+      targetTotal > 0 &&
+      totalShares > 0 &&
+      (lagSec == null || lagSec <= S10_BONEREAPER_CLONE_GUIDE_MAX_LAG_SEC),
+    reason: "ok",
+    totalUsdc: round4(totalUsdc),
+    upUsdc: round4(upUsdc),
+    downUsdc: round4(downUsdc),
+    upShares: round4(upShares),
+    downShares: round4(downShares),
+    targetTotal: round4(targetTotal),
+    targetUpPct:
+      totalUsdc > 0 ? clampNumber(upUsdc / totalUsdc, 0.03, 0.97) : null,
+    tailDirection,
+    tailUsdc: round4(tailUsdc),
+    tailShares: round4(tailShares),
+    lastDirection,
+    lastPrice:
+      last && Number.isFinite(Number(last.price)) ? Number(last.price) : null,
+    lastTimestamp,
+    lagSec,
+    pairedCostPct: pairedCostPct == null ? null : round4(pairedCostPct),
+    tradeCount: tape.length,
+  };
+  if (!guide.active && targetTotal > 0) {
+    return { ...guide, reason: "stale" };
+  }
+  return guide;
+}
+
 function getS10BonereaperCloneDiffSignalProfile(
   ctx: import("./strategies/types.js").StrategyTickContext,
 ) {
@@ -7076,7 +9560,9 @@ function getS10BonereaperCloneDiffSignalProfile(
     absDiff / Math.max(1, threshold) +
     consistency * 0.22 +
     acceleration * 0.35;
-  const terminalLate = ctx.rem <= 35 && absDiff >= Math.max(24, threshold * 0.85);
+  const terminalLate =
+    ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC &&
+    absDiff >= Math.max(24, threshold * 0.85);
   const triggered =
     !!direction &&
     (score >= 1 ||
@@ -7085,9 +9571,11 @@ function getS10BonereaperCloneDiffSignalProfile(
       (ctx.rem <= 150 && absDiff >= 50));
   const tier = !triggered
     ? "none"
-    : ctx.rem <= 35 && absDiff >= 30
+    : ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC &&
+        absDiff >= 30
       ? "terminal"
-      : ctx.rem <= 75 && absDiff >= 40
+      : ctx.rem <= S10_BONEREAPER_CLONE_SWEEP_START_REMAINING_SEC &&
+          absDiff >= 40
         ? "sweep"
         : ctx.rem <= 150 && absDiff >= 42
           ? "conviction"
@@ -7119,13 +9607,31 @@ function buildS10BonereaperCloneOrder(
     s10BonereaperCloneLastReason = `too_late rem=${ctx.rem.toFixed(1)}`;
     return null;
   }
-  const upAsk = ctx.book?.up.asks?.[0]?.price;
-  const downAsk = ctx.book?.down.asks?.[0]?.price;
-  if (!(upAsk && downAsk)) {
+  const rawUpAsk = ctx.book?.up.asks?.[0]?.price;
+  const rawDownAsk = ctx.book?.down.asks?.[0]?.price;
+  const hasUpAsk =
+    typeof rawUpAsk === "number" && Number.isFinite(rawUpAsk) && rawUpAsk > 0;
+  const hasDownAsk =
+    typeof rawDownAsk === "number" &&
+    Number.isFinite(rawDownAsk) &&
+    rawDownAsk > 0;
+  if (!hasUpAsk && !hasDownAsk) {
     s10BonereaperCloneLastReason = "missing_ask";
     return null;
   }
+  const upAsk = hasUpAsk
+    ? rawUpAsk
+    : clampNumber(1 - Number(rawDownAsk), 0.01, 0.99);
+  const downAsk = hasDownAsk
+    ? rawDownAsk
+    : clampNumber(1 - Number(rawUpAsk), 0.01, 0.99);
   const profile = getS10BonereaperCloneDiffSignalProfile(ctx);
+  const profileTier = profile.tier as
+    | "none"
+    | "probe"
+    | "conviction"
+    | "sweep"
+    | "terminal";
   const bookBias = getS10BonereaperCloneBookBias(ctx);
   const owned = getS10BonereaperCloneOwnedPosition(state.windowStart);
   const baseAmount = getS10BonereaperCloneBaseAmount();
@@ -7175,6 +9681,95 @@ function buildS10BonereaperCloneOrder(
     fairEdgePct >= 20 &&
     profile.consistency >= 0.65 &&
     bookBias.leadPct >= Math.max(65, bookBias.leadNeed);
+  const bookLedSweepOpposingDiff =
+    profile.direction != null &&
+    bookBias.direction != null &&
+    profile.direction !== bookBias.direction &&
+    profile.absDiff >= S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_DIFF &&
+    profile.consistency >= 0.35;
+  const bookLedSweepOpposingFair =
+    fairDirection != null &&
+    bookBias.direction != null &&
+    fairDirection !== bookBias.direction &&
+    fairEdgePct >=
+      S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_FAIR_EDGE_PCT;
+  const bookLedTailSweep =
+    S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_ENABLED &&
+    ctx.rem <= S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_REMAINING_SEC &&
+    ctx.rem >= S10_TERMINAL_SWEEP_MIN_REMAINING_SEC &&
+    bookBias.triggered &&
+    bookBias.direction != null &&
+    bookBias.leadPct >=
+      Math.max(
+        bookBias.leadNeed + 8,
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_LEAD_PCT,
+      ) &&
+    bookBias.qualityScore * 100 >=
+      S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_QUALITY_PCT &&
+    bookBias.shallowNotional >=
+      S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_SHALLOW_NOTIONAL &&
+    bookBias.spreadPenalty <=
+      S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_SPREAD_PENALTY_PCT &&
+    !bookLedSweepOpposingDiff &&
+    !bookLedSweepOpposingFair;
+  const lateChaseDirection: StrategyDirection | null =
+    profile.direction ?? bookBias.direction ?? fairDirection;
+  const lateChaseDiffEvidence =
+    lateChaseDirection != null &&
+    profile.direction === lateChaseDirection &&
+    profile.absDiff >= S10_BONEREAPER_CLONE_LATE_CHASE_MIN_DIFF &&
+    profile.consistency >= S10_BONEREAPER_CLONE_LATE_CHASE_MIN_CONSISTENCY;
+  const lateChaseFairEvidence =
+    lateChaseDirection != null &&
+    fairDirection === lateChaseDirection &&
+    fairEdgePct >= S10_BONEREAPER_CLONE_LATE_CHASE_MIN_FAIR_EDGE_PCT;
+  const lateChaseBookEvidence =
+    lateChaseDirection != null &&
+    bookBias.direction === lateChaseDirection &&
+    bookBias.leadPct >=
+      Math.max(
+        bookBias.leadNeed,
+        S10_BONEREAPER_CLONE_LATE_CHASE_MIN_BOOK_LEAD_PCT,
+      );
+  const lateChaseEvidenceCount =
+    (lateChaseDiffEvidence ? 1 : 0) +
+    (lateChaseFairEvidence ? 1 : 0) +
+    (lateChaseBookEvidence ? 1 : 0);
+  const lateChaseOpposingBook =
+    lateChaseDirection != null &&
+    bookBias.direction != null &&
+    bookBias.direction !== lateChaseDirection &&
+    bookBias.leadPct >=
+      Math.max(
+        bookBias.leadNeed,
+        ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC
+          ? S10_BONEREAPER_CLONE_TAIL_OPPOSING_BOOK_BLOCK_LEAD_PCT
+          : S10_BONEREAPER_CLONE_OPPOSING_BOOK_BLOCK_LEAD_PCT,
+      );
+  const lateSweepChaseActive =
+    S10_BONEREAPER_CLONE_LATE_CHASE_ENABLED &&
+    lateChaseDirection != null &&
+    ctx.rem <= S10_BONEREAPER_CLONE_LATE_CHASE_MAX_REMAINING_SEC &&
+    lateChaseEvidenceCount >= 2 &&
+    (lateChaseDiffEvidence || lateChaseFairEvidence) &&
+    !lateChaseOpposingBook;
+  const lateTerminalChaseActive =
+    lateSweepChaseActive &&
+    ctx.rem <= S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_REMAINING_SEC &&
+    profile.absDiff >= S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_MIN_DIFF &&
+    (lateChaseEvidenceCount >= 3 ||
+      (lateChaseDiffEvidence && lateChaseBookEvidence));
+  const effectiveSizingTier:
+    | "none"
+    | "probe"
+    | "conviction"
+    | "sweep"
+    | "terminal" =
+    profileTier === "terminal" || lateTerminalChaseActive
+      ? "terminal"
+      : profileTier === "sweep" || lateSweepChaseActive
+        ? "sweep"
+        : profileTier;
   const neutralMainDiffLimit = Math.min(
     55,
     Math.max(24, profile.threshold * (ctx.rem <= 90 ? 0.78 : 0.72)),
@@ -7185,15 +9780,33 @@ function buildS10BonereaperCloneOrder(
   const marketBiasTrusted =
     bookBias.triggered &&
     bookBias.direction != null &&
-    marketNonBookCertainty;
+    (marketNonBookCertainty || bookLedTailSweep);
+  const tailBookLeadNeed =
+    ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC
+      ? S10_BONEREAPER_CLONE_TAIL_HARD_BOOK_CONFIRM_LEAD_PCT
+      : S10_BONEREAPER_CLONE_TAIL_BOOK_CONFIRM_LEAD_PCT;
+  const opposingBookBlockLeadNeed =
+    ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC
+      ? S10_BONEREAPER_CLONE_TAIL_OPPOSING_BOOK_BLOCK_LEAD_PCT
+      : S10_BONEREAPER_CLONE_OPPOSING_BOOK_BLOCK_LEAD_PCT;
+  const strongBookSignalConflict =
+    profile.direction != null &&
+    bookBias.triggered &&
+    bookBias.direction != null &&
+    profile.direction !== bookBias.direction &&
+    bookBias.leadPct >= Math.max(bookBias.leadNeed, opposingBookBlockLeadNeed);
+  const effectiveMainDirection: StrategyDirection | null =
+    strongBookSignalConflict
+      ? bookBias.direction
+      : (profile.direction ?? bookBias.direction);
   const tierWindowScale =
-    profile.tier === "terminal"
+    effectiveSizingTier === "terminal"
       ? 1
-      : profile.tier === "sweep"
+      : effectiveSizingTier === "sweep"
         ? 0.9
-        : profile.tier === "conviction"
+        : effectiveSizingTier === "conviction"
           ? 0.72
-          : profile.tier === "probe"
+          : effectiveSizingTier === "probe"
             ? 0.28
             : marketBiasTrusted
               ? bookBias.leadPct >= 60
@@ -7219,6 +9832,7 @@ function buildS10BonereaperCloneOrder(
           : 1.6
       : 1;
   const windowCap = baseWindowCap * tierWindowScale * terminalMarketBoost;
+  const bonereaperGuide = getS10BonereaperCloneGuide(ctx, baseAmount, windowCap);
   const marketBaseProgressFloor =
     ctx.rem > 270
       ? 0.035
@@ -7250,13 +9864,29 @@ function buildS10BonereaperCloneOrder(
         )
       : marketBaseProgressFloor;
   const rawProgress = profile.triggered
-    ? profile.tier === "terminal"
+    ? effectiveSizingTier === "terminal"
       ? 1
-      : profile.tier === "sweep"
-        ? clampNumber(0.72 + (75 - ctx.rem) / 90, 0.72, 1)
-        : profile.tier === "conviction"
+      : effectiveSizingTier === "sweep"
+        ? clampNumber(
+            0.72 +
+              (S10_BONEREAPER_CLONE_SWEEP_START_REMAINING_SEC - ctx.rem) /
+                Math.max(30, S10_BONEREAPER_CLONE_SWEEP_START_REMAINING_SEC),
+            0.72,
+            1,
+          )
+        : effectiveSizingTier === "conviction"
           ? clampNumber(0.42 + (180 - ctx.rem) / 210, 0.42, 0.86)
           : clampNumber(0.12 + (240 - ctx.rem) / 400, 0.12, 0.38)
+    : lateSweepChaseActive
+      ? effectiveSizingTier === "terminal"
+        ? 1
+        : clampNumber(
+            0.74 +
+              (S10_BONEREAPER_CLONE_LATE_CHASE_MAX_REMAINING_SEC - ctx.rem) /
+                Math.max(20, S10_BONEREAPER_CLONE_LATE_CHASE_MAX_REMAINING_SEC),
+            0.74,
+            1,
+          )
     : marketBiasTrusted
       ? Math.max(getS10BonereaperCloneBudgetProgress(ctx.rem), marketLeadProgress)
       : clampNumber((300 - ctx.rem) / 900, 0.02, 0.16);
@@ -7283,26 +9913,110 @@ function buildS10BonereaperCloneOrder(
   const progress = earlyDirectionUnclear
     ? Math.min(rawProgress, earlyProgressCap)
     : rawProgress;
-  const targetTotal = windowCap * progress;
+  let targetTotal = windowCap * progress;
+  if (bonereaperGuide.active) {
+    targetTotal = Math.max(targetTotal, bonereaperGuide.targetTotal);
+  }
   const used = owned.totalNotional;
   const remainingWindow = Math.max(0, windowCap - used);
   const budgetGap = Math.min(Math.max(0, targetTotal - used), remainingWindow);
-  const upTargetPct = getS10BonereaperCloneUpTargetPct(ctx);
+  const upWinPnlNow = owned.upShares - owned.totalNotional;
+  const downWinPnlNow = owned.downShares - owned.totalNotional;
+  const bestWinPnlNow = Math.max(upWinPnlNow, downWinPnlNow);
+  const worstWinPnlNow = Math.min(upWinPnlNow, downWinPnlNow);
+  const worstOutcomeDirection: StrategyDirection =
+    upWinPnlNow <= downWinPnlNow ? "up" : "down";
+  let upTargetPct = getS10BonereaperCloneUpTargetPct(ctx);
+  if (bonereaperGuide.active && bonereaperGuide.targetUpPct != null) {
+    const guideBlend = clampNumber(
+      (ctx.rem <= 90
+        ? 0.58
+        : ctx.rem <= 150
+          ? 0.48
+          : ctx.rem <= 240
+            ? 0.38
+            : 0.28) +
+        (bonereaperGuide.tailUsdc >=
+        Math.max(
+          S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_USDC,
+          bonereaperGuide.totalUsdc * S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_RATIO,
+        )
+          ? 0.1
+          : 0),
+      0,
+      S10_BONEREAPER_CLONE_GUIDE_BLEND_MAX,
+    );
+    upTargetPct = clampNumber(
+      upTargetPct * (1 - guideBlend) +
+        bonereaperGuide.targetUpPct * guideBlend,
+      0.035,
+      0.965,
+    );
+  }
   const targetUpNotional = targetTotal * upTargetPct;
   const targetDownNotional = targetTotal - targetUpNotional;
   const pairCostLimit =
     ctx.rem <= 90 || Math.abs(Number(ctx.diff ?? 0)) >= 45
       ? S10_BONEREAPER_CLONE_TERMINAL_PAIR_COMPLETION_MAX_COST
       : S10_BONEREAPER_CLONE_PAIR_COMPLETION_MAX_COST;
+  const inventoryLeadNotional = Math.abs(owned.upNotional - owned.downNotional);
+  const inventoryTailDirection: StrategyDirection | null =
+    owned.upNotional > owned.downNotional + baseAmount * 0.15
+      ? "up"
+      : owned.downNotional > owned.upNotional + baseAmount * 0.15
+        ? "down"
+        : null;
+  const dualInventoryCoverage =
+    Math.min(owned.upShares, owned.downShares) /
+    Math.max(1, Math.max(owned.upShares, owned.downShares));
+  const dualInsuranceWindow =
+    S10_BONEREAPER_CLONE_DUAL_INSURANCE_ENABLED &&
+    inventoryTailDirection != null &&
+    ctx.rem >= S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_REMAINING_SEC &&
+    ctx.rem <= S10_BONEREAPER_CLONE_DUAL_INSURANCE_MAX_REMAINING_SEC &&
+    owned.totalNotional >=
+      baseAmount * S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_EXPOSURE_MULT;
+  const getDynamicPairCostLimit = (
+    direction: StrategyDirection,
+    ask: number,
+  ): number => {
+    if (
+      !dualInsuranceWindow ||
+      inventoryTailDirection == null ||
+      direction === inventoryTailDirection
+    ) {
+      return pairCostLimit;
+    }
+    const pairCost =
+      direction === "up"
+        ? owned.downAvg == null
+          ? null
+          : owned.downAvg + ask
+        : owned.upAvg == null
+          ? null
+          : owned.upAvg + ask;
+    const reversalEvidence =
+      (profile.direction === direction && profile.absDiff >= 18) ||
+      (fairDirection === direction && fairEdgePct >= 4) ||
+      (bookBias.direction === direction &&
+        bookBias.leadPct >= Math.max(bookBias.leadNeed, 18));
+    const cheapOrNearPar = ask <= 0.32 || (pairCost != null && pairCost <= 1.08);
+    return Math.max(
+      pairCostLimit,
+      cheapOrNearPar || reversalEvidence
+        ? S10_BONEREAPER_CLONE_DUAL_INSURANCE_HARD_PAIR_COST_MAX
+        : S10_BONEREAPER_CLONE_DUAL_INSURANCE_PAIR_COST_MAX,
+    );
+  };
   const dynamicMaxAsk = getS10BonereaperCloneDynamicMaxAsk(ctx);
   const pairMaxPrice = (direction: StrategyDirection, ask: number): number | null => {
     const otherAvg = direction === "up" ? owned.downAvg : owned.upAvg;
     const otherShares = direction === "up" ? owned.downShares : owned.upShares;
-    const currentShares = direction === "up" ? owned.upShares : owned.downShares;
-    if (otherAvg == null || otherShares <= currentShares + 1) return null;
-    if (otherAvg + ask > pairCostLimit) return null;
+    if (otherAvg == null || otherShares <= 0) return null;
+    const dynamicPairCostLimit = getDynamicPairCostLimit(direction, ask);
+    if (otherAvg + ask > dynamicPairCostLimit) return null;
     return clampNumber(
-      pairCostLimit - otherAvg,
+      dynamicPairCostLimit - otherAvg,
       ask,
       S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100,
     );
@@ -7314,7 +10028,26 @@ function buildS10BonereaperCloneOrder(
   ): number => {
     if (otherAvg == null) return 0;
     const pairCost = otherAvg + ask;
-    const mainDirection = profile.direction ?? bookBias.direction;
+    const mainDirection = effectiveMainDirection;
+    const currentShares = direction === "up" ? owned.upShares : owned.downShares;
+    const otherShares = direction === "up" ? owned.downShares : owned.upShares;
+    const pairWorstLossMult =
+      ctx.rem <= 90 ||
+      effectiveSizingTier === "sweep" ||
+      effectiveSizingTier === "terminal"
+        ? S10_BONEREAPER_CLONE_TERMINAL_PAIR_WORST_LOSS_MULT
+        : S10_BONEREAPER_CLONE_PAIR_WORST_LOSS_MULT;
+    const pairWorstLossBudget = baseAmount * pairWorstLossMult;
+    const pnlRepairShares =
+      ask < 0.995
+        ? Math.max(
+            0,
+            (owned.totalNotional - currentShares - pairWorstLossBudget) /
+              Math.max(0.01, 1 - ask),
+          )
+        : 0;
+    const pnlCoverageTarget =
+      otherShares > 0 ? (currentShares + pnlRepairShares) / otherShares : 0;
     const isWeakInsurance =
       mainDirection != null &&
       direction !== mainDirection &&
@@ -7330,7 +10063,11 @@ function buildS10BonereaperCloneOrder(
               ? 0.62
               : 0.48;
     if (!isWeakInsurance) {
-      return clampNumber(baseCoverage + 0.08, 0.45, 1);
+      return clampNumber(
+        Math.max(baseCoverage + 0.08, pnlCoverageTarget),
+        0.45,
+        S10_BONEREAPER_CLONE_PAIR_MAX_COVERAGE,
+      );
     }
     const confidence =
       Math.max(
@@ -7339,29 +10076,33 @@ function buildS10BonereaperCloneOrder(
         clampNumber(profile.absDiff / 110, 0, 1),
       );
     const trendCap =
-      ctx.rem <= 45 || bookBias.leadPct >= 90 || profile.tier === "terminal"
+      ctx.rem <= 45 || bookBias.leadPct >= 90 || effectiveSizingTier === "terminal"
         ? 0.42
-        : ctx.rem <= 90 || bookBias.leadPct >= 75 || profile.tier === "sweep"
+        : ctx.rem <= 90 || bookBias.leadPct >= 75 || effectiveSizingTier === "sweep"
           ? 0.55
-          : profile.tier === "conviction" || profile.absDiff >= 45
+          : effectiveSizingTier === "conviction" || profile.absDiff >= 45
             ? 0.68
             : 0.82;
     const cheapInsuranceBonus = ask <= 0.04 ? 0.08 : ask <= 0.12 ? 0.04 : 0;
     const confidenceDiscount = confidence * 0.18;
+    const trendCoverage = Math.min(
+      trendCap,
+      baseCoverage + cheapInsuranceBonus - confidenceDiscount,
+    );
     return clampNumber(
-      Math.min(trendCap, baseCoverage + cheapInsuranceBonus - confidenceDiscount),
+      Math.max(trendCoverage, pnlCoverageTarget),
       0.22,
-      1,
+      S10_BONEREAPER_CLONE_PAIR_MAX_COVERAGE,
     );
   };
   const tierOrderCap =
-    profile.tier === "terminal"
+    effectiveSizingTier === "terminal"
       ? baseAmount * 90
-      : profile.tier === "sweep"
+      : effectiveSizingTier === "sweep"
         ? baseAmount * 70
-        : profile.tier === "conviction"
+        : effectiveSizingTier === "conviction"
           ? baseAmount * 55
-          : profile.tier === "probe"
+          : effectiveSizingTier === "probe"
             ? baseAmount * 8
             : marketBiasTrusted
               ? baseAmount *
@@ -7390,25 +10131,63 @@ function buildS10BonereaperCloneOrder(
   const orderCap = marketBiasTrusted
     ? Math.max(curveOrderCap, tierOrderCap, terminalMarketOrderCap)
     : Math.min(curveOrderCap, tierOrderCap);
+  const getCandidateTier = (
+    kind: "signal" | "market" | "pair" | "probe" | "lottery",
+    direction: StrategyDirection,
+  ): "none" | "probe" | "conviction" | "sweep" | "terminal" => {
+    const directionalMain = kind === "signal" || kind === "market";
+    if (
+      directionalMain &&
+      lateSweepChaseActive &&
+      lateChaseDirection === direction
+    ) {
+      return lateTerminalChaseActive ? "terminal" : "sweep";
+    }
+    if (directionalMain && bookLedTailSweep && bookBias.direction === direction) {
+      return ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC
+        ? "terminal"
+        : "sweep";
+    }
+    if (
+      directionalMain &&
+      bonereaperGuide.active &&
+      bonereaperGuide.tailDirection === direction &&
+      bonereaperGuide.tailUsdc >=
+        Math.max(
+          S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_USDC,
+          bonereaperGuide.totalUsdc * S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_RATIO,
+        ) &&
+      ctx.rem <= S10_BONEREAPER_CLONE_GUIDE_SWEEP_MAX_REMAINING_SEC
+    ) {
+      return ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC
+        ? "terminal"
+        : "sweep";
+    }
+    return profileTier;
+  };
   const getMainSliceCap = (
-    kind: "signal" | "market" | "pair" | "probe",
+    kind: "signal" | "market" | "pair" | "probe" | "lottery",
     direction: StrategyDirection,
   ): number => {
     if (kind === "probe") return baseAmount * 1.15;
+    if (kind === "lottery") {
+      return baseAmount * S10_BONEREAPER_CLONE_LOTTERY_MAX_ORDER_MULT;
+    }
+    const candidateTier = getCandidateTier(kind, direction);
     const sameAsSignal = profile.direction != null && direction === profile.direction;
     const strongSignal =
       sameAsSignal &&
-      (profile.tier === "conviction" ||
-        profile.tier === "sweep" ||
-        profile.tier === "terminal");
+      (candidateTier === "conviction" ||
+        candidateTier === "sweep" ||
+        candidateTier === "terminal");
     const terminalWeakSignal =
-      profile.tier === "terminal" &&
+      candidateTier === "terminal" &&
       (!sameAsSignal ||
         profile.absDiff < 28 ||
         bookBias.leadPct < 45 ||
         (bookBias.direction != null && direction !== bookBias.direction));
     const terminalConfirmed =
-      profile.tier === "terminal" &&
+      candidateTier === "terminal" &&
       sameAsSignal &&
       profile.absDiff >= 36 &&
       bookBias.leadPct >= 65 &&
@@ -7426,17 +10205,19 @@ function buildS10BonereaperCloneOrder(
                 ? baseAmount * (strongSignal ? 12 : 6)
                 : ctx.rem > 45
                   ? baseAmount *
-                    (profile.tier === "terminal"
+                    (candidateTier === "terminal"
                       ? terminalConfirmed
-                        ? 10
+                        ? S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_SLICE_MULT
                         : 3
-                      : profile.tier === "sweep"
-                        ? 8
+                      : candidateTier === "sweep"
+                        ? S10_BONEREAPER_CLONE_SWEEP_CONFIRMED_SLICE_MULT
                         : 5)
                   : baseAmount *
-                    (profile.tier === "terminal"
+                    (candidateTier === "terminal"
                       ? terminalConfirmed
-                        ? 12
+                        ? ctx.rem <= 20
+                          ? S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_LATE_SLICE_MULT
+                          : S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_SLICE_MULT
                         : terminalWeakSignal
                           ? 2.5
                           : 4
@@ -7446,7 +10227,7 @@ function buildS10BonereaperCloneOrder(
     return earlyDirectionUnclear ? Math.min(stageCap, unclearCap) : stageCap;
   };
   const getPairSliceCap = (direction: StrategyDirection, ask: number): number => {
-    const mainDirection = profile.direction ?? bookBias.direction;
+    const mainDirection = effectiveMainDirection;
     const weakInsurance =
       mainDirection != null &&
       direction !== mainDirection &&
@@ -7489,9 +10270,19 @@ function buildS10BonereaperCloneOrder(
   const makeCandidate = (
     direction: StrategyDirection,
     ask: number,
-    kind: "signal" | "market" | "pair" | "probe",
+    kind: "signal" | "market" | "pair" | "probe" | "lottery",
   ) => {
+    const candidateTier = getCandidateTier(kind, direction);
+    const directionalLargeCandidate = kind === "signal" || kind === "market";
+    const lateChaseForDirection =
+      directionalLargeCandidate &&
+      lateSweepChaseActive &&
+      lateChaseDirection === direction;
+    const lateTerminalChaseForDirection =
+      lateChaseForDirection && lateTerminalChaseActive;
     const currentNotional = direction === "up" ? owned.upNotional : owned.downNotional;
+    const otherNotional =
+      direction === "up" ? owned.downNotional : owned.upNotional;
     const targetNotional = direction === "up" ? targetUpNotional : targetDownNotional;
     const baseGap =
       kind === "signal"
@@ -7500,33 +10291,500 @@ function buildS10BonereaperCloneOrder(
           ? Math.max(0, targetNotional - currentNotional)
           : kind === "probe"
             ? Math.max(0, targetNotional - currentNotional)
+            : kind === "lottery"
+              ? baseAmount
             : 0;
     const otherShares = direction === "up" ? owned.downShares : owned.upShares;
     const currentShares = direction === "up" ? owned.upShares : owned.downShares;
     const otherAvg = direction === "up" ? owned.downAvg : owned.upAvg;
     const pairLimitPrice = pairMaxPrice(direction, ask);
-    const coverageTarget =
+    const pairCost = otherAvg == null ? null : otherAvg + ask;
+    const dynamicPairCostLimit = getDynamicPairCostLimit(direction, ask);
+    const fastHedgeTimeWindow =
+      ctx.rem >= S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_REMAINING_SEC &&
+      ctx.rem <= S10_BONEREAPER_CLONE_FAST_HEDGE_MAX_REMAINING_SEC;
+    const fastHedgePairCostOk =
+      pairCost != null &&
+      pairCost <=
+        Math.min(pairCostLimit, S10_BONEREAPER_CLONE_FAST_HEDGE_PAIR_COST_MAX) +
+          1e-9;
+    const fastHedgePairRepair =
+      S10_BONEREAPER_CLONE_FAST_HEDGE_ENABLED &&
+      kind === "pair" &&
+      fastHedgeTimeWindow &&
+      pairLimitPrice != null &&
+      fastHedgePairCostOk &&
+      otherNotional >=
+        baseAmount * S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_EXPOSURE_MULT &&
+      otherShares > 1 &&
+      currentShares <
+        otherShares * S10_BONEREAPER_CLONE_FAST_HEDGE_TARGET_COVERAGE - 0.5;
+    const baseCoverageTarget =
       kind === "pair" ? pairCoverageTarget(direction, ask, otherAvg) : 1;
+    const dualInsuranceBaseCandidate =
+      S10_BONEREAPER_CLONE_DUAL_INSURANCE_ENABLED &&
+      kind === "pair" &&
+      dualInsuranceWindow &&
+      inventoryTailDirection != null &&
+      direction !== inventoryTailDirection &&
+      pairLimitPrice != null &&
+      pairCost != null &&
+      pairCost <= dynamicPairCostLimit + 1e-9 &&
+      otherNotional >=
+        baseAmount * S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_EXPOSURE_MULT &&
+      otherShares > 1;
+    const dualInsuranceStrong =
+      dualInsuranceBaseCandidate &&
+      (pairCost <= 1 ||
+        ask <= 0.32 ||
+        ctx.rem >= 180 ||
+        profile.direction === direction ||
+        fairDirection === direction ||
+        bookBias.direction === direction);
+    const dualInsuranceCoverageTarget =
+      dualInsuranceBaseCandidate
+        ? clampNumber(
+            dualInsuranceStrong
+              ? S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_TARGET_COVERAGE
+              : S10_BONEREAPER_CLONE_DUAL_INSURANCE_TARGET_COVERAGE,
+            0.05,
+            S10_BONEREAPER_CLONE_PAIR_MAX_COVERAGE,
+          )
+        : 0;
+    const dualInsurancePairRepair =
+      dualInsuranceBaseCandidate &&
+      currentShares < otherShares * dualInsuranceCoverageTarget - 0.5;
+    const coverageTarget = fastHedgePairRepair
+      ? clampNumber(
+          S10_BONEREAPER_CLONE_FAST_HEDGE_TARGET_COVERAGE,
+          0.05,
+          S10_BONEREAPER_CLONE_PAIR_MAX_COVERAGE,
+        )
+      : dualInsurancePairRepair
+        ? dualInsuranceCoverageTarget
+      : baseCoverageTarget;
+    const fastHedgePairLimitPrice =
+      fastHedgePairRepair && otherAvg != null && pairLimitPrice != null
+        ? clampNumber(
+            Math.min(
+              pairLimitPrice,
+              S10_BONEREAPER_CLONE_FAST_HEDGE_PAIR_COST_MAX - otherAvg,
+            ),
+            ask,
+            S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100,
+          )
+        : null;
+    const effectivePairLimitPrice = fastHedgePairLimitPrice ?? pairLimitPrice;
     const targetPairShares = otherShares * coverageTarget;
     const pairMissingShares =
-      pairLimitPrice != null ? Math.max(0, targetPairShares - currentShares) : 0;
-    const pairGap =
-      pairLimitPrice != null
+      effectivePairLimitPrice != null
+        ? Math.max(0, targetPairShares - currentShares)
+        : 0;
+    const pairWorstLossMult =
+      ctx.rem <= 90 ||
+      effectiveSizingTier === "sweep" ||
+      effectiveSizingTier === "terminal"
+        ? S10_BONEREAPER_CLONE_TERMINAL_PAIR_WORST_LOSS_MULT
+        : S10_BONEREAPER_CLONE_PAIR_WORST_LOSS_MULT;
+    const pairWorstLossBudget = baseAmount * pairWorstLossMult;
+    const lotteryTimeWindow =
+      ctx.rem >= S10_BONEREAPER_CLONE_LOTTERY_MIN_REMAINING_SEC &&
+      ctx.rem <= S10_BONEREAPER_CLONE_LOTTERY_MAX_REMAINING_SEC;
+    const lotteryBookEvidence =
+      bookBias.triggered &&
+      bookBias.direction === direction &&
+      bookBias.leadPct >=
+        Math.max(
+          bookBias.leadNeed,
+          S10_BONEREAPER_CLONE_LOTTERY_MIN_BOOK_LEAD_PCT,
+        );
+    const lotteryDiffEvidence =
+      profile.direction === direction &&
+      profile.absDiff >= S10_BONEREAPER_CLONE_LOTTERY_MIN_DIFF &&
+      profile.consistency >= (ctx.rem <= 30 ? 0.3 : 0.25);
+    const lotteryFairEvidence =
+      fairDirection === direction &&
+      fairEdgePct >= S10_BONEREAPER_CLONE_LOTTERY_MIN_FAIR_EDGE_PCT;
+    const lotteryCheap =
+      ask <= S10_BONEREAPER_CLONE_LOTTERY_CHEAP_MAX_ASK_PCT / 100;
+    const lotteryReversalEvidence =
+      lotteryBookEvidence ||
+      (lotteryDiffEvidence && lotteryFairEvidence) ||
+      (lotteryCheap &&
+        (lotteryBookEvidence ||
+          lotteryDiffEvidence ||
+          worstWinPnlNow <= -baseAmount * 3));
+    const lotteryProfitRoom = Math.max(
+      0,
+      bestWinPnlNow -
+        baseAmount * S10_BONEREAPER_CLONE_LOTTERY_RETAIN_PROFIT_MULT,
+    );
+    const lotteryExtreme =
+      ctx.rem <= S10_BONEREAPER_CLONE_LOTTERY_AGGRESSIVE_REMAINING_SEC &&
+      (lotteryBookEvidence ||
+        (lotteryDiffEvidence && lotteryFairEvidence) ||
+        worstWinPnlNow <= -baseAmount * 8);
+    const lotterySpendBudget =
+      lotteryProfitRoom *
+      (lotteryExtreme
+        ? S10_BONEREAPER_CLONE_LOTTERY_EXTREME_PROFIT_SPEND_PCT
+        : S10_BONEREAPER_CLONE_LOTTERY_PROFIT_SPEND_PCT);
+    const lotteryBudget =
+      kind === "lottery" &&
+      S10_BONEREAPER_CLONE_LOTTERY_RESCUE_ENABLED &&
+      lotteryTimeWindow &&
+      direction === worstOutcomeDirection &&
+      owned.totalNotional >= baseAmount * 3 &&
+      lotteryProfitRoom >= S10_BONEREAPER_CLONE_MIN_QUOTE_USDC &&
+      lotteryReversalEvidence
+        ? Math.min(
+            lotterySpendBudget,
+            baseAmount *
+              (lotteryExtreme
+                ? S10_BONEREAPER_CLONE_LOTTERY_MAX_ORDER_MULT
+                : S10_BONEREAPER_CLONE_LOTTERY_CHEAP_ORDER_MULT),
+          )
+        : 0;
+    const cheapEarlyPairRepair =
+      kind === "pair" &&
+      effectivePairLimitPrice != null &&
+      pairCost != null &&
+      pairMissingShares > 1 &&
+      otherShares >= 2 &&
+      pairCost <= Math.min(pairCostLimit, 0.98) &&
+      (ask <= 0.45 || pairCost <= 0.9);
+    const rawPairGap =
+      effectivePairLimitPrice != null
         ? getS10BonereaperCloneNotionalForAskShares(
             ctx,
             direction,
-            pairLimitPrice,
+            effectivePairLimitPrice,
             pairMissingShares,
           )
         : 0;
-    const notionalGap = kind === "pair" ? pairGap : baseGap;
+    const pairGap =
+      dualInsurancePairRepair && rawPairGap > 0
+        ? Math.max(
+            rawPairGap,
+            S10_BONEREAPER_CLONE_MIN_QUOTE_USDC,
+            getS10MakerMinimumOrderNotionalFloor(),
+          )
+        : rawPairGap;
+    const progressChaseTimeWindow =
+      ctx.rem >= S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_REMAINING_SEC &&
+      ctx.rem <= S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_REMAINING_SEC;
+    const progressChaseDiffEvidence =
+      profile.direction === direction &&
+      profile.absDiff >= S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_DIFF &&
+      profile.consistency >= 0.25;
+    const progressChaseBookEvidence =
+      bookBias.direction === direction &&
+      bookBias.leadPct >=
+        Math.max(
+          bookBias.leadNeed,
+          S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_BOOK_LEAD_PCT,
+        );
+    const progressChaseFairEvidence =
+      fairDirection === direction &&
+      fairEdgePct >= S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_FAIR_EDGE_PCT;
+    const progressChaseEvidenceCount =
+      (progressChaseDiffEvidence ? 1 : 0) +
+      (progressChaseBookEvidence ? 1 : 0) +
+      (progressChaseFairEvidence ? 1 : 0);
+    const progressChaseWrongSide =
+      otherNotional >=
+        baseAmount * S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_WRONG_MULT &&
+      otherNotional - currentNotional >=
+        baseAmount * S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_IMBALANCE_MULT;
+    const progressChaseOpposingBook =
+      bookBias.direction != null &&
+      bookBias.direction !== direction &&
+      bookBias.leadPct >=
+        Math.max(bookBias.leadNeed, S10_BONEREAPER_CLONE_OPPOSING_BOOK_BLOCK_LEAD_PCT);
+    const progressChaseStrong =
+      progressChaseEvidenceCount >= 3 ||
+      (progressChaseDiffEvidence &&
+        progressChaseBookEvidence &&
+        profile.absDiff >=
+          S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_DIFF + 10);
+    const progressChaseMaxPrice =
+      Math.min(
+        S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100,
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_ASK_PCT / 100,
+      );
+    const progressChase =
+      S10_BONEREAPER_CLONE_PROGRESS_CHASE_ENABLED &&
+      directionalLargeCandidate &&
+      progressChaseTimeWindow &&
+      progressChaseWrongSide &&
+      progressChaseEvidenceCount >= 2 &&
+      (progressChaseDiffEvidence || progressChaseBookEvidence) &&
+      !progressChaseOpposingBook &&
+      ask <= progressChaseMaxPrice + 1e-9;
+    const progressChaseCoverage = progressChase
+      ? clampNumber(
+          progressChaseStrong
+            ? S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_COVERAGE
+            : S10_BONEREAPER_CLONE_PROGRESS_CHASE_TARGET_COVERAGE,
+          0.05,
+          1.2,
+        )
+      : 0;
+    const progressChaseMissingShares =
+      progressChase && otherShares > 0
+        ? Math.max(0, otherShares * progressChaseCoverage - currentShares)
+        : 0;
+    const progressChaseGap =
+      progressChaseMissingShares > 0
+        ? getS10BonereaperCloneNotionalForAskShares(
+            ctx,
+            direction,
+            progressChaseMaxPrice,
+            progressChaseMissingShares,
+          )
+        : 0;
+    const progressChaseBudget =
+      progressChase
+        ? Math.max(
+            S10_BONEREAPER_CLONE_MIN_QUOTE_USDC,
+            Math.min(
+              progressChaseGap,
+              baseAmount *
+                (progressChaseStrong
+                  ? S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_ORDER_MULT
+                  : S10_BONEREAPER_CLONE_PROGRESS_CHASE_ORDER_MULT),
+            ),
+          )
+        : 0;
+    const guideTailThreshold = Math.max(
+      S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_USDC,
+      bonereaperGuide.totalUsdc * S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_RATIO,
+    );
+    const guideTailForDirection =
+      directionalLargeCandidate &&
+      bonereaperGuide.active &&
+      bonereaperGuide.tailDirection === direction &&
+      bonereaperGuide.tailUsdc >= guideTailThreshold &&
+      ctx.rem <= S10_BONEREAPER_CLONE_GUIDE_SWEEP_MAX_REMAINING_SEC;
+    const guideTailEvidenceCount =
+      (guideTailForDirection ? 1 : 0) +
+      (bonereaperGuide.lastDirection === direction ? 1 : 0) +
+      (bonereaperGuide.pairedCostPct != null &&
+      bonereaperGuide.pairedCostPct <=
+        S10_BONEREAPER_CLONE_GUIDE_PAIR_COST_MAX * 100
+        ? 1
+        : 0) +
+      (profile.direction === direction ? 1 : 0) +
+      (fairDirection === direction ? 1 : 0) +
+      (bookBias.direction === direction ? 1 : 0);
+    const guideLocalEvidenceCount =
+      (profile.direction === direction ? 1 : 0) +
+      (fairDirection === direction ? 1 : 0) +
+      (bookBias.direction === direction ? 1 : 0);
+    const guideOpposingLocalEvidenceCount =
+      (profile.direction != null && profile.direction !== direction ? 1 : 0) +
+      (fairDirection != null && fairDirection !== direction ? 1 : 0) +
+      (bookBias.direction != null && bookBias.direction !== direction ? 1 : 0);
+    const guideOpposingLocalBlock =
+      guideOpposingLocalEvidenceCount >= 2 &&
+      (profile.absDiff >= 35 ||
+        fairEdgePct >= 8 ||
+        bookBias.leadPct >= Math.max(30, bookBias.leadNeed));
+    const guideTailConfirmedForDirection =
+      guideTailForDirection &&
+      guideTailEvidenceCount >= 3 &&
+      (guideLocalEvidenceCount >= 1 ||
+        (ctx.rem <= 60 && bonereaperGuide.lastDirection === direction)) &&
+      !guideOpposingLocalBlock &&
+      (!progressChaseOpposingBook ||
+        ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC ||
+        bonereaperGuide.lastDirection === direction);
+    const guideInventoryFollowForDirection =
+      directionalLargeCandidate &&
+      bonereaperGuide.active &&
+      bonereaperGuide.tailDirection === direction &&
+      bonereaperGuide.tailUsdc >= guideTailThreshold &&
+      ctx.rem <= S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_REMAINING_SEC &&
+      guideTailEvidenceCount >= 3 &&
+      (guideLocalEvidenceCount >= 1 || bonereaperGuide.lastDirection === direction) &&
+      !guideOpposingLocalBlock &&
+      (!progressChaseOpposingBook || bonereaperGuide.lastDirection === direction);
+    const guideDirectionTargetPct =
+      bonereaperGuide.targetUpPct == null
+        ? 0.5
+        : direction === "up"
+          ? bonereaperGuide.targetUpPct
+          : 1 - bonereaperGuide.targetUpPct;
+    const guideDirectionTargetNotional =
+      guideTailConfirmedForDirection || bonereaperGuide.active
+        ? bonereaperGuide.targetTotal * guideDirectionTargetPct
+        : 0;
+    const guideChaseGap = guideTailConfirmedForDirection
+      ? Math.max(0, guideDirectionTargetNotional - currentNotional)
+      : 0;
+    const guideChaseBudget =
+      guideTailConfirmedForDirection && guideChaseGap > 0
+        ? Math.max(
+            S10_BONEREAPER_CLONE_MIN_QUOTE_USDC,
+            Math.min(
+              guideChaseGap,
+              baseAmount *
+                (ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC
+                  ? S10_BONEREAPER_CLONE_GUIDE_TERMINAL_ORDER_MULT
+                  : S10_BONEREAPER_CLONE_GUIDE_SWEEP_ORDER_MULT),
+            ),
+          )
+        : 0;
+    const protectedSweepDiffEvidence =
+      profile.direction === direction &&
+      profile.absDiff >= S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_DIFF &&
+      profile.consistency >= (ctx.rem <= 45 ? 0.35 : 0.3);
+    const protectedSweepFairEvidence =
+      fairDirection === direction &&
+      fairEdgePct >= S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_FAIR_EDGE_PCT;
+    const protectedSweepBookEvidence =
+      bookBias.direction === direction &&
+      bookBias.leadPct >=
+        Math.max(
+          bookBias.leadNeed,
+          S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_BOOK_LEAD_PCT,
+        );
+    const protectedSweepEvidenceCount =
+      (protectedSweepDiffEvidence ? 1 : 0) +
+      (protectedSweepFairEvidence ? 1 : 0) +
+      (protectedSweepBookEvidence ? 1 : 0);
+    const protectedSweepOpposingBook =
+      bookBias.direction != null &&
+      bookBias.direction !== direction &&
+      bookBias.leadPct >=
+        Math.max(bookBias.leadNeed, S10_BONEREAPER_CLONE_TAIL_OPPOSING_BOOK_BLOCK_LEAD_PCT);
+    const protectedDualSweep =
+      S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ENABLED &&
+      directionalLargeCandidate &&
+      (candidateTier === "sweep" ||
+        candidateTier === "terminal" ||
+        lateChaseForDirection ||
+        (bookLedTailSweep && bookBias.direction === direction)) &&
+      dualInventoryCoverage >=
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_COVERAGE &&
+      protectedSweepEvidenceCount >= 2 &&
+      (protectedSweepBookEvidence || protectedSweepFairEvidence) &&
+      !protectedSweepOpposingBook;
+    const protectedSweepBudget =
+      protectedDualSweep
+        ? baseAmount *
+          (candidateTier === "terminal" || lateTerminalChaseForDirection
+            ? S10_BONEREAPER_CLONE_PROTECTED_SWEEP_TERMINAL_ORDER_MULT
+            : S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ORDER_MULT)
+        : 0;
+    const terminalBurstTimeWindow =
+      ctx.rem >= S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_REMAINING_SEC &&
+      ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_BURST_MAX_REMAINING_SEC;
+    const terminalBurstPriceEvidence =
+      ask >= S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ASK_PCT / 100;
+    const terminalBurstDiffEvidence =
+      profile.direction === direction &&
+      profile.absDiff >= S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_DIFF &&
+      profile.consistency >= (ctx.rem <= 20 ? 0.3 : 0.25);
+    const terminalBurstFairEvidence =
+      fairDirection === direction &&
+      fairEdgePct >= S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_FAIR_EDGE_PCT;
+    const terminalBurstBookEvidence =
+      bookBias.direction === direction &&
+      bookBias.leadPct >=
+        Math.max(
+          bookBias.leadNeed,
+          S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_BOOK_LEAD_PCT,
+        );
+    const terminalBurstGuideEvidence =
+      bonereaperGuide.active &&
+      (bonereaperGuide.tailDirection === direction ||
+        bonereaperGuide.lastDirection === direction) &&
+      (bonereaperGuide.tailUsdc >=
+        Math.max(
+          S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_GUIDE_TAIL_USDC,
+          guideTailThreshold,
+        ) ||
+        (bonereaperGuide.lastDirection === direction &&
+          bonereaperGuide.totalUsdc >=
+            baseAmount * S10_BONEREAPER_CLONE_GUIDE_MIN_TOTAL_MULT &&
+          ctx.rem <=
+            Math.min(28, S10_BONEREAPER_CLONE_TERMINAL_BURST_MAX_REMAINING_SEC)));
+    const terminalBurstEvidenceCount =
+      (terminalBurstDiffEvidence ? 1 : 0) +
+      (terminalBurstFairEvidence ? 1 : 0) +
+      (terminalBurstBookEvidence ? 1 : 0) +
+      (terminalBurstGuideEvidence ? 1 : 0);
+    const terminalBurstHardEvidence =
+      terminalBurstDiffEvidence &&
+      terminalBurstFairEvidence &&
+      (ctx.rem <= 15 || terminalBurstBookEvidence || terminalBurstGuideEvidence);
+    const terminalBurstEarlyHardEvidence =
+      ctx.rem <= 30 ||
+      (terminalBurstDiffEvidence &&
+        terminalBurstFairEvidence &&
+        terminalBurstBookEvidence &&
+        profile.absDiff >= S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_DIFF + 8);
+    const terminalBurstOpposingBook =
+      bookBias.direction != null &&
+      bookBias.direction !== direction &&
+      bookBias.leadPct >=
+        Math.max(
+          bookBias.leadNeed,
+          S10_BONEREAPER_CLONE_TAIL_OPPOSING_BOOK_BLOCK_LEAD_PCT + 8,
+        );
+    const terminalBurstSweep =
+      S10_BONEREAPER_CLONE_TERMINAL_BURST_ENABLED &&
+      directionalLargeCandidate &&
+      terminalBurstTimeWindow &&
+      terminalBurstPriceEvidence &&
+      terminalBurstEvidenceCount >= (ctx.rem > 30 ? 3 : 2) &&
+      terminalBurstHardEvidence &&
+      terminalBurstEarlyHardEvidence &&
+      !terminalBurstOpposingBook;
+    const terminalBurstBudget =
+      terminalBurstSweep
+        ? baseAmount * S10_BONEREAPER_CLONE_TERMINAL_BURST_ORDER_MULT
+        : 0;
+    const terminalBurstRemainingBudget =
+      terminalBurstSweep ? Math.max(0, terminalBurstBudget - currentNotional) : 0;
+    const terminalBurstSliceBudget =
+      terminalBurstSweep
+        ? Math.min(
+            terminalBurstRemainingBudget,
+            baseAmount * S10_BONEREAPER_CLONE_TERMINAL_BURST_SLICE_MULT,
+          )
+        : 0;
+    const terminalBurstGap =
+      terminalBurstSweep
+        ? Math.max(terminalBurstRemainingBudget, guideChaseGap)
+        : 0;
+    const notionalGap =
+      kind === "pair"
+        ? pairGap
+        : kind === "lottery"
+          ? lotteryBudget
+          : Math.max(baseGap, progressChaseGap, guideChaseGap, terminalBurstGap);
     const directionAvg =
       currentShares > 0 ? currentNotional / Math.max(1e-9, currentShares) : null;
     const cheapPairRepair =
+      (kind === "pair" &&
+        ask <= 0.38 &&
+        effectivePairLimitPrice != null &&
+        pairMissingShares > 1) ||
+      cheapEarlyPairRepair;
+    const bookConflictPairRepair =
       kind === "pair" &&
-      ask <= 0.38 &&
-      pairLimitPrice != null &&
+      strongBookSignalConflict &&
+      bookBias.direction === direction &&
+      ctx.rem <= 90 &&
+      effectivePairLimitPrice != null &&
       pairMissingShares > 1;
+    const pnlPairRepair =
+      kind === "pair" &&
+      effectivePairLimitPrice != null &&
+      pairMissingShares > 1 &&
+      currentShares - owned.totalNotional < -pairWorstLossBudget;
     const pairRepairBudget =
       kind === "pair"
         ? Math.max(
@@ -7534,31 +10792,90 @@ function buildS10BonereaperCloneOrder(
             cheapPairRepair
               ? baseAmount * (ask <= 0.18 ? 5 : ask <= 0.28 ? 4 : 3)
               : baseAmount * (ask <= 0.45 ? 1.25 : 0.55),
+            bookConflictPairRepair
+              ? baseAmount *
+                  S10_BONEREAPER_CLONE_BOOK_CONFLICT_PAIR_BUDGET_MULT
+              : 0,
+            pnlPairRepair
+              ? baseAmount * (ask <= 0.18 ? 8 : ask <= 0.4 ? 5 : 3)
+              : 0,
+            fastHedgePairRepair
+              ? baseAmount * (ask <= 0.18 ? 3.5 : ask <= 0.35 ? 2.25 : 1.35)
+              : 0,
+            dualInsurancePairRepair
+              ? baseAmount *
+                (dualInsuranceStrong
+                  ? S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_ORDER_MULT
+                  : S10_BONEREAPER_CLONE_DUAL_INSURANCE_ORDER_MULT)
+              : 0,
           )
         : budgetGap;
+    const lotteryMaxPrice =
+      kind === "lottery" && lotteryBudget > 0
+        ? lotteryExtreme
+          ? S10_BONEREAPER_CLONE_LOTTERY_MAX_PRICE_PCT / 100
+          : Math.min(
+              S10_BONEREAPER_CLONE_LOTTERY_MAX_PRICE_PCT / 100,
+              Math.max(
+                ask,
+                S10_BONEREAPER_CLONE_LOTTERY_CHEAP_MAX_ASK_PCT / 100,
+              ),
+            )
+        : null;
+    const lateChaseMaxPrice = lateChaseForDirection
+      ? S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100
+      : protectedDualSweep
+        ? S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100
+      : terminalBurstSweep
+        ? S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100
+      : guideTailConfirmedForDirection
+        ? S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100
+      : 0;
     const marketMaxAsk =
-      kind === "market" && marketBiasTrusted
-        ? Math.min(
-            S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100,
-            Math.max(
-              dynamicMaxAsk,
-              0.68 + bookBias.leadPct * 0.004,
-              profile.direction === direction && profile.absDiff >= 35 ? 0.99 : 0,
-            ),
+      progressChase || guideTailConfirmedForDirection || terminalBurstSweep
+        ? Math.max(
+            dynamicMaxAsk,
+            progressChase ? progressChaseMaxPrice : 0,
+            guideTailConfirmedForDirection
+              ? S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100
+              : 0,
+            terminalBurstSweep
+              ? S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100
+              : 0,
           )
+        : kind === "market" && marketBiasTrusted
+          ? Math.min(
+              S10_BONEREAPER_CLONE_TAKER_MAX_ASK_PCT / 100,
+              Math.max(
+                dynamicMaxAsk,
+                0.68 + bookBias.leadPct * 0.004,
+                profile.direction === direction && profile.absDiff >= 35
+                  ? 0.99
+                  : 0,
+              ),
+            )
         : dynamicMaxAsk;
-    const maxPrice = Math.max(marketMaxAsk, pairLimitPrice ?? 0);
+    const maxPrice =
+      lotteryMaxPrice != null
+        ? lotteryMaxPrice
+        : kind === "pair"
+          ? (effectivePairLimitPrice ?? 0)
+          : Math.max(marketMaxAsk, pairLimitPrice ?? 0, lateChaseMaxPrice);
     const available = getS10BonereaperCloneAvailableAskNotional(ctx, direction, maxPrice);
     const depthLevels =
       kind === "pair"
         ? ask <= 0.12
           ? 2
           : 1
+        : kind === "lottery"
+          ? lotteryExtreme
+            ? 3
+            : 2
         : ctx.rem > 210
           ? 1
           : ctx.rem > 90
             ? 2
-            : profile.tier === "terminal"
+            : candidateTier === "terminal"
               ? 3
               : 2;
     const depthPriceLift =
@@ -7568,11 +10885,15 @@ function buildS10BonereaperCloneOrder(
           : ask <= 0.2
             ? 0.01
             : 0.006
+        : kind === "lottery"
+          ? lotteryExtreme
+            ? 0.05
+            : 0.025
         : ctx.rem > 210
           ? 0.006
           : ctx.rem > 90
             ? 0.012
-            : profile.tier === "terminal"
+            : candidateTier === "terminal"
               ? 0.03
               : 0.02;
     const shallowAvailable = getS10BonereaperCloneShallowAskNotional(
@@ -7582,10 +10903,51 @@ function buildS10BonereaperCloneOrder(
       depthLevels,
       depthPriceLift,
     );
+    const lateChaseOrderCap =
+      Math.max(
+        lateChaseForDirection
+          ? baseAmount *
+            (lateTerminalChaseForDirection
+              ? S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_ORDER_MULT
+              : S10_BONEREAPER_CLONE_LATE_CHASE_ORDER_MULT)
+          : 0,
+        protectedSweepBudget,
+        guideChaseBudget,
+        terminalBurstRemainingBudget,
+      );
+    const candidateOrderCap =
+      kind === "lottery"
+        ? baseAmount *
+          (lotteryExtreme
+            ? S10_BONEREAPER_CLONE_LOTTERY_MAX_ORDER_MULT
+            : S10_BONEREAPER_CLONE_LOTTERY_CHEAP_ORDER_MULT)
+        : Math.max(
+            orderCap,
+            progressChaseBudget,
+            guideChaseBudget,
+            terminalBurstRemainingBudget,
+            lateChaseOrderCap,
+          );
+    const candidateRemainingWindow =
+      kind === "lottery"
+        ? Math.max(remainingWindow, lotteryBudget)
+        : Math.max(
+            remainingWindow,
+            progressChaseBudget,
+            guideChaseBudget,
+            terminalBurstRemainingBudget,
+            lateChaseOrderCap,
+          );
     const sliceCap =
       kind === "pair"
         ? getPairSliceCap(direction, ask)
-        : Math.min(orderCap, getMainSliceCap(kind, direction));
+        : Math.max(
+            Math.min(candidateOrderCap, getMainSliceCap(kind, direction)),
+            Math.min(candidateOrderCap, progressChaseBudget),
+            Math.min(candidateOrderCap, guideChaseBudget),
+            Math.min(candidateOrderCap, terminalBurstSliceBudget),
+            Math.min(candidateOrderCap, lateChaseOrderCap),
+          );
     const fairUpForGuard = getFairProb(Number(ctx.diff ?? 0), ctx.rem);
     const directionFairPct =
       fairUpForGuard == null
@@ -7593,8 +10955,6 @@ function buildS10BonereaperCloneOrder(
         : direction === "up"
           ? fairUpForGuard
           : 100 - fairUpForGuard;
-    const otherNotional =
-      direction === "up" ? owned.downNotional : owned.upNotional;
     const currentDominance =
       currentNotional / Math.max(baseAmount, otherNotional);
     const directionNotionalLead = currentNotional - otherNotional;
@@ -7659,11 +11019,14 @@ function buildS10BonereaperCloneOrder(
       currentDominance > 1.45;
     const strongDirectionalAdd =
       (kind === "signal" || kind === "market") &&
-      profile.direction === direction &&
-      (profile.tier === "conviction" ||
-        profile.tier === "sweep" ||
-        profile.tier === "terminal" ||
-        (profile.absDiff >= 36 && bookBias.leadPct >= 55));
+      ((profile.direction === direction &&
+        (candidateTier === "conviction" ||
+          candidateTier === "sweep" ||
+          candidateTier === "terminal" ||
+          progressChase ||
+          terminalBurstSweep ||
+          (profile.absDiff >= 36 && bookBias.leadPct >= 55))) ||
+        guideTailConfirmedForDirection);
     const weakHighMarket =
       kind === "market" &&
       !strongDirectionalAdd &&
@@ -7679,50 +11042,44 @@ function buildS10BonereaperCloneOrder(
       !strongDirectionalAdd &&
       currentNotional < baseAmount * 5 &&
       ask > 0.58;
-    const avgGuardCap = reverseRescue
-      ? Infinity
-      : weakHighMarket || avgWorseningHigh
-        ? baseAmount * (ctx.rem > 180 ? 0.45 : 0.75)
-        : openingHighMarket
-          ? baseAmount * 0.5
-          : Infinity;
+    const avgGuardCap =
+      reverseRescue ||
+      lateChaseForDirection ||
+      progressChase ||
+      terminalBurstSweep ||
+      guideTailConfirmedForDirection
+        ? Infinity
+        : weakHighMarket || avgWorseningHigh
+          ? baseAmount * (ctx.rem > 180 ? 0.45 : 0.75)
+          : openingHighMarket
+            ? baseAmount * 0.5
+            : Infinity;
     const highPriceDirectional =
       (kind === "signal" || kind === "market") && ask >= 0.95;
     const oppositePnlNow =
       (direction === "up" ? owned.downShares : owned.upShares) -
       owned.totalNotional;
-    const highPriceRiskBudgetPct =
-      profile.tier === "terminal"
-        ? 0.45
-        : profile.tier === "sweep"
-          ? 0.36
-          : profile.tier === "conviction"
-            ? 0.3
-            : 0.22;
-    const highPriceRiskCap =
-      highPriceDirectional
-        ? Math.max(
-            0,
-            owned.totalNotional * highPriceRiskBudgetPct +
-              baseAmount * 4 +
-              oppositePnlNow,
-          )
-        : Infinity;
     const terminalDirectional =
-      (kind === "signal" || kind === "market") && profile.tier === "terminal";
+      (kind === "signal" || kind === "market") && candidateTier === "terminal";
+    const bookLedTailSweepForDirection =
+      directionalLargeCandidate &&
+      bookLedTailSweep &&
+      bookBias.direction === direction &&
+      (candidateTier === "sweep" || candidateTier === "terminal");
     const terminalRiskConfirmed =
       terminalDirectional &&
-      profile.absDiff >= 36 &&
-      bookBias.leadPct >= 65 &&
-      (bookBias.direction == null || direction === bookBias.direction);
+      ((profile.absDiff >= 36 &&
+        bookBias.leadPct >= 65 &&
+        (bookBias.direction == null || direction === bookBias.direction)) ||
+        bookLedTailSweepForDirection);
     const oppositeSharesIfWrong =
       direction === "up" ? owned.downShares : owned.upShares;
     const terminalWrongSideLossBudget =
       terminalRiskConfirmed
-        ? baseAmount * 8
+        ? baseAmount * S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_BAD_LOSS_MULT
         : profile.absDiff >= 28 && bookBias.leadPct >= 45
-          ? baseAmount * 4
-          : baseAmount * 1.5;
+          ? baseAmount * S10_BONEREAPER_CLONE_TERMINAL_PARTIAL_BAD_LOSS_MULT
+          : baseAmount * S10_BONEREAPER_CLONE_TERMINAL_WEAK_BAD_LOSS_MULT;
     const terminalWrongSideRiskCap =
       terminalDirectional
         ? Math.max(
@@ -7753,9 +11110,102 @@ function buildS10BonereaperCloneOrder(
       bookConfirmsDirection &&
       ((directionDiffConfirmed && directionFairConfirmed) ||
         directionTerminalCertainty);
-    const directionalLargeCandidate = kind === "signal" || kind === "market";
+    const bookLedSweepHardConfirmed =
+      bookLedTailSweepForDirection &&
+      directionFairConfirmed &&
+      (directionDiffConfirmed ||
+        (ctx.rem <= S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC &&
+          profile.direction === direction &&
+          profile.absDiff >= 18 &&
+          bookBias.leadPct >=
+            Math.max(
+              S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_LEAD_PCT,
+              bookBias.leadNeed,
+            ) &&
+          bookBias.qualityScore * 100 >=
+            S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_QUALITY_PCT));
+    const bookLedSweepSoftCap =
+      bookLedTailSweepForDirection && !bookLedSweepHardConfirmed
+        ? Math.max(
+            0,
+            baseAmount * S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_WINDOW_MULT -
+              currentNotional,
+          )
+        : Infinity;
+    const bookLedSweepSoftOrderCap =
+      bookLedTailSweepForDirection && !bookLedSweepHardConfirmed
+        ? baseAmount * S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_ORDER_MULT
+        : Infinity;
+    const strongHighPriceSweepConfirmed =
+      highPriceDirectional &&
+      candidateTier === "sweep" &&
+      profile.direction === direction &&
+      bookBias.direction === direction &&
+      directionDiffConfirmed &&
+      directionFairConfirmed &&
+      bookBias.leadPct >=
+        S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_LEAD_PCT &&
+      profile.absDiff >=
+        S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_DIFF;
+    const strongHighPriceTerminalConfirmed =
+      highPriceDirectional &&
+      candidateTier === "terminal" &&
+      profile.direction === direction &&
+      bookBias.direction === direction &&
+      directionDiffConfirmed &&
+      directionFairConfirmed &&
+      bookBias.leadPct >=
+        S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_LEAD_PCT &&
+      profile.absDiff >=
+        S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_DIFF;
+    const strongHighPriceConfirmed =
+      strongHighPriceSweepConfirmed || strongHighPriceTerminalConfirmed;
+    const strongHighPriceBadLossMult = strongHighPriceTerminalConfirmed
+      ? S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_BAD_LOSS_MULT
+      : strongHighPriceSweepConfirmed
+        ? S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_BAD_LOSS_MULT
+        : 0;
+    const legacyHighPriceRiskBudgetPct =
+      candidateTier === "terminal"
+        ? 0.45
+        : candidateTier === "sweep"
+          ? 0.36
+          : candidateTier === "conviction"
+            ? 0.3
+            : 0.22;
+    const legacyHighPriceRiskCap =
+      owned.totalNotional * legacyHighPriceRiskBudgetPct +
+      baseAmount * 4 +
+      oppositePnlNow;
+    const strongHighPriceRiskCap =
+      strongHighPriceConfirmed
+        ? oppositeSharesIfWrong +
+          baseAmount * strongHighPriceBadLossMult -
+          owned.totalNotional
+        : 0;
+    const highPriceRiskCap = highPriceDirectional && !terminalBurstSweep
+      ? Math.max(
+          0,
+          strongHighPriceConfirmed
+            ? Math.max(legacyHighPriceRiskCap, strongHighPriceRiskCap)
+            : legacyHighPriceRiskCap,
+        )
+      : Infinity;
+    const effectiveTerminalWrongSideRiskCap =
+      terminalBurstSweep
+        ? Infinity
+        : strongHighPriceTerminalConfirmed
+        ? Math.max(terminalWrongSideRiskCap, highPriceRiskCap)
+        : terminalWrongSideRiskCap;
     const weakCertaintyOrderCap =
-      directionalLargeCandidate && !directionNonBookCertainty
+      directionalLargeCandidate &&
+      !directionNonBookCertainty &&
+      !bookLedTailSweepForDirection &&
+      !progressChase &&
+      !terminalBurstSweep &&
+      !guideInventoryFollowForDirection &&
+      !guideTailConfirmedForDirection &&
+      !lateChaseForDirection
         ? baseAmount *
           (kind === "signal" && profile.triggered
             ? ctx.rem <= 90
@@ -7763,9 +11213,45 @@ function buildS10BonereaperCloneOrder(
               : 0.8
             : 0.55)
         : Infinity;
+    const tailDirectionalNeedsBook =
+      directionalLargeCandidate &&
+      (profile.triggered ||
+        lateChaseForDirection ||
+        bookLedTailSweepForDirection ||
+        terminalBurstSweep) &&
+      (profile.direction === direction ||
+        lateChaseForDirection ||
+        bookLedTailSweepForDirection ||
+        terminalBurstSweep) &&
+      (candidateTier === "sweep" ||
+        candidateTier === "terminal" ||
+        terminalBurstSweep ||
+        ctx.rem <= S10_BONEREAPER_CLONE_SWEEP_START_REMAINING_SEC);
+    const tailDirectionalBookConfirmed =
+      !tailDirectionalNeedsBook ||
+      (bookBias.triggered &&
+        bookBias.direction === direction &&
+        bookBias.leadPct >= Math.max(bookBias.leadNeed, tailBookLeadNeed));
+    const opposingBookBlock =
+      directionalLargeCandidate &&
+      bookBias.triggered &&
+      bookBias.direction != null &&
+      direction !== bookBias.direction &&
+      bookBias.leadPct >= Math.max(bookBias.leadNeed, opposingBookBlockLeadNeed);
+    const tailBookUnconfirmedBlock =
+      tailDirectionalNeedsBook &&
+      !tailDirectionalBookConfirmed &&
+      !terminalBurstSweep &&
+      !guideTailConfirmedForDirection;
+    const directionalBookBlock = opposingBookBlock || tailBookUnconfirmedBlock;
     const signalAllowed =
       kind !== "signal" ||
-      (profile.triggered && direction === profile.direction);
+      (profile.triggered && direction === profile.direction) ||
+      progressChase ||
+      terminalBurstSweep ||
+      guideInventoryFollowForDirection ||
+      guideTailConfirmedForDirection ||
+      lateChaseForDirection;
     const dominantDirection: StrategyDirection | null =
       owned.upNotional > owned.downNotional + baseAmount
         ? "up"
@@ -7798,19 +11284,79 @@ function buildS10BonereaperCloneOrder(
       kind === "market" &&
       bookBias.triggered &&
       direction === bookBias.direction &&
-      !marketBiasTrusted;
+      !marketBiasTrusted &&
+      !progressChase &&
+      !terminalBurstSweep &&
+      !guideInventoryFollowForDirection &&
+      !guideTailConfirmedForDirection &&
+      !lateChaseForDirection;
+    const terminalLikeDirectional =
+      directionalLargeCandidate &&
+      (candidateTier === "sweep" ||
+        candidateTier === "terminal" ||
+        terminalBurstSweep ||
+        lateChaseForDirection ||
+        bookLedTailSweepForDirection);
+    const bookLedHardProtected =
+      bookLedSweepHardConfirmed &&
+      dualInventoryCoverage >=
+        S10_BONEREAPER_CLONE_TERMINAL_DUAL_MIN_COVERAGE * 0.5;
+    const terminalHardProtected =
+      terminalCertainty ||
+      bookLedHardProtected ||
+      strongHighPriceConfirmed ||
+      terminalBurstSweep ||
+      guideTailConfirmedForDirection;
+    const terminalDualProtected =
+      !S10_BONEREAPER_CLONE_TERMINAL_REQUIRE_DUAL_PROTECTION ||
+      !terminalLikeDirectional ||
+      dualInventoryCoverage >=
+        S10_BONEREAPER_CLONE_TERMINAL_DUAL_MIN_COVERAGE ||
+      terminalHardProtected;
+    const terminalUnprotectedDirectional =
+      terminalLikeDirectional && !terminalDualProtected;
+    const terminalUnprotectedOrderCap = terminalUnprotectedDirectional
+      ? baseAmount * S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_ORDER_MULT
+      : Infinity;
+    const terminalUnprotectedHighPriceBlock =
+      terminalUnprotectedDirectional &&
+      ask > S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_MAX_ASK_PCT / 100;
     const marketAllowed =
       kind !== "market" ||
-      (marketBiasTrusted &&
-        direction === bookBias.direction &&
-        flipAllowed &&
-        !highPriceLowEdge &&
-        ask <= maxPrice + 1e-9);
+      ((marketBiasTrusted &&
+          direction === bookBias.direction &&
+          flipAllowed &&
+          !terminalUnprotectedHighPriceBlock &&
+          !highPriceLowEdge &&
+          ask <= maxPrice + 1e-9) ||
+        ((progressChase || lateChaseForDirection) &&
+          flipAllowed &&
+          !terminalUnprotectedHighPriceBlock &&
+          !highPriceLowEdge &&
+          ask <= maxPrice + 1e-9) ||
+        (terminalBurstSweep &&
+          flipAllowed &&
+          !terminalUnprotectedHighPriceBlock &&
+          !highPriceLowEdge &&
+          ask <= maxPrice + 1e-9) ||
+        (guideInventoryFollowForDirection &&
+          flipAllowed &&
+          !terminalUnprotectedHighPriceBlock &&
+          !highPriceLowEdge &&
+          ask <= maxPrice + 1e-9) ||
+        (guideTailConfirmedForDirection &&
+          flipAllowed &&
+          !terminalUnprotectedHighPriceBlock &&
+          !highPriceLowEdge &&
+          ask <= maxPrice + 1e-9));
     const pairAllowed =
       kind !== "pair" ||
-      ((owned.totalNotional >= baseAmount * 2.5 &&
-        pairLimitPrice != null &&
-        pairMissingShares > 1));
+      (effectivePairLimitPrice != null &&
+        pairMissingShares > 1 &&
+        (fastHedgePairRepair ||
+          dualInsurancePairRepair ||
+          owned.totalNotional >= baseAmount * 2.5 ||
+          (cheapEarlyPairRepair && owned.totalNotional >= baseAmount * 0.35)));
     const probeAllowed =
       kind !== "probe" ||
       (!profile.triggered &&
@@ -7821,60 +11367,378 @@ function buildS10BonereaperCloneOrder(
         used < baseAmount * 8);
     const riskGateBase = marketConfirmationBlock
       ? "market-unconfirmed"
-      : directionalLargeCandidate && !directionNonBookCertainty
+      : opposingBookBlock
+        ? "opposing-book"
+      : tailBookUnconfirmedBlock
+        ? "tail-book-unconfirmed"
+      : directionalLargeCandidate &&
+          !directionNonBookCertainty &&
+          !bookLedTailSweepForDirection &&
+          !progressChase &&
+          !terminalBurstSweep &&
+          !guideTailConfirmedForDirection &&
+          !lateChaseForDirection
         ? "direction-certainty-lite"
       : highPriceLowEdge
         ? "high-price-low-edge"
+        : terminalUnprotectedHighPriceBlock
+          ? "terminal-unprotected-high"
         : highPriceFlip && !flipAllowed
-          ? "flip-block"
+        ? "flip-block"
           : null;
+    const tailCertainSweepBypass =
+      terminalBurstSweep ||
+      (directionalLargeCandidate &&
+      terminalDualProtected &&
+      (profile.direction === direction ||
+        lateChaseForDirection ||
+        bookLedSweepHardConfirmed) &&
+      (candidateTier === "sweep" || candidateTier === "terminal") &&
+      ctx.rem <= S10_BONEREAPER_CLONE_PROJECTED_RELAX_MAX_REMAINING_SEC &&
+      (directionNonBookCertainty ||
+        bookLedSweepHardConfirmed ||
+        (lateChaseForDirection && lateChaseEvidenceCount >= 3)) &&
+      tailDirectionalBookConfirmed &&
+      bookBias.direction === direction &&
+      bookBias.leadPct >=
+        (bookLedSweepHardConfirmed
+          ? Math.max(
+              bookBias.leadNeed,
+              S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_LEAD_PCT,
+            )
+          : candidateTier === "terminal"
+            ? S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_LEAD_PCT
+            : S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_LEAD_PCT) &&
+      (bookLedSweepHardConfirmed ||
+        profile.absDiff >=
+          (candidateTier === "terminal"
+            ? S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_DIFF
+            : S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_DIFF)));
+    const midHighPriceCap =
+      S10_BONEREAPER_CLONE_MID_HIGH_PRICE_GUARD_ENABLED &&
+      directionalLargeCandidate &&
+      !reverseRescue &&
+      !tailCertainSweepBypass &&
+      !lateChaseForDirection &&
+      !terminalBurstSweep &&
+      ctx.rem > S10_BONEREAPER_CLONE_MID_HIGH_PRICE_MIN_REMAINING_SEC &&
+      ask >= S10_BONEREAPER_CLONE_MID_HIGH_PRICE_ASK_PCT / 100
+        ? baseAmount *
+          (ask >= S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_ASK_PCT / 100
+            ? S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_CAP_MULT
+            : S10_BONEREAPER_CLONE_MID_HIGH_PRICE_CAP_MULT)
+        : Infinity;
     const rawAmount =
       signalAllowed &&
       marketAllowed &&
+      !directionalBookBlock &&
       pairAllowed &&
-      probeAllowed
+      probeAllowed &&
+      (kind !== "lottery" || lotteryBudget > 0)
         ? Math.min(
             notionalGap,
-            kind === "pair" ? pairRepairBudget : budgetGap,
-            orderCap,
+            kind === "pair"
+              ? pairRepairBudget
+              : kind === "lottery"
+                ? lotteryBudget
+                : Math.max(budgetGap, progressChaseBudget, lateChaseOrderCap),
+            candidateOrderCap,
             sliceCap,
-            remainingWindow,
+            candidateRemainingWindow,
             shallowAvailable,
             flipCap,
             highPriceRiskCap,
-            terminalWrongSideRiskCap,
+            effectiveTerminalWrongSideRiskCap,
+            terminalUnprotectedOrderCap,
+            midHighPriceCap,
             avgGuardCap,
             reverseRescueCap,
             weakCertaintyOrderCap,
+            bookLedSweepSoftCap,
+            bookLedSweepSoftOrderCap,
           )
         : 0;
     const terminalStrongProjectedRelax =
-      rawAmount > 0 &&
-      (kind === "signal" || kind === "market") &&
-      profile.direction === direction &&
-      ctx.rem <= 120 &&
-      (profile.tier === "terminal" ||
-        profile.tier === "sweep" ||
-        (profile.tier === "conviction" && profile.absDiff >= 55)) &&
-      profile.absDiff >= (ctx.rem <= 60 ? 26 : 45) &&
+      terminalBurstSweep ||
+      (rawAmount > 0 &&
+      directionalLargeCandidate &&
+      (profile.direction === direction ||
+        lateChaseForDirection ||
+        bookLedSweepHardConfirmed) &&
+      ctx.rem <= S10_BONEREAPER_CLONE_PROJECTED_RELAX_MAX_REMAINING_SEC &&
+      (candidateTier === "terminal" ||
+        candidateTier === "sweep" ||
+        (candidateTier === "conviction" && profile.absDiff >= 55) ||
+        lateChaseForDirection ||
+        bookLedSweepHardConfirmed) &&
+      (bookLedSweepHardConfirmed ||
+        profile.absDiff >=
+          (lateChaseForDirection
+            ? lateTerminalChaseForDirection
+              ? S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_MIN_DIFF
+              : S10_BONEREAPER_CLONE_LATE_CHASE_MIN_DIFF
+            : ctx.rem <= 60
+              ? 26
+              : 45)) &&
       (bookBias.direction == null || bookBias.direction === direction) &&
-      bookBias.leadPct >= (ctx.rem <= 60 ? 65 : 58);
-    const projectedPairCostLimit = reverseRescue
-      ? S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX
-      : terminalStrongProjectedRelax
-        ? S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX
-        : S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX;
-    const projectedBadLossMultiplier = reverseRescue
-      ? S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT
-      : terminalStrongProjectedRelax
+      bookBias.leadPct >=
+        (bookLedSweepHardConfirmed
+          ? Math.max(
+              bookBias.leadNeed,
+              S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_LEAD_PCT,
+            )
+          : lateChaseForDirection
+          ? Math.max(
+              bookBias.leadNeed,
+              S10_BONEREAPER_CLONE_LATE_CHASE_MIN_BOOK_LEAD_PCT,
+            )
+          : ctx.rem <= 60
+            ? 65
+            : 58));
+    const terminalScalpSweep =
+      terminalBurstSweep ||
+      (S10_BONEREAPER_CLONE_TERMINAL_SCALP_SWEEP_ENABLED &&
+      rawAmount > 0 &&
+      directionalLargeCandidate &&
+      (candidateTier === "terminal" || guideTailConfirmedForDirection) &&
+      ask >= S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ASK_PCT / 100 &&
+      ctx.rem <=
+        (guideTailConfirmedForDirection
+          ? Math.max(
+              S10_BONEREAPER_CLONE_TERMINAL_SCALP_MAX_REMAINING_SEC,
+              S10_BONEREAPER_CLONE_GUIDE_SWEEP_MAX_REMAINING_SEC,
+            )
+          : S10_BONEREAPER_CLONE_TERMINAL_SCALP_MAX_REMAINING_SEC) &&
+      terminalDualProtected &&
+      (tailDirectionalBookConfirmed || guideTailConfirmedForDirection) &&
+      !opposingBookBlock &&
+      ((profile.direction === direction &&
+        fairDirection === direction &&
+        bookBias.direction === direction &&
+        (terminalCertainty ||
+          strongHighPriceTerminalConfirmed ||
+          (directionNonBookCertainty &&
+            directionDiffConfirmed &&
+            directionFairConfirmed &&
+            protectedSweepBookEvidence &&
+            bookBias.leadPct >=
+              S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_LEAD_PCT &&
+            profile.absDiff >=
+              S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_DIFF &&
+            fairEdgePct >=
+              S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_FAIR_EDGE_PCT))) ||
+        (guideTailConfirmedForDirection &&
+          guideTailEvidenceCount >= 4 &&
+          (profile.direction === direction ||
+            fairDirection === direction ||
+            bookBias.direction === direction ||
+            bonereaperGuide.lastDirection === direction))));
+    const lateChaseWorstLossBypass =
+      lateTerminalChaseForDirection &&
+      lateChaseEvidenceCount >= 3 &&
+      tailDirectionalBookConfirmed &&
+      terminalDualProtected &&
+      terminalStrongProjectedRelax;
+    const terminalSweepWorstLossBypass =
+      terminalScalpSweep ||
+      ((tailCertainSweepBypass || lateChaseWorstLossBypass) &&
+        terminalStrongProjectedRelax);
+    const terminalSweepPairCostBypass =
+      directionalLargeCandidate && terminalSweepWorstLossBypass;
+    const projectedPairCostLimit =
+      terminalBurstSweep
+        ? S10_BONEREAPER_CLONE_TERMINAL_BURST_PAIR_COST_MAX
+        : terminalSweepPairCostBypass
+        ? 2
+        : kind === "lottery"
+        ? S10_BONEREAPER_CLONE_LOTTERY_PROJECTED_PAIR_COST_MAX
+        : reverseRescue
+          ? S10_BONEREAPER_CLONE_RESCUE_PROJECTED_PAIR_COST_MAX
+          : fastHedgePairRepair
+            ? Math.min(
+                S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX,
+                S10_BONEREAPER_CLONE_FAST_HEDGE_PAIR_COST_MAX,
+              )
+            : dualInsurancePairRepair
+              ? dynamicPairCostLimit
+            : protectedDualSweep
+              ? Math.max(
+                  S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX,
+                  S10_BONEREAPER_CLONE_PROTECTED_SWEEP_PAIR_COST_MAX,
+                )
+            : progressChase
+              ? S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX
+            : terminalStrongProjectedRelax
+              ? S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX
+              : S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX;
+    const projectedBadLossMultiplier =
+      kind === "lottery"
         ? S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT
-        : S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT;
+        : reverseRescue
+          ? S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT
+          : terminalBurstSweep
+            ? S10_BONEREAPER_CLONE_TERMINAL_BURST_BAD_LOSS_MULT
+          : strongHighPriceConfirmed
+            ? Math.max(
+                S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT,
+                strongHighPriceBadLossMult,
+              )
+            : terminalScalpSweep
+              ? S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT
+            : progressChase
+              ? Math.max(
+                  S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT,
+                  S10_BONEREAPER_CLONE_PROGRESS_CHASE_BAD_LOSS_MULT,
+                )
+            : protectedDualSweep
+              ? Math.max(
+                  S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT,
+                  S10_BONEREAPER_CLONE_PROTECTED_SWEEP_BAD_LOSS_MULT,
+                )
+            : terminalStrongProjectedRelax
+              ? S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT
+              : S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT;
     const projectedFill = getS10BonereaperCloneAskFillPreview(
       ctx,
       direction,
       maxPrice,
       rawAmount,
     );
+    const projectedFee =
+      projectedFill.complete && projectedFill.avgPrice != null
+        ? calcPolymarketFee(
+            "buy",
+            projectedFill.shares,
+            projectedFill.avgPrice,
+            "strategy10bonereaper",
+          )
+        : 0;
+    const currentBestDirection: StrategyDirection =
+      upWinPnlNow >= downWinPnlNow ? "up" : "down";
+    const pairStructureRepair =
+      kind === "pair" &&
+      (fastHedgePairRepair ||
+        dualInsurancePairRepair ||
+        cheapEarlyPairRepair ||
+        bookConflictPairRepair ||
+        pnlPairRepair ||
+        (pairCost != null && pairCost <= dynamicPairCostLimit + 1e-9));
+    const positiveEdgePairRepair =
+      pairStructureRepair && pairCost != null && pairCost <= 1.005;
+    const protectedDirection: StrategyDirection | null =
+      kind === "lottery" || pairStructureRepair
+        ? currentBestDirection
+        : (effectiveMainDirection ?? profile.direction ?? bookBias.direction ??
+          currentBestDirection);
+    const highPriceProfitFloor =
+      (kind === "signal" || kind === "market") && ask >= 0.85
+        ? baseAmount * S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_HIGH_PRICE_MULT
+        : 0;
+    const projectedNetCost =
+      owned.totalNotional + owned.totalFees + projectedFill.notional + projectedFee;
+    const defaultMinProtectedWinProfit = Math.max(
+      baseAmount * S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_MULT,
+      highPriceProfitFloor,
+      projectedNetCost * S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_COST_PCT,
+    );
+    const terminalScalpMinProtectedWinProfit = Math.max(
+      baseAmount * S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_PROFIT_MULT,
+      projectedNetCost * S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ROI_PCT,
+    );
+    const terminalBurstMinProtectedWinProfit = Math.min(
+      defaultMinProtectedWinProfit,
+      Math.max(
+        baseAmount * S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_PROFIT_MULT,
+        projectedNetCost * S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ROI_PCT,
+      ),
+    );
+    const guideFollowMinProtectedWinProfit = Math.min(
+      defaultMinProtectedWinProfit,
+      Math.max(baseAmount * 0.05, projectedNetCost * 0.0035),
+    );
+    const bestNetPnlNow = bestWinPnlNow - owned.totalFees;
+    const cheapRiskCompression =
+      S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_ENABLED &&
+      dualInsurancePairRepair &&
+      ask <= S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MAX_ASK_PCT / 100 &&
+      worstWinPnlNow <=
+        -baseAmount *
+          S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_WORST_LOSS_MULT;
+    const fastHedgeMinProtectedWinProfit = Math.min(
+      defaultMinProtectedWinProfit,
+      Math.max(0, bestNetPnlNow * S10_BONEREAPER_CLONE_FAST_HEDGE_RETAIN_PROFIT_PCT),
+      baseAmount * S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_RETAIN_PROFIT_MULT,
+    );
+    const dualInsuranceMinProtectedWinProfit = cheapRiskCompression
+      ? baseAmount *
+        S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_PROTECTED_MULT
+      : Math.min(
+          defaultMinProtectedWinProfit,
+          Math.max(
+            baseAmount *
+              S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_RETAIN_PROFIT_MULT,
+            bestNetPnlNow *
+              S10_BONEREAPER_CLONE_DUAL_INSURANCE_RETAIN_PROFIT_PCT -
+              baseAmount * 0.2,
+          ),
+          baseAmount * 0.1,
+        );
+    const progressChaseMinProtectedWinProfit = Math.min(
+      defaultMinProtectedWinProfit,
+      Math.max(-baseAmount * 0.75, worstWinPnlNow + baseAmount * 0.25),
+    );
+    const positiveEdgePairMinProtectedWinProfit = Math.min(
+      defaultMinProtectedWinProfit,
+      Math.max(0, bestNetPnlNow * 0.01),
+    );
+    const minProtectedWinProfit = positiveEdgePairRepair
+      ? positiveEdgePairMinProtectedWinProfit
+      : fastHedgePairRepair
+      ? fastHedgeMinProtectedWinProfit
+      : dualInsurancePairRepair
+        ? dualInsuranceMinProtectedWinProfit
+      : terminalBurstSweep
+        ? terminalBurstMinProtectedWinProfit
+      : terminalScalpSweep
+        ? Math.min(
+            defaultMinProtectedWinProfit,
+            terminalScalpMinProtectedWinProfit,
+          )
+      : guideInventoryFollowForDirection
+        ? guideFollowMinProtectedWinProfit
+      : progressChase
+        ? progressChaseMinProtectedWinProfit
+      : defaultMinProtectedWinProfit;
+    const requireProtectedWinProfit =
+      rawAmount > 0 &&
+      kind !== "probe" &&
+      (kind === "pair" ||
+        kind === "lottery" ||
+        candidateTier === "sweep" ||
+        candidateTier === "terminal" ||
+        progressChase ||
+        ctx.rem <= 90 ||
+        ask >= S10_BONEREAPER_CLONE_PROFIT_FLOOR_ASK_PCT / 100 ||
+        owned.totalNotional + rawAmount >=
+          baseAmount * S10_BONEREAPER_CLONE_PROFIT_FLOOR_POSITION_MULT);
+    const applyGlobalWorstLossGuard =
+      S10_BONEREAPER_CLONE_WORST_LOSS_GUARD_ENABLED &&
+      rawAmount > 0 &&
+      directionalLargeCandidate &&
+      !reverseRescue &&
+      !terminalSweepWorstLossBypass;
+    const globalMaxWorstLoss = applyGlobalWorstLossGuard
+      ? baseAmount *
+        (protectedDualSweep
+          ? S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_MULT
+          : S10_BONEREAPER_CLONE_MAX_WORST_LOSS_MULT)
+      : undefined;
+    const globalMaxWorstLossIncrease = applyGlobalWorstLossGuard
+      ? baseAmount *
+        (protectedDualSweep
+          ? S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_INCREASE_MULT
+          : S10_BONEREAPER_CLONE_MAX_WORST_LOSS_INCREASE_MULT)
+      : undefined;
     const projectedPnl = getS10BonereaperCloneProjectedPnlGuard({
       owned,
       direction,
@@ -7884,10 +11748,21 @@ function buildS10BonereaperCloneOrder(
       baseAmount,
       pairCostLimit: projectedPairCostLimit,
       badLossMultiplier: projectedBadLossMultiplier,
-      maxWorstLoss: reverseRescue ? rescueMaxWorstLoss : undefined,
+      additionalFee: projectedFee,
+      protectedDirection,
+      minProtectedWinProfit,
+      requireProtectedWinProfit,
+      maxWorstLoss: reverseRescue
+        ? rescueMaxWorstLoss
+        : progressChase
+          ? baseAmount * S10_BONEREAPER_CLONE_PROGRESS_CHASE_BAD_LOSS_MULT
+          : globalMaxWorstLoss,
       maxWorstLossIncrease: reverseRescue
         ? rescueMaxWorstLossIncrease
-        : undefined,
+        : progressChase
+          ? baseAmount *
+            S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_WORST_LOSS_INCREASE_MULT
+          : globalMaxWorstLossIncrease,
     });
     const projectedRiskGate =
       rawAmount > 0 && projectedPnl.blocked ? projectedPnl.reason : null;
@@ -7896,24 +11771,108 @@ function buildS10BonereaperCloneOrder(
       ask,
       maxPrice,
       kind,
+      tier: candidateTier,
       notionalGap,
       available,
       coverageTarget,
       pairMissingShares,
+      pairLimitPrice,
+      effectivePairLimitPrice,
+      fastHedgePairRepair,
+      fastHedgePairLimitPrice,
+      fastHedgeTimeWindow,
+      fastHedgePairCostOk,
+      fastHedgeMinProtectedWinProfit,
+      pairStructureRepair,
+      positiveEdgePairRepair,
+      dynamicPairCostLimit,
+      dualInsurancePairRepair,
+      dualInsuranceBaseCandidate,
+      dualInsuranceStrong,
+      dualInsuranceCoverageTarget,
+      dualInsuranceWindow,
+      cheapRiskCompression,
+      dualInventoryCoverage,
+      inventoryTailDirection,
+      terminalDualProtected,
+      terminalUnprotectedDirectional,
+      terminalUnprotectedOrderCap,
+      terminalUnprotectedHighPriceBlock,
       highPriceRiskCap,
-      terminalWrongSideRiskCap,
+      strongHighPriceConfirmed,
+      strongHighPriceBadLossMult,
+      terminalWrongSideRiskCap: effectiveTerminalWrongSideRiskCap,
+      legacyTerminalWrongSideRiskCap: terminalWrongSideRiskCap,
       clearlyHeavyDirection,
       nearNeutralDiff,
       neutralMainDiffLimit,
       directionNotionalLead,
       currentDominance,
+      candidateOrderCap,
+      candidateRemainingWindow,
+      lateChaseForDirection,
+      lateTerminalChaseForDirection,
+      lateChaseOrderCap,
+      lateChaseEvidenceCount,
+      guideInventoryFollowForDirection,
+      guideTailConfirmedForDirection,
+      guideTailEvidenceCount,
+      guideChaseBudget,
+      guideChaseGap,
+      protectedDualSweep,
+      protectedSweepBudget,
+      protectedSweepEvidenceCount,
+      protectedSweepDiffEvidence,
+      protectedSweepFairEvidence,
+      protectedSweepBookEvidence,
+      protectedSweepOpposingBook,
+      terminalBurstSweep,
+      terminalBurstBudget,
+      terminalBurstRemainingBudget,
+      terminalBurstSliceBudget,
+      terminalBurstEvidenceCount,
+      terminalBurstDiffEvidence,
+      terminalBurstFairEvidence,
+      terminalBurstBookEvidence,
+      terminalBurstGuideEvidence,
+      terminalBurstOpposingBook,
+      terminalScalpSweep,
+      progressChase,
+      progressChaseStrong,
+      progressChaseEvidenceCount,
+      progressChaseBudget,
+      progressChaseCoverage,
+      progressChaseMissingShares,
+      progressChaseDiffEvidence,
+      progressChaseBookEvidence,
+      progressChaseFairEvidence,
+      lotteryBudget,
+      lotteryExtreme,
+      lotteryProfitRoom,
+      lotteryBookEvidence,
+      lotteryDiffEvidence,
+      lotteryFairEvidence,
+      lotteryCheap,
       marketConfirmationBlock,
+      opposingBookBlock,
+      tailDirectionalNeedsBook,
+      tailDirectionalBookConfirmed,
+      tailBookUnconfirmedBlock,
+      directionalBookBlock,
       riskGate: riskGateBase ?? projectedRiskGate,
       amount: projectedPnl.blocked ? 0 : rawAmount,
       rawAmount,
       projectedPnl,
       projectedPairCostLimit,
       terminalStrongProjectedRelax,
+      terminalSweepWorstLossBypass,
+      terminalSweepPairCostBypass,
+      tailCertainSweepBypass,
+      bookLedTailSweepForDirection,
+      bookLedSweepHardConfirmed,
+      bookLedSweepSoftCap,
+      bookLedSweepSoftOrderCap,
+      globalWorstLossGuard: applyGlobalWorstLossGuard,
       directionNonBookCertainty,
       directionDiffConfirmed,
       directionFairConfirmed,
@@ -7924,8 +11883,14 @@ function buildS10BonereaperCloneOrder(
       rescueMaxWorstLoss,
       rescueMaxWorstLossIncrease,
       sliceCap,
+      midHighPriceCap,
       avgGuardCap,
       pairRepairBudget,
+      cheapEarlyPairRepair,
+      bookConflictPairRepair,
+      pnlPairRepair,
+      pairWorstLossBudget,
+      pairCost,
       directionAvg,
       depthLevels,
       depthPriceLift,
@@ -7953,8 +11918,32 @@ function buildS10BonereaperCloneOrder(
           ),
         ]
       : []),
+    ...(bonereaperGuide.tailDirection
+      ? [
+          makeCandidate(
+            bonereaperGuide.tailDirection,
+            bonereaperGuide.tailDirection === "up" ? upAsk : downAsk,
+            "market",
+          ),
+        ]
+      : []),
+    ...(bonereaperGuide.lastDirection &&
+    bonereaperGuide.lastDirection !== bonereaperGuide.tailDirection
+      ? [
+          makeCandidate(
+            bonereaperGuide.lastDirection,
+            bonereaperGuide.lastDirection === "up" ? upAsk : downAsk,
+            "market",
+          ),
+        ]
+      : []),
     makeCandidate("up", upAsk, "pair"),
     makeCandidate("down", downAsk, "pair"),
+    makeCandidate(
+      worstOutcomeDirection,
+      worstOutcomeDirection === "up" ? upAsk : downAsk,
+      "lottery",
+    ),
     ...(profile.direction
       ? [
           makeCandidate(
@@ -7966,18 +11955,28 @@ function buildS10BonereaperCloneOrder(
       : []),
   ].sort((a, b) => {
     const rank = (candidate: {
-      kind: "signal" | "market" | "pair" | "probe";
+      kind: "signal" | "market" | "pair" | "probe" | "lottery";
+      tier: "none" | "probe" | "conviction" | "sweep" | "terminal";
       pairMissingShares: number;
-    }) =>
-      candidate.kind === "pair" && candidate.pairMissingShares > 5
-        ? 4
-        : candidate.kind === "signal"
-          ? 3
-          : candidate.kind === "market"
-            ? 2
-            : candidate.kind === "probe"
-              ? 1
-              : 0;
+      fastHedgePairRepair?: boolean;
+      dualInsurancePairRepair?: boolean;
+      terminalBurstSweep?: boolean;
+    }) => {
+      const directional =
+        candidate.kind === "signal" || candidate.kind === "market";
+      if (directional && candidate.terminalBurstSweep) return 10;
+      if (directional && candidate.tier === "terminal") return 9;
+      if (directional && candidate.tier === "sweep") return 8;
+      if (directional && candidate.tier === "conviction") return 5;
+      if (candidate.kind === "pair" && candidate.dualInsurancePairRepair) return 4.6;
+      if (candidate.kind === "pair" && candidate.fastHedgePairRepair) return 4;
+      if (candidate.kind === "pair" && candidate.pairMissingShares > 5) return 3.5;
+      if (candidate.kind === "lottery") return 3;
+      if (candidate.kind === "signal") return 2.5;
+      if (candidate.kind === "market") return 2;
+      if (candidate.kind === "probe") return 1;
+      return 0;
+    };
     return (
       rank(b) - rank(a) ||
       b.amount - a.amount ||
@@ -8004,6 +12003,14 @@ function buildS10BonereaperCloneOrder(
     signalThreshold: round4(profile.threshold),
     signalConsistencyPct: round4(profile.consistency * 100),
     signalTier: profile.tier,
+    effectiveSizingTier,
+    lateChaseDirection,
+    lateChaseEvidenceCount,
+    lateChaseDiffEvidence,
+    lateChaseFairEvidence,
+    lateChaseBookEvidence,
+    lateSweepChaseActive,
+    lateTerminalChaseActive,
     signalDirection: profile.direction,
     marketDirection: bookBias.direction,
     marketLeadPct: round4(bookBias.leadPct),
@@ -8024,8 +12031,24 @@ function buildS10BonereaperCloneOrder(
     diffConsistencyNeedPct: round4(diffConsistencyNeed * 100),
     diffConfirmsMarket,
     terminalCertainty,
+    bookLedTailSweep,
+    bookLedSweepOpposingDiff,
+    bookLedSweepOpposingFair,
     marketNonBookCertainty,
     marketBiasTrusted,
+    strongBookSignalConflict,
+    effectiveMainDirection,
+    upWinPnlNow: round4(upWinPnlNow),
+    downWinPnlNow: round4(downWinPnlNow),
+    bestWinPnlNow: round4(bestWinPnlNow),
+    worstWinPnlNow: round4(worstWinPnlNow),
+    worstOutcomeDirection,
+    inventoryTailDirection,
+    inventoryLeadNotional: round4(inventoryLeadNotional),
+    dualInventoryCoveragePct: round4(dualInventoryCoverage * 100),
+    dualInsuranceWindow,
+    tailBookLeadNeed: round4(tailBookLeadNeed),
+    opposingBookBlockLeadNeed: round4(opposingBookBlockLeadNeed),
     upTargetPct: round4(upTargetPct * 100),
     targetTotal: round4(targetTotal),
     used: round4(used),
@@ -8035,6 +12058,7 @@ function buildS10BonereaperCloneOrder(
     orderCap: round4(orderCap),
     dynamicMaxAskPct: round4(dynamicMaxAsk * 100),
     pairCompletionCostLimitPct: round4(pairCostLimit * 100),
+    bonereaperGuide,
     owned,
     candidates,
     order: selected,
@@ -8046,26 +12070,26 @@ function buildS10BonereaperCloneOrder(
         candidate.projectedPnl?.blocked,
     );
     s10BonereaperCloneLastReason = projectedBlocked
-        ? `br-clone projected wait ${projectedBlocked.direction} gate=${projectedBlocked.projectedPnl.reason} pairAfter=${projectedBlocked.projectedPnl.pairCostPctAfter ?? "-"} limit=${projectedBlocked.projectedPnl.pairCostLimitPct} upPnl=${projectedBlocked.projectedPnl.upWinPnlAfter} downPnl=${projectedBlocked.projectedPnl.downWinPnlAfter} raw=${projectedBlocked.rawAmount.toFixed(2)}`
+        ? `br-clone projected wait ${projectedBlocked.direction} gate=${projectedBlocked.projectedPnl.reason} pairAfter=${projectedBlocked.projectedPnl.pairCostPctAfter ?? "-"} limit=${projectedBlocked.projectedPnl.pairCostLimitPct} upPnl=${projectedBlocked.projectedPnl.upWinPnlAfter} downPnl=${projectedBlocked.projectedPnl.downWinPnlAfter} upNet=${projectedBlocked.projectedPnl.upNetWinPnlAfter} downNet=${projectedBlocked.projectedPnl.downNetWinPnlAfter} protect=${projectedBlocked.projectedPnl.protectedDirection ?? "-"}/${projectedBlocked.projectedPnl.protectedWinPnlAfter ?? "-"}>${projectedBlocked.projectedPnl.minProtectedWinProfit} raw=${projectedBlocked.rawAmount.toFixed(2)}`
         : profile.triggered
-          ? `br-clone signal wait ${profile.direction} tier=${profile.tier} score=${profile.score.toFixed(2)} gap=${budgetGap.toFixed(2)}`
+        ? `br-clone signal wait ${profile.direction} tier=${profile.tier}/${effectiveSizingTier} score=${profile.score.toFixed(2)} gap=${budgetGap.toFixed(2)} lateChase=${lateSweepChaseActive ? "yes" : "no"}/${lateChaseEvidenceCount}`
         : `br-clone no signal diff=${profile.diff.toFixed(1)} need=${profile.threshold.toFixed(1)} used=${used.toFixed(2)}`;
     return null;
   }
   const marketConfirmSummary = `marketC=${marketNonBookCertainty ? "yes" : "no"} diffC=${diffConfirmsMarket ? "yes" : "no"}/${diffConfirmNeed.toFixed(0)} c>${(diffConsistencyNeed * 100).toFixed(0)} fairC=${fairConfirmsMarket ? "yes" : "no"}/${fairEdgePct.toFixed(1)}>${fairConfirmNeed.toFixed(1)} termC=${terminalCertainty ? "yes" : "no"} q=${(bookBias.qualityScore * 100).toFixed(0)}`;
-  const directionConfirmSummary = `dirC=${selected.directionNonBookCertainty ? "yes" : "no"} dDiff=${selected.directionDiffConfirmed ? "yes" : "no"} dFair=${selected.directionFairConfirmed ? "yes" : "no"} dTerm=${selected.directionTerminalCertainty ? "yes" : "no"} weakCap=${Number.isFinite(selected.weakCertaintyOrderCap) ? selected.weakCertaintyOrderCap.toFixed(2) : "-"}`;
+  const directionConfirmSummary = `dirC=${selected.directionNonBookCertainty ? "yes" : "no"} dDiff=${selected.directionDiffConfirmed ? "yes" : "no"} dFair=${selected.directionFairConfirmed ? "yes" : "no"} dTerm=${selected.directionTerminalCertainty ? "yes" : "no"} tailBook=${selected.tailDirectionalNeedsBook ? (selected.tailDirectionalBookConfirmed ? "yes" : "no") : "-"} oppBook=${selected.opposingBookBlock ? "yes" : "no"} weakCap=${Number.isFinite(selected.weakCertaintyOrderCap) ? selected.weakCertaintyOrderCap.toFixed(2) : "-"}`;
   return {
     direction: selected.direction,
     amount: selected.amount,
     maxPrice: selected.maxPrice,
-    reason: `br-clone ${selected.kind} ${selected.direction} tier=${profile.tier} rem=${ctx.rem.toFixed(1)} diff=${ctx.diff == null ? "-" : Number(ctx.diff).toFixed(1)} score=${profile.score.toFixed(2)} market=${bookBias.direction ?? "-"} lead=${bookBias.leadPct.toFixed(1)}/${bookBias.leadNeed.toFixed(1)} ${marketConfirmSummary} ${directionConfirmSummary} ask=${(selected.ask * 100).toFixed(1)} maxPx=${(selected.maxPrice * 100).toFixed(1)} amount=${selected.amount.toFixed(2)} slice=${selected.sliceCap.toFixed(2)} avg=${selected.directionAvg == null ? "-" : (selected.directionAvg * 100).toFixed(1)} avgCap=${Number.isFinite(selected.avgGuardCap) ? selected.avgGuardCap.toFixed(2) : "-"} neutral=${selected.nearNeutralDiff ? "yes" : "no"}/${selected.neutralMainDiffLimit.toFixed(1)} heavy=${selected.clearlyHeavyDirection ? "yes" : "no"} gate=${selected.riskGate ?? "-"} rescue=${selected.reverseRescue ? "yes" : "no"} rescueCap=${Number.isFinite(selected.reverseRescueCap) ? selected.reverseRescueCap.toFixed(2) : "-"} proj=ok upPnl=${selected.projectedPnl.upWinPnlAfter} downPnl=${selected.projectedPnl.downWinPnlAfter} pairAfter=${selected.projectedPnl.pairCostPctAfter ?? "-"} pairLimit=${selected.projectedPnl.pairCostLimitPct} worstCap=${selected.projectedPnl.maxWorstLoss ?? "-"} worstInc=${selected.projectedPnl.maxWorstLossIncrease ?? "-"} termRelax=${selected.terminalStrongProjectedRelax ? "yes" : "no"} pairBudget=${selected.pairRepairBudget.toFixed(2)} termRisk=${Number.isFinite(selected.terminalWrongSideRiskCap) ? selected.terminalWrongSideRiskCap.toFixed(2) : "-"} depth=${selected.depthLevels}/${(selected.depthPriceLift * 100).toFixed(1)}pt used=${used.toFixed(2)} cap=${windowCap.toFixed(2)}`,
+    reason: `br-clone ${selected.kind} ${selected.direction} tier=${selected.tier}/${profile.tier} rem=${ctx.rem.toFixed(1)} diff=${ctx.diff == null ? "-" : Number(ctx.diff).toFixed(1)} score=${profile.score.toFixed(2)} market=${bookBias.direction ?? "-"} lead=${bookBias.leadPct.toFixed(1)}/${bookBias.leadNeed.toFixed(1)} bookLed=${bookLedTailSweep ? "yes" : "no"}/${selected.bookLedSweepHardConfirmed ? "hard" : selected.bookLedTailSweepForDirection ? "soft" : "-"} bookLedCap=${Number.isFinite(selected.bookLedSweepSoftCap) ? selected.bookLedSweepSoftCap.toFixed(2) : "-"} ${marketConfirmSummary} ${directionConfirmSummary} ask=${(selected.ask * 100).toFixed(1)} maxPx=${(selected.maxPrice * 100).toFixed(1)} amount=${selected.amount.toFixed(2)} slice=${selected.sliceCap.toFixed(2)} avg=${selected.directionAvg == null ? "-" : (selected.directionAvg * 100).toFixed(1)} avgCap=${Number.isFinite(selected.avgGuardCap) ? selected.avgGuardCap.toFixed(2) : "-"} midHpCap=${Number.isFinite(selected.midHighPriceCap) ? selected.midHighPriceCap.toFixed(2) : "-"} neutral=${selected.nearNeutralDiff ? "yes" : "no"}/${selected.neutralMainDiffLimit.toFixed(1)} heavy=${selected.clearlyHeavyDirection ? "yes" : "no"} gate=${selected.riskGate ?? "-"} progressChase=${selected.progressChase ? "yes" : "no"}/${selected.progressChaseEvidenceCount} pChaseBudget=${selected.progressChaseBudget.toFixed(2)} pChaseCov=${(selected.progressChaseCoverage * 100).toFixed(0)} lateChase=${selected.lateChaseForDirection ? "yes" : "no"}/${selected.lateChaseEvidenceCount} protSweep=${selected.protectedDualSweep ? "yes" : "no"}/${selected.protectedSweepEvidenceCount} termBurst=${selected.terminalBurstSweep ? "yes" : "no"}/${selected.terminalBurstEvidenceCount} burstBudget=${selected.terminalBurstBudget.toFixed(2)} burstRem=${selected.terminalBurstRemainingBudget.toFixed(2)} termScalp=${selected.terminalScalpSweep ? "yes" : "no"} protBudget=${selected.protectedSweepBudget.toFixed(2)} rescue=${selected.reverseRescue ? "yes" : "no"} rescueCap=${Number.isFinite(selected.reverseRescueCap) ? selected.reverseRescueCap.toFixed(2) : "-"} lottery=${selected.kind === "lottery" ? (selected.lotteryExtreme ? "aggr" : "cheap") : "no"} lotBudget=${selected.lotteryBudget.toFixed(2)} profitRoom=${selected.lotteryProfitRoom.toFixed(2)} proj=ok upPnl=${selected.projectedPnl.upWinPnlAfter} downPnl=${selected.projectedPnl.downWinPnlAfter} upNet=${selected.projectedPnl.upNetWinPnlAfter} downNet=${selected.projectedPnl.downNetWinPnlAfter} pFee=${selected.projectedPnl.projectedFee} protect=${selected.projectedPnl.protectedDirection ?? "-"}/${selected.projectedPnl.protectedWinPnlAfter ?? "-"}>${selected.projectedPnl.minProtectedWinProfit} pairAfter=${selected.projectedPnl.pairCostPctAfter ?? "-"} pairLimit=${selected.projectedPnl.pairCostLimitPct} pairBypass=${selected.terminalSweepPairCostBypass ? "yes" : "no"} worstCap=${selected.projectedPnl.maxWorstLoss ?? "-"} worstInc=${selected.projectedPnl.maxWorstLossIncrease ?? "-"} worstGuard=${selected.globalWorstLossGuard ? "yes" : "no"} sweepBypass=${selected.terminalSweepWorstLossBypass ? "yes" : "no"} termRelax=${selected.terminalStrongProjectedRelax ? "yes" : "no"} termProt=${selected.terminalDualProtected ? "yes" : "no"}/${(selected.dualInventoryCoverage * 100).toFixed(0)} unprot=${selected.terminalUnprotectedDirectional ? "yes" : "no"} hpStrong=${selected.strongHighPriceConfirmed ? "yes" : "no"} hpCap=${Number.isFinite(selected.highPriceRiskCap) ? selected.highPriceRiskCap.toFixed(2) : "-"} pairBudget=${selected.pairRepairBudget.toFixed(2)} fastHedge=${selected.fastHedgePairRepair ? "yes" : "no"} dualIns=${selected.dualInsurancePairRepair ? "yes" : "no"}/${selected.dualInsuranceStrong ? "strong" : "base"} cheapRisk=${selected.cheapRiskCompression ? "yes" : "no"} dualTarget=${(selected.dualInsuranceCoverageTarget * 100).toFixed(0)} dynPair=${(selected.dynamicPairCostLimit * 100).toFixed(1)} pnlPair=${selected.pnlPairRepair ? "yes" : "no"} pairLossCap=${selected.pairWorstLossBudget.toFixed(2)} termRisk=${Number.isFinite(selected.terminalWrongSideRiskCap) ? selected.terminalWrongSideRiskCap.toFixed(2) : "-"} depth=${selected.depthLevels}/${(selected.depthPriceLift * 100).toFixed(1)}pt used=${used.toFixed(2)} cap=${windowCap.toFixed(2)}`,
   };
 }
 
 function getS10BonereaperCloneStatus(): Record<string, unknown> {
   return {
     enabled: S10_BONEREAPER_CLONE_ENABLED,
-    mode: "book_bias_inventory_mimic",
+    mode: "bonereaper_dual_inventory_clone",
     lastReason: s10BonereaperCloneLastReason,
     params: {
       windowMult: S10_BONEREAPER_CLONE_WINDOW_MULT,
@@ -8081,9 +12105,219 @@ function getS10BonereaperCloneStatus(): Record<string, unknown> {
         S10_BONEREAPER_CLONE_PROJECTED_PAIR_COST_MAX * 100,
       projectedTerminalPairCostMaxPct:
         S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_PAIR_COST_MAX * 100,
+      sweepStartRemainingSec:
+        S10_BONEREAPER_CLONE_SWEEP_START_REMAINING_SEC,
+      terminalStartRemainingSec:
+        S10_BONEREAPER_CLONE_TERMINAL_START_REMAINING_SEC,
+      projectedRelaxMaxRemainingSec:
+        S10_BONEREAPER_CLONE_PROJECTED_RELAX_MAX_REMAINING_SEC,
+      minNetWinProfitMult:
+        S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_MULT,
+      minNetWinProfitCostPct:
+        S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_COST_PCT * 100,
+      minNetWinProfitHighPriceMult:
+        S10_BONEREAPER_CLONE_MIN_NET_WIN_PROFIT_HIGH_PRICE_MULT,
+      profitFloorAskPct:
+        S10_BONEREAPER_CLONE_PROFIT_FLOOR_ASK_PCT,
+      profitFloorPositionMult:
+        S10_BONEREAPER_CLONE_PROFIT_FLOOR_POSITION_MULT,
       projectedBadLossMult: S10_BONEREAPER_CLONE_PROJECTED_BAD_LOSS_MULT,
       projectedTerminalBadLossMult:
         S10_BONEREAPER_CLONE_PROJECTED_TERMINAL_BAD_LOSS_MULT,
+      terminalConfirmedSliceMult:
+        S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_SLICE_MULT,
+      terminalConfirmedLateSliceMult:
+        S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_LATE_SLICE_MULT,
+      sweepConfirmedSliceMult:
+        S10_BONEREAPER_CLONE_SWEEP_CONFIRMED_SLICE_MULT,
+      terminalConfirmedBadLossMult:
+        S10_BONEREAPER_CLONE_TERMINAL_CONFIRMED_BAD_LOSS_MULT,
+      terminalPartialBadLossMult:
+        S10_BONEREAPER_CLONE_TERMINAL_PARTIAL_BAD_LOSS_MULT,
+      terminalWeakBadLossMult:
+        S10_BONEREAPER_CLONE_TERMINAL_WEAK_BAD_LOSS_MULT,
+      pairWorstLossMult: S10_BONEREAPER_CLONE_PAIR_WORST_LOSS_MULT,
+      terminalPairWorstLossMult:
+        S10_BONEREAPER_CLONE_TERMINAL_PAIR_WORST_LOSS_MULT,
+      pairMaxCoverage: S10_BONEREAPER_CLONE_PAIR_MAX_COVERAGE,
+      fastHedgeEnabled: S10_BONEREAPER_CLONE_FAST_HEDGE_ENABLED,
+      fastHedgeMinRemainingSec:
+        S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_REMAINING_SEC,
+      fastHedgeMaxRemainingSec:
+        S10_BONEREAPER_CLONE_FAST_HEDGE_MAX_REMAINING_SEC,
+      fastHedgeMinExposureMult:
+        S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_EXPOSURE_MULT,
+      fastHedgeTargetCoverage:
+        S10_BONEREAPER_CLONE_FAST_HEDGE_TARGET_COVERAGE,
+      fastHedgePairCostMaxPct:
+        S10_BONEREAPER_CLONE_FAST_HEDGE_PAIR_COST_MAX * 100,
+      fastHedgeRetainProfitPct:
+        S10_BONEREAPER_CLONE_FAST_HEDGE_RETAIN_PROFIT_PCT * 100,
+      fastHedgeMinRetainProfitMult:
+        S10_BONEREAPER_CLONE_FAST_HEDGE_MIN_RETAIN_PROFIT_MULT,
+      dualInsuranceEnabled:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_ENABLED,
+      dualInsuranceMinRemainingSec:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_REMAINING_SEC,
+      dualInsuranceMaxRemainingSec:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_MAX_REMAINING_SEC,
+      dualInsuranceMinExposureMult:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_EXPOSURE_MULT,
+      dualInsuranceTargetCoverage:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_TARGET_COVERAGE,
+      dualInsuranceStrongTargetCoverage:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_TARGET_COVERAGE,
+      dualInsurancePairCostMaxPct:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_PAIR_COST_MAX * 100,
+      dualInsuranceHardPairCostMaxPct:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_HARD_PAIR_COST_MAX * 100,
+      dualInsuranceOrderMult:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_ORDER_MULT,
+      dualInsuranceStrongOrderMult:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_STRONG_ORDER_MULT,
+      dualInsuranceRetainProfitPct:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_RETAIN_PROFIT_PCT * 100,
+      dualInsuranceMinRetainProfitMult:
+        S10_BONEREAPER_CLONE_DUAL_INSURANCE_MIN_RETAIN_PROFIT_MULT,
+      cheapRiskCompressionEnabled:
+        S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_ENABLED,
+      cheapRiskCompressionMaxAskPct:
+        S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MAX_ASK_PCT,
+      cheapRiskCompressionMinWorstLossMult:
+        S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_WORST_LOSS_MULT,
+      cheapRiskCompressionMinProtectedMult:
+        S10_BONEREAPER_CLONE_CHEAP_RISK_COMPRESSION_MIN_PROTECTED_MULT,
+      worstLossGuardEnabled:
+        S10_BONEREAPER_CLONE_WORST_LOSS_GUARD_ENABLED,
+      maxWorstLossMult: S10_BONEREAPER_CLONE_MAX_WORST_LOSS_MULT,
+      maxWorstLossIncreaseMult:
+        S10_BONEREAPER_CLONE_MAX_WORST_LOSS_INCREASE_MULT,
+      midHighPriceGuardEnabled:
+        S10_BONEREAPER_CLONE_MID_HIGH_PRICE_GUARD_ENABLED,
+      midHighPriceMinRemainingSec:
+        S10_BONEREAPER_CLONE_MID_HIGH_PRICE_MIN_REMAINING_SEC,
+      midHighPriceAskPct: S10_BONEREAPER_CLONE_MID_HIGH_PRICE_ASK_PCT,
+      midHighPriceCapMult:
+        S10_BONEREAPER_CLONE_MID_HIGH_PRICE_CAP_MULT,
+      midVeryHighPriceAskPct:
+        S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_ASK_PCT,
+      midVeryHighPriceCapMult:
+        S10_BONEREAPER_CLONE_MID_VERY_HIGH_PRICE_CAP_MULT,
+      lotteryRescueEnabled: S10_BONEREAPER_CLONE_LOTTERY_RESCUE_ENABLED,
+      lotteryMinRemainingSec:
+        S10_BONEREAPER_CLONE_LOTTERY_MIN_REMAINING_SEC,
+      lotteryMaxRemainingSec:
+        S10_BONEREAPER_CLONE_LOTTERY_MAX_REMAINING_SEC,
+      lotteryAggressiveRemainingSec:
+        S10_BONEREAPER_CLONE_LOTTERY_AGGRESSIVE_REMAINING_SEC,
+      lotteryCheapMaxAskPct:
+        S10_BONEREAPER_CLONE_LOTTERY_CHEAP_MAX_ASK_PCT,
+      lotteryMaxPricePct: S10_BONEREAPER_CLONE_LOTTERY_MAX_PRICE_PCT,
+      lotteryProjectedPairCostMaxPct:
+        S10_BONEREAPER_CLONE_LOTTERY_PROJECTED_PAIR_COST_MAX * 100,
+      lotteryRetainProfitMult:
+        S10_BONEREAPER_CLONE_LOTTERY_RETAIN_PROFIT_MULT,
+      lotteryProfitSpendPct:
+        S10_BONEREAPER_CLONE_LOTTERY_PROFIT_SPEND_PCT * 100,
+      lotteryExtremeProfitSpendPct:
+        S10_BONEREAPER_CLONE_LOTTERY_EXTREME_PROFIT_SPEND_PCT * 100,
+      lotteryCheapOrderMult:
+        S10_BONEREAPER_CLONE_LOTTERY_CHEAP_ORDER_MULT,
+      lotteryMaxOrderMult: S10_BONEREAPER_CLONE_LOTTERY_MAX_ORDER_MULT,
+      lotteryMinBookLeadPct:
+        S10_BONEREAPER_CLONE_LOTTERY_MIN_BOOK_LEAD_PCT,
+      lotteryMinDiff: S10_BONEREAPER_CLONE_LOTTERY_MIN_DIFF,
+      lotteryMinFairEdgePct:
+        S10_BONEREAPER_CLONE_LOTTERY_MIN_FAIR_EDGE_PCT,
+      lotteryMakerEnabled:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_ENABLED,
+      lotteryMakerSource:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_SOURCE,
+      lotteryMakerLevels:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_LEVELS,
+      lotteryMakerMinRemainingSec:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_REMAINING_SEC,
+      lotteryMakerMaxRemainingSec:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_REMAINING_SEC,
+      lotteryMakerTtlMs:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_TTL_MS,
+      lotteryMakerQueueFullFillMs:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_QUEUE_FULL_FILL_MS,
+      lotteryMakerMaxWindowMult:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_WINDOW_MULT,
+      lotteryMakerPerLevelMult:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_PER_LEVEL_MULT,
+      lotteryMakerFixedRiskMult:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_FIXED_RISK_MULT,
+      lotteryMakerProfitSpendPct:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_PROFIT_SPEND_PCT * 100,
+      lotteryMakerRetainProfitMult:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_RETAIN_PROFIT_MULT,
+      lotteryMakerMinPositionMult:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_POSITION_MULT,
+      lotteryMakerMinWorstLossMult:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MIN_WORST_LOSS_MULT,
+      lotteryMakerMaxActivePerSide:
+        S10_BONEREAPER_CLONE_LOTTERY_MAKER_MAX_ACTIVE_PER_SIDE,
+      lotteryMakerLastReason: s10BonereaperLotteryMakerLastReason,
+      paperMakerRealisticFillEnabled: PAPER_MAKER_REALISTIC_FILL_ENABLED,
+      paperMakerTouchFillEnabled: PAPER_MAKER_TOUCH_FILL_ENABLED,
+      paperLotteryMakerTouchFillEnabled:
+        PAPER_LOTTERY_MAKER_TOUCH_FILL_ENABLED,
+      paperMakerQueueAheadMult: PAPER_MAKER_QUEUE_AHEAD_MULT,
+      paperLotteryMakerQueueAheadMult: PAPER_LOTTERY_MAKER_QUEUE_AHEAD_MULT,
+      paperMakerCrossedBaseFillRatio: PAPER_MAKER_CROSSED_BASE_FILL_RATIO,
+      paperMakerSweepBaseFillRatio: PAPER_MAKER_SWEEP_BASE_FILL_RATIO,
+      paperMakerTouchBaseFillRatio: PAPER_MAKER_TOUCH_BASE_FILL_RATIO,
+      paperLotteryMakerCrossedBaseFillRatio:
+        PAPER_LOTTERY_MAKER_CROSSED_BASE_FILL_RATIO,
+      paperLotteryMakerSweepBaseFillRatio:
+        PAPER_LOTTERY_MAKER_SWEEP_BASE_FILL_RATIO,
+      tailBookConfirmLeadPct: S10_BONEREAPER_CLONE_TAIL_BOOK_CONFIRM_LEAD_PCT,
+      tailHardBookConfirmLeadPct:
+        S10_BONEREAPER_CLONE_TAIL_HARD_BOOK_CONFIRM_LEAD_PCT,
+      tailOpposingBookBlockLeadPct:
+        S10_BONEREAPER_CLONE_TAIL_OPPOSING_BOOK_BLOCK_LEAD_PCT,
+      opposingBookBlockLeadPct:
+        S10_BONEREAPER_CLONE_OPPOSING_BOOK_BLOCK_LEAD_PCT,
+      bookLedSweepEnabled:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_ENABLED,
+      bookLedSweepMaxRemainingSec:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_REMAINING_SEC,
+      bookLedSweepMinLeadPct:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_LEAD_PCT,
+      bookLedSweepMinQualityPct:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_QUALITY_PCT,
+      bookLedSweepMinShallowNotional:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MIN_SHALLOW_NOTIONAL,
+      bookLedSweepMaxSpreadPenaltyPct:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_MAX_SPREAD_PENALTY_PCT,
+      bookLedSweepOpposingDiff:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_DIFF,
+      bookLedSweepOpposingFairEdgePct:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_OPPOSING_FAIR_EDGE_PCT,
+      bookLedSweepSoftWindowMult:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_WINDOW_MULT,
+      bookLedSweepSoftOrderMult:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_SOFT_ORDER_MULT,
+      bookLedSweepHardLeadPct:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_LEAD_PCT,
+      bookLedSweepHardQualityPct:
+        S10_BONEREAPER_CLONE_BOOK_LED_SWEEP_HARD_QUALITY_PCT,
+      bookConflictPairBudgetMult:
+        S10_BONEREAPER_CLONE_BOOK_CONFLICT_PAIR_BUDGET_MULT,
+      strongSweepHighPriceLeadPct:
+        S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_LEAD_PCT,
+      strongSweepHighPriceDiff:
+        S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_DIFF,
+      strongSweepHighPriceBadLossMult:
+        S10_BONEREAPER_CLONE_STRONG_SWEEP_HIGH_PRICE_BAD_LOSS_MULT,
+      strongTerminalHighPriceLeadPct:
+        S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_LEAD_PCT,
+      strongTerminalHighPriceDiff:
+        S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_DIFF,
+      strongTerminalHighPriceBadLossMult:
+        S10_BONEREAPER_CLONE_STRONG_TERMINAL_HIGH_PRICE_BAD_LOSS_MULT,
       rescueEnabled: S10_BONEREAPER_CLONE_RESCUE_ENABLED,
       rescueMinRemainingSec: S10_BONEREAPER_CLONE_RESCUE_MIN_REMAINING_SEC,
       rescueMaxRemainingSec: S10_BONEREAPER_CLONE_RESCUE_MAX_REMAINING_SEC,
@@ -8098,6 +12332,134 @@ function getS10BonereaperCloneStatus(): Record<string, unknown> {
       rescueMaxWorstLossMult: S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_MULT,
       rescueMaxWorstLossIncreaseMult:
         S10_BONEREAPER_CLONE_RESCUE_MAX_WORST_LOSS_INCREASE_MULT,
+      lateChaseEnabled: S10_BONEREAPER_CLONE_LATE_CHASE_ENABLED,
+      lateChaseMaxRemainingSec:
+        S10_BONEREAPER_CLONE_LATE_CHASE_MAX_REMAINING_SEC,
+      lateChaseTerminalRemainingSec:
+        S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_REMAINING_SEC,
+      lateChaseMinDiff: S10_BONEREAPER_CLONE_LATE_CHASE_MIN_DIFF,
+      lateChaseTerminalMinDiff:
+        S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_MIN_DIFF,
+      lateChaseMinConsistencyPct:
+        S10_BONEREAPER_CLONE_LATE_CHASE_MIN_CONSISTENCY * 100,
+      lateChaseMinFairEdgePct:
+        S10_BONEREAPER_CLONE_LATE_CHASE_MIN_FAIR_EDGE_PCT,
+      lateChaseMinBookLeadPct:
+        S10_BONEREAPER_CLONE_LATE_CHASE_MIN_BOOK_LEAD_PCT,
+      lateChaseOrderMult: S10_BONEREAPER_CLONE_LATE_CHASE_ORDER_MULT,
+      lateChaseTerminalOrderMult:
+        S10_BONEREAPER_CLONE_LATE_CHASE_TERMINAL_ORDER_MULT,
+      terminalRequireDualProtection:
+        S10_BONEREAPER_CLONE_TERMINAL_REQUIRE_DUAL_PROTECTION,
+      terminalDualMinCoverage:
+        S10_BONEREAPER_CLONE_TERMINAL_DUAL_MIN_COVERAGE,
+      terminalUnprotectedOrderMult:
+        S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_ORDER_MULT,
+      terminalUnprotectedMaxAskPct:
+        S10_BONEREAPER_CLONE_TERMINAL_UNPROTECTED_MAX_ASK_PCT,
+      protectedSweepEnabled:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ENABLED,
+      protectedSweepMinCoverage:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_COVERAGE,
+      protectedSweepMinDiff:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_DIFF,
+      protectedSweepMinFairEdgePct:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_FAIR_EDGE_PCT,
+      protectedSweepMinBookLeadPct:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MIN_BOOK_LEAD_PCT,
+      protectedSweepPairCostMaxPct:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_PAIR_COST_MAX * 100,
+      protectedSweepOrderMult:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_ORDER_MULT,
+      protectedSweepTerminalOrderMult:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_TERMINAL_ORDER_MULT,
+      protectedSweepBadLossMult:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_BAD_LOSS_MULT,
+      protectedSweepMaxWorstLossMult:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_MULT,
+      protectedSweepMaxWorstLossIncreaseMult:
+        S10_BONEREAPER_CLONE_PROTECTED_SWEEP_MAX_WORST_LOSS_INCREASE_MULT,
+      terminalScalpSweepEnabled:
+        S10_BONEREAPER_CLONE_TERMINAL_SCALP_SWEEP_ENABLED,
+      terminalScalpMinAskPct:
+        S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ASK_PCT,
+      terminalScalpMaxRemainingSec:
+        S10_BONEREAPER_CLONE_TERMINAL_SCALP_MAX_REMAINING_SEC,
+      terminalScalpMinRoiPct:
+        S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_ROI_PCT * 100,
+      terminalScalpMinProfitMult:
+        S10_BONEREAPER_CLONE_TERMINAL_SCALP_MIN_PROFIT_MULT,
+      terminalBurstEnabled:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_ENABLED,
+      terminalBurstMinRemainingSec:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_REMAINING_SEC,
+      terminalBurstMaxRemainingSec:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MAX_REMAINING_SEC,
+      terminalBurstMinAskPct:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ASK_PCT,
+      terminalBurstMinDiff:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_DIFF,
+      terminalBurstMinFairEdgePct:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_FAIR_EDGE_PCT,
+      terminalBurstMinBookLeadPct:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_BOOK_LEAD_PCT,
+      terminalBurstMinGuideTailUsdc:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_GUIDE_TAIL_USDC,
+      terminalBurstOrderMult:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_ORDER_MULT,
+      terminalBurstSliceMult:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_SLICE_MULT,
+      terminalBurstPairCostMaxPct:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_PAIR_COST_MAX * 100,
+      terminalBurstBadLossMult:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_BAD_LOSS_MULT,
+      terminalBurstMinProfitMult:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_PROFIT_MULT,
+      terminalBurstMinRoiPct:
+        S10_BONEREAPER_CLONE_TERMINAL_BURST_MIN_ROI_PCT * 100,
+      guideEnabled: S10_BONEREAPER_CLONE_GUIDE_ENABLED,
+      guideCutoffGraceSec: S10_BONEREAPER_CLONE_GUIDE_CUTOFF_GRACE_SEC,
+      guideMaxLagSec: S10_BONEREAPER_CLONE_GUIDE_MAX_LAG_SEC,
+      guideMinTotalMult: S10_BONEREAPER_CLONE_GUIDE_MIN_TOTAL_MULT,
+      guideTargetScale: S10_BONEREAPER_CLONE_GUIDE_TARGET_SCALE,
+      guideTargetMaxProgress: S10_BONEREAPER_CLONE_GUIDE_TARGET_MAX_PROGRESS,
+      guideBlendMax: S10_BONEREAPER_CLONE_GUIDE_BLEND_MAX,
+      guideTailMinUsdc: S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_USDC,
+      guideTailMinRatio: S10_BONEREAPER_CLONE_GUIDE_TAIL_MIN_RATIO,
+      guideSweepMaxRemainingSec:
+        S10_BONEREAPER_CLONE_GUIDE_SWEEP_MAX_REMAINING_SEC,
+      guideSweepOrderMult: S10_BONEREAPER_CLONE_GUIDE_SWEEP_ORDER_MULT,
+      guideTerminalOrderMult:
+        S10_BONEREAPER_CLONE_GUIDE_TERMINAL_ORDER_MULT,
+      guidePairCostMaxPct: S10_BONEREAPER_CLONE_GUIDE_PAIR_COST_MAX * 100,
+      progressChaseEnabled: S10_BONEREAPER_CLONE_PROGRESS_CHASE_ENABLED,
+      progressChaseMinRemainingSec:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_REMAINING_SEC,
+      progressChaseMaxRemainingSec:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_REMAINING_SEC,
+      progressChaseMinWrongMult:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_WRONG_MULT,
+      progressChaseMinImbalanceMult:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_IMBALANCE_MULT,
+      progressChaseTargetCoverage:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_TARGET_COVERAGE,
+      progressChaseStrongCoverage:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_COVERAGE,
+      progressChaseMinDiff: S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_DIFF,
+      progressChaseMinFairEdgePct:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_FAIR_EDGE_PCT,
+      progressChaseMinBookLeadPct:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MIN_BOOK_LEAD_PCT,
+      progressChaseMaxAskPct:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_ASK_PCT,
+      progressChaseOrderMult:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_ORDER_MULT,
+      progressChaseStrongOrderMult:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_STRONG_ORDER_MULT,
+      progressChaseBadLossMult:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_BAD_LOSS_MULT,
+      progressChaseMaxWorstLossIncreaseMult:
+        S10_BONEREAPER_CLONE_PROGRESS_CHASE_MAX_WORST_LOSS_INCREASE_MULT,
       liveMaxOrderUsdc: S10_BONEREAPER_CLONE_LIVE_MAX_ORDER_USDC,
     },
     plan: s10BonereaperCloneLastPlan,
@@ -8113,6 +12475,7 @@ function reconcileS10BonereaperCloneTaker(
     s10BonereaperCloneInFlight = false;
     s10BonereaperCloneLastAt = 0;
   }
+  reconcileS10BonereaperLotteryMakerOrders(ctx);
   if (s10BonereaperCloneInFlight) return;
   if (isStrategyRuntimeBusyForTerminalSweep()) {
     s10BonereaperCloneLastReason = "runtime_busy";
@@ -8321,6 +12684,34 @@ function getStateBookLevelsForDirection(direction: StrategyDirection): {
       }))
       .sort((a, b) => a.price - b.price),
   };
+}
+
+function estimateMakerQueueAheadShares(
+  direction: StrategyDirection,
+  price: number,
+): number {
+  const book = getStateBookLevelsForDirection(direction);
+  const eps = Math.max(0.0001, S10_MAKER_BOOK_TOUCH_PRICE_EPS);
+  return book.bids.reduce((sum, level) => {
+    if (level.price + eps >= price) return sum + level.size;
+    return sum;
+  }, 0);
+}
+
+function getMakerQueueFactor(order: PaperMakerOrder): number {
+  const ahead = Math.max(0, Number(order.queueAheadShares ?? 0) || 0);
+  if (!(ahead > 0)) return 1;
+  const isLottery = isS10BonereaperLotteryMakerSource(order.source);
+  const mult = Math.max(
+    0,
+    isLottery
+      ? PAPER_LOTTERY_MAKER_QUEUE_AHEAD_MULT
+      : PAPER_MAKER_QUEUE_AHEAD_MULT,
+  );
+  if (mult <= 0) return 1;
+  const own = Math.max(0.01, order.remainingShares);
+  const raw = own / (ahead * mult + own);
+  return clampNumber(raw, isLottery ? 0.01 : 0.03, 1);
 }
 
 function getLastObservedPriceForDirection(
@@ -8717,7 +13108,7 @@ function getPaperMakerWindowNotional(windowStart: number): number {
     if (
       trade.windowStart === windowStart &&
       trade.side === "buy" &&
-      /^strategy10maker/.test(String(trade.source || "")) &&
+      isMakerFeeSource(trade.source) &&
       String(trade.status || "").includes("FILLED")
     ) {
       return (
@@ -8777,12 +13168,14 @@ function recordPaperMakerFill(
     avgPrice: order.price,
     worstPrice: order.price,
     status: "SIM_MAKER_FILLED",
-    source: "strategy10maker",
+    source: order.source || "strategy10maker",
     exitReason: `${trigger}; ${order.reason}`,
     requestedAmount: notional,
     requestedShares: order.shares,
     filledShares,
     filledNotional: notional,
+    fee: 0,
+    feeMode: "maker",
     topBid: quote?.bid ?? null,
     topAsk: quote?.ask ?? null,
     spread: quote ? quote.ask - quote.bid : null,
@@ -8807,6 +13200,12 @@ function recordPaperMakerFill(
     makerTrigger: trigger,
     makerQueueFillRatio: queueFillRatio,
     makerActiveMs: Date.now() - order.activeAt,
+    makerQueueAheadShares: order.queueAheadShares ?? null,
+    makerFillModel: PAPER_MAKER_REALISTIC_FILL_ENABLED
+      ? "realistic_queue"
+      : "legacy_touch",
+    makerMaxSeenBid: order.maxSeenBid ?? null,
+    makerMinSeenAsk: order.minSeenAsk ?? null,
     bookTokenId: tokenId,
     bookWindowStart: state.windowStart,
     bookFetchedAt: state.bookUpdatedAt || Date.now(),
@@ -8833,16 +13232,34 @@ function makerOrderFillProbe(
 } | null {
   const quote = getStateTopBookForDirection(order.direction);
   if (!quote || quote.ageMs > S10_MAKER_MAX_BOOK_AGE_MS) return null;
-  if (now < order.activeAt || now - order.activeAt < S10_MAKER_MIN_ACTIVE_MS) {
+  const minActiveMs = order.minActiveMs ?? S10_MAKER_MIN_ACTIVE_MS;
+  if (now >= order.activeAt) {
+    order.maxSeenBid = Math.max(
+      order.maxSeenBid ?? order.price,
+      order.price,
+      quote.bid,
+    );
+    order.minSeenAsk = Math.min(order.minSeenAsk ?? quote.ask, quote.ask);
+  }
+  if (now < order.activeAt || now - order.activeAt < minActiveMs) {
     order.lastSeenBid = quote.bid;
     order.lastSeenAsk = quote.ask;
     return null;
   }
 
-  const crossed = quote.ask > 0 && quote.ask <= order.price;
+  const minSeenAsk =
+    order.minSeenAsk != null && Number.isFinite(order.minSeenAsk)
+      ? order.minSeenAsk
+      : quote.ask;
+  const maxSeenBid =
+    order.maxSeenBid != null && Number.isFinite(order.maxSeenBid)
+      ? order.maxSeenBid
+      : (order.lastSeenBid ?? quote.bid);
+  const crossed =
+    (quote.ask > 0 && quote.ask <= order.price) ||
+    (minSeenAsk > 0 && minSeenAsk <= order.price);
   const sweptThrough =
-    order.lastSeenBid != null &&
-    order.lastSeenBid >= order.price &&
+    maxSeenBid >= order.price &&
     quote.bid < order.price - 0.0001;
   const touch = getLastBookTouchForMakerDirection(order.direction);
   const activeMs = Math.max(0, now - order.activeAt);
@@ -8865,7 +13282,25 @@ function makerOrderFillProbe(
   order.lastSeenAsk = quote.ask;
   if (!crossed && !sweptThrough && !touchedOwnBid && !pinnedAtLimit)
     return null;
-  if (now - paperMakerLastFillAt[order.direction] < S10_MAKER_FILL_COOLDOWN_MS)
+  const fillThroughTick = Math.max(0.0001, PAPER_S10_LIVE_PARITY_TICK_SIZE);
+  const effectiveCrossAsk = Math.min(
+    quote.ask > 0 ? quote.ask : Number.POSITIVE_INFINITY,
+    minSeenAsk > 0 ? minSeenAsk : Number.POSITIVE_INFINITY,
+  );
+  const crossDepth =
+    crossed && Number.isFinite(effectiveCrossAsk)
+      ? Math.max(0, order.price - effectiveCrossAsk)
+      : 0;
+  const hardSweepDepth = sweptThrough
+    ? Math.max(0, order.price - quote.bid)
+    : 0;
+  const isHardFillThrough =
+    crossDepth + 1e-9 >= fillThroughTick ||
+    hardSweepDepth + 1e-9 >= fillThroughTick;
+  if (
+    !isHardFillThrough &&
+    now - paperMakerLastFillAt[order.direction] < S10_MAKER_FILL_COOLDOWN_MS
+  )
     return null;
   if (touchedOwnBid && touch) {
     order.lastTouchAt = touch.touchedAt;
@@ -8875,34 +13310,132 @@ function makerOrderFillProbe(
   }
 
   const orderNotional = order.remainingShares * order.price;
+  if (PAPER_MAKER_REALISTIC_FILL_ENABLED) {
+    const isLottery = isS10BonereaperLotteryMakerSource(order.source);
+    const allowTouchFill = isLottery
+      ? PAPER_LOTTERY_MAKER_TOUCH_FILL_ENABLED
+      : PAPER_MAKER_TOUCH_FILL_ENABLED;
+    if (!crossed && !sweptThrough) {
+      if (!allowTouchFill || !touchedOwnBid) return null;
+    }
+    const queueFullFillMs = Math.max(
+      1000,
+      order.queueFullFillMs ?? S10_MAKER_QUEUE_FULL_FILL_MS,
+    );
+    const ageRatio = clampNumber(activeMs / queueFullFillMs, 0, 1);
+    const queueFactor = getMakerQueueFactor(order);
+    const trigger = crossed
+      ? "crossed_ask"
+      : sweptThrough
+        ? "bid_swept"
+        : pinnedAtLimit && !touchedOwnBid
+          ? "book_hold"
+          : "book_touch";
+    if (isHardFillThrough) {
+      return {
+        fillShares: order.remainingShares,
+        trigger,
+        ratio: 1,
+        quote,
+      };
+    }
+    let baseRatio = 0;
+    let maxRatio = 0;
+    if (crossed) {
+      baseRatio = isLottery
+        ? PAPER_LOTTERY_MAKER_CROSSED_BASE_FILL_RATIO
+        : PAPER_MAKER_CROSSED_BASE_FILL_RATIO;
+      baseRatio += crossDepth >= 0.01 ? (isLottery ? 0.18 : 0.3) : 0;
+      baseRatio += ageRatio * (isLottery ? 0.12 : 0.2);
+      maxRatio = isLottery ? 0.9 : 1;
+    } else if (sweptThrough) {
+      baseRatio = isLottery
+        ? PAPER_LOTTERY_MAKER_SWEEP_BASE_FILL_RATIO
+        : PAPER_MAKER_SWEEP_BASE_FILL_RATIO;
+      baseRatio += ageRatio * (isLottery ? 0.05 : 0.1);
+      maxRatio = isLottery ? 0.35 : 0.55;
+    } else {
+      baseRatio = PAPER_MAKER_TOUCH_BASE_FILL_RATIO + ageRatio * 0.04;
+      maxRatio = isLottery ? 0 : 0.12;
+    }
+    const ratio = clampNumber(baseRatio * queueFactor, 0, maxRatio);
+    if (!(ratio > 0)) return null;
+    let rawFillShares = Math.min(
+      order.remainingShares,
+      order.remainingShares * ratio,
+    );
+    if (
+      !isLottery &&
+      (crossDepth >= 0.01 || hardSweepDepth >= 0.01) &&
+      rawFillShares < S10_MAKER_PARTIAL_MIN_SHARES
+    ) {
+      rawFillShares = Math.min(
+        order.remainingShares,
+        S10_MAKER_PARTIAL_MIN_SHARES,
+      );
+    }
+    const ownedPosition = getS10MakerOwnedPosition("paper", order.windowStart);
+    const ownSize =
+      order.direction === "up" ? ownedPosition.upSize : ownedPosition.downSize;
+    const otherSize =
+      order.direction === "up" ? ownedPosition.downSize : ownedPosition.upSize;
+    const tailRoom = Math.max(
+      0,
+      otherSize + S10_MAKER_MAX_TAIL_AFTER_FILL_SHARES - ownSize,
+    );
+    const fillShares = Math.min(rawFillShares, tailRoom);
+    if (fillShares < S10_MAKER_PARTIAL_MIN_SHARES) return null;
+    const actualRatio =
+      order.remainingShares > 0 ? fillShares / order.remainingShares : ratio;
+    return { fillShares, trigger, ratio: actualRatio, quote };
+  }
   const smallOrderBoost =
     orderNotional <= 6
-      ? 0.48
+      ? 0.3
       : orderNotional <= S10_MAKER_SMALL_TOUCH_NOTIONAL
-        ? 0.34
+        ? 0.2
         : orderNotional <= S10_MAKER_SMALL_TOUCH_NOTIONAL * 2
-          ? 0.18
+          ? 0.1
           : 0;
   const holdMs = order.touchStartedAt
     ? Math.max(0, now - order.touchStartedAt)
     : 0;
   const holdBoost =
-    clampNumber(holdMs / S10_MAKER_TOUCH_HOLD_FULL_MS, 0, 1) * 0.35;
-  const ageRatio = clampNumber(activeMs / 9000, 0.06, 0.45);
-  const touchRepeatBoost = clampNumber((order.touchCount - 1) * 0.08, 0, 0.24);
+    clampNumber(holdMs / S10_MAKER_TOUCH_HOLD_FULL_MS, 0, 1) * 0.28;
+  const queueFullFillMs = Math.max(
+    1000,
+    order.queueFullFillMs ?? S10_MAKER_QUEUE_FULL_FILL_MS,
+  );
+  const ageRatio = clampNumber(activeMs / queueFullFillMs, 0.03, 0.38);
+  const touchRepeatBoost = clampNumber((order.touchCount - 1) * 0.06, 0, 0.18);
   const triggerBoost = crossed
     ? 0.78
     : sweptThrough
       ? 0.62
       : touchedOwnBid
-        ? 0.22
-        : 0.14;
+        ? 0.16
+        : 0.1;
   const priceDepthBoost =
     crossed || sweptThrough ? Math.max(0, (order.price - quote.bid) * 2.2) : 0;
   const touchMaxRatio =
     orderNotional <= S10_MAKER_SMALL_TOUCH_NOTIONAL
       ? 1
       : S10_MAKER_BOOK_TOUCH_MAX_RATIO;
+  const trigger = crossed
+    ? "crossed_ask"
+    : sweptThrough
+      ? "bid_swept"
+      : pinnedAtLimit && !touchedOwnBid
+        ? "book_hold"
+        : "book_touch";
+  if (isHardFillThrough) {
+    return {
+      fillShares: order.remainingShares,
+      trigger,
+      ratio: 1,
+      quote,
+    };
+  }
   const ratio =
     crossed || sweptThrough
       ? 1
@@ -8933,13 +13466,6 @@ function makerOrderFillProbe(
   if (fillShares < S10_MAKER_PARTIAL_MIN_SHARES) return null;
   const actualRatio =
     order.remainingShares > 0 ? fillShares / order.remainingShares : ratio;
-  const trigger = crossed
-    ? "crossed_ask"
-    : sweptThrough
-      ? "bid_swept"
-      : pinnedAtLimit && !touchedOwnBid
-        ? "book_hold"
-        : "book_touch";
   return { fillShares, trigger, ratio: actualRatio, quote };
 }
 
@@ -9067,23 +13593,34 @@ function reconcilePaperMakerOrders(
     if (duplicate) continue;
     const latency = samplePaperLatency();
     const activeAt = now + latency.delayMs;
+    const price = clampNumber(effectiveQuote.price, 0.01, 0.99);
     paperMakerOrders.push({
       id: `pmk-${state.windowStart}-${effectiveQuote.direction}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       strategy: 10,
+      source: "strategy10maker",
       windowStart: state.windowStart,
       direction: effectiveQuote.direction,
-      price: clampNumber(effectiveQuote.price, 0.01, 0.99),
+      price,
       shares: effectiveQuote.shares,
       remainingShares: effectiveQuote.shares,
       createdAt: now,
       activeAt,
-      expiresAt: activeAt + Math.max(800, effectiveQuote.ttlMs ?? 2500),
+      expiresAt:
+        activeAt +
+        Math.max(S10_MAKER_ORDER_TTL_MS, effectiveQuote.ttlMs ?? 2500),
       reason: effectiveQuote.reason || "",
       lastSeenBid: top.bid,
       lastSeenAsk: top.ask,
+      maxSeenBid: null,
+      minSeenAsk: null,
       lastTouchAt: 0,
       touchStartedAt: 0,
       touchCount: 0,
+      queueAheadShares: estimateMakerQueueAheadShares(
+        effectiveQuote.direction,
+        price,
+      ),
+      queueFullFillMs: S10_MAKER_QUEUE_FULL_FILL_MS,
     });
   }
 
@@ -9201,6 +13738,7 @@ function recordLiveMakerExecutionEvent(
     filledShares?: number | null;
     filledNotional?: number | null;
     latencyMs?: number | null;
+    source?: string;
   },
 ): void {
   const direction = input.order?.direction ?? input.quote?.direction ?? null;
@@ -9218,7 +13756,7 @@ function recordLiveMakerExecutionEvent(
     executionMode: "live",
     event,
     windowStart: input.order?.windowStart ?? state.windowStart,
-    source: "strategy10maker",
+    source: input.order?.source ?? input.source ?? "strategy10maker",
     strategy: 10,
     side: "buy",
     direction,
@@ -9287,7 +13825,7 @@ function getLiveMakerWindowNotional(windowStart: number): number {
     if (
       trade.windowStart === windowStart &&
       trade.side === "buy" &&
-      /^strategy10maker/.test(String(trade.source || "")) &&
+      isMakerFeeSource(trade.source) &&
       String(trade.status || "").includes("MINED")
     ) {
       return (
@@ -9747,15 +14285,19 @@ async function syncLiveMakerOrdersFromRest(): Promise<void> {
   });
 }
 
-async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
+async function placeLiveMakerQuote(
+  quote: MakerQuoteSignal,
+  options: { source?: string; ttlMs?: number } = {},
+): Promise<LiveMakerOrder | null> {
+  const orderSource = options.source || "strategy10maker";
   const tokenId = getDirectionTokenId(quote.direction);
   if (!tokenId) {
     rejectLiveMakerQuote(quote, "no token");
-    return;
+    return null;
   }
   if (!(await ensureClobClient())) {
     rejectLiveMakerQuote(quote, "clob unavailable", { tokenId });
-    return;
+    return null;
   }
   const top = getStateTopBookForDirection(quote.direction);
   const fallbackTickSize = getCachedOrFallbackLiveTickSize();
@@ -9774,7 +14316,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
         tokenId,
         top,
       });
-      return;
+      return null;
     }
     if (wsSafePrice.adjusted) {
       workingQuote = {
@@ -9799,7 +14341,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
       checkedBook.reason || "book_check_failed",
       { tokenId, top, checkedBook },
     );
-    return;
+    return null;
   }
   const restSafePrice = getPostOnlySafeMakerPrice(
     workingQuote.price,
@@ -9814,7 +14356,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
       top,
       checkedBook,
     });
-    return;
+    return null;
   }
   if (restSafePrice.adjusted) {
     workingQuote = {
@@ -9851,7 +14393,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
       `live_order_notional_cap_too_small:${maxConfiguredNotional.toFixed(2)}`,
       { tokenId, top, checkedBook },
     );
-    return;
+    return null;
   }
 
   const notional = effectiveQuote.price * effectiveQuote.shares;
@@ -9867,7 +14409,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
   );
   if (guard) {
     rejectLiveMakerQuote(effectiveQuote, guard, { tokenId, top, checkedBook });
-    return;
+    return null;
   }
 
   try {
@@ -9889,7 +14431,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
         top,
         checkedBook,
       });
-      return;
+      return null;
     }
     const normalizedPrice = floorToDecimals(
       finalSafePrice.price,
@@ -9902,7 +14444,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
         top,
         checkedBook,
       });
-      return;
+      return null;
     }
     const marketRules = await fetchLiveMarketRules();
     const minSizeReason = getLiveMinOrderSizeReason(
@@ -9923,7 +14465,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
           top,
           checkedBook,
         });
-        return;
+        return null;
       }
     }
     if (normalizedPrice * normalizedShares > maxConfiguredNotional + 1e-6) {
@@ -9932,7 +14474,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
         `live_order_notional_cap:${(normalizedPrice * normalizedShares).toFixed(2)}>${maxConfiguredNotional.toFixed(2)}`,
         { tokenId, top, checkedBook },
       );
-      return;
+      return null;
     }
     const postedReason = finalSafePrice.adjusted
       ? appendMakerReason(
@@ -9946,7 +14488,10 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
       shares: normalizedShares,
       reason: postedReason,
     };
-    const localTtlMs = Math.max(800, effectiveQuote.ttlMs ?? 2500);
+    const localTtlMs = Math.max(
+      S10_MAKER_ORDER_TTL_MS,
+      options.ttlMs ?? effectiveQuote.ttlMs ?? 2500,
+    );
     const expiration = Math.ceil(
       (getPolymarketNowMs() + Math.max(75_000, localTtlMs + 75_000)) / 1000,
     );
@@ -9971,6 +14516,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
       id: `lmk-${state.windowStart}-${effectiveQuote.direction}-${now}-${Math.random().toString(36).slice(2, 7)}`,
       orderId,
       strategy: 10,
+      source: orderSource,
       windowStart: state.windowStart,
       tokenId,
       direction: effectiveQuote.direction,
@@ -9994,13 +14540,14 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
       direction: effectiveQuote.direction,
       amount: normalizedShares,
       worstPrice: normalizedPrice,
-      source: "strategy10maker",
+      source: orderSource,
       exitReason: postedReason || "",
     });
     liveMakerLastReason = `live maker posted ${effectiveQuote.direction} ${(normalizedPrice * 100).toFixed(1)}%/${normalizedShares.toFixed(2)}`;
     recordLiveMakerExecutionEvent("live_maker_posted", {
       order,
       quote: postedQuote,
+      source: orderSource,
       tokenId,
       orderId,
       status: "POSTED",
@@ -10008,11 +14555,13 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
       top,
       checkedBook,
     });
+    return order;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     liveMakerLastReason = `live maker post failed ${quote.direction}: ${msg}`;
     recordLiveMakerExecutionEvent("live_maker_rejected", {
       quote: effectiveQuote,
+      source: orderSource,
       tokenId,
       status: "POST_FAILED",
       reason: msg,
@@ -10022,6 +14571,7 @@ async function placeLiveMakerQuote(quote: MakerQuoteSignal): Promise<void> {
     console.warn(
       `[S10LiveMaker] post failed ${effectiveQuote.direction} ${(effectiveQuote.price * 100).toFixed(2)}%: ${msg}`,
     );
+    return null;
   }
 }
 
@@ -10152,6 +14702,429 @@ function publishS10LiveMakerStatus(
     totalBidCostPct: upBid > 0 && downBid > 0 ? upBid + downBid : null,
   });
   void reconcileLiveMakerOrders(ctx);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function isS10BidMakerForcedFok(input: PlaceOrderInput): boolean {
+  const source = String(input.source || "").toLowerCase();
+  const reason = String(input.exitReason || "").toLowerCase();
+  return (
+    source.includes("sweep") ||
+    source.includes("lock") ||
+    source.includes("maker") ||
+    reason.includes("br-clone lottery") ||
+    reason.includes("lottery=aggr") ||
+    reason.includes("lottery=cheap") ||
+    reason.includes("rescue=yes") ||
+    reason.includes("termc=yes") ||
+    reason.includes("fok eligible") ||
+    reason.includes("fok=final")
+  );
+}
+
+function getOrderReasonNumber(input: PlaceOrderInput, key: string): number | null {
+  const reason = String(input.exitReason || "");
+  const match = reason.match(new RegExp(`${key}=(-?\\d+(?:\\.\\d+)?)`, "i"));
+  const value = match ? Number(match[1]) : NaN;
+  return Number.isFinite(value) ? value : null;
+}
+
+function shouldUseS10BidMakerEntry(input: PlaceOrderInput): boolean {
+  const source = String(input.source || "").toLowerCase();
+  const reason = String(input.exitReason || "").toLowerCase();
+  if (input.side !== "buy") return false;
+  if (!source.startsWith("strategy10")) return false;
+  if (isS10BidMakerForcedFok(input)) return false;
+  const rem =
+    getOrderReasonNumber(input, "rem") ??
+    getStrategyRemainingSeconds(getPolymarketNowMs());
+  const earlyMidStage = rem >= S10_ENTRY_MAKER_MIN_REMAINING_SEC;
+  if (source === "strategy10bonereaper") {
+    const weakEntry =
+      reason.includes("br-clone probe") ||
+      (reason.includes("br-clone signal") && reason.includes("tier=probe"));
+    const earlyDirectionalEntry =
+      (reason.includes("br-clone signal") ||
+        reason.includes("br-clone market")) &&
+      !reason.includes("tier=sweep") &&
+      !reason.includes("tier=terminal") &&
+      !reason.includes("latechase=yes") &&
+      !reason.includes("protsweep=yes") &&
+      !reason.includes("tailbook=yes") &&
+      !reason.includes("hpstrong=yes");
+    const dualInsurancePair =
+      reason.startsWith("br-clone pair") &&
+      reason.includes("dualins=yes") &&
+      !reason.includes("pnlpair=yes") &&
+      !reason.includes("rescue=yes") &&
+      !reason.includes("protsweep=yes") &&
+      !reason.includes("tier=terminal");
+    if (
+      earlyMidStage &&
+      dualInsurancePair &&
+      reason.startsWith("br-clone") &&
+      reason.includes("termc=no") &&
+      !reason.includes("dterm=yes")
+    ) {
+      return true;
+    }
+    return (
+      earlyMidStage &&
+      (weakEntry || earlyDirectionalEntry) &&
+      reason.startsWith("br-clone") &&
+      reason.includes("termc=no") &&
+      !reason.includes("dterm=yes") &&
+      !reason.includes("br-clone pair") &&
+      !reason.includes("tier=sweep") &&
+      !reason.includes("tier=terminal") &&
+      !reason.includes("tailbook=yes") &&
+      !reason.includes("lottery=aggr") &&
+      !reason.includes("lottery=cheap")
+    );
+  }
+  if (source === "strategy10") {
+    return (
+      earlyMidStage &&
+      (reason.includes("termc=no") ||
+        reason.includes("weak") ||
+        reason.includes("probe") ||
+        reason.includes("early") ||
+        reason.includes("mid"))
+    );
+  }
+  return false;
+}
+
+function getS10BidMakerSource(input: PlaceOrderInput): string {
+  const source = String(input.source || "strategy10");
+  return source.includes("-maker") ? source : `${source}-maker`;
+}
+
+function buildS10BidMakerQuote(
+  input: PlaceOrderInput,
+  bidPrice: number,
+): MakerQuoteSignal | null {
+  if (!(bidPrice > 0)) return null;
+  const shares = floorToDecimals(input.amount / bidPrice, 2);
+  if (!(shares > 0.01)) return null;
+  return {
+    direction: input.direction,
+    price: bidPrice,
+    shares,
+    ttlMs: S10_MAKER_ORDER_TTL_MS,
+    reason: appendMakerReason(input.exitReason, "bid1_entry post_only"),
+  };
+}
+
+async function waitForPaperMakerOrder(
+  order: PaperMakerOrder,
+  startedAt: number,
+): Promise<boolean> {
+  while (
+    Date.now() < order.expiresAt &&
+    order.remainingShares > 0.01 &&
+    !isOrderWindowStale()
+  ) {
+    const probe = makerOrderFillProbe(order, Date.now());
+    if (probe) {
+      recordPaperMakerFill(
+        order,
+        probe.fillShares,
+        probe.trigger,
+        probe.ratio,
+        probe.quote,
+      );
+    }
+    await delay(S10_ENTRY_MAKER_POLL_MS);
+  }
+  const filledShares = Math.max(0, order.shares - order.remainingShares);
+  if (filledShares <= 0.01) {
+    const expireQuote = getStateTopBookForDirection(order.direction);
+    recordPaperTradeHistory({
+      ts: Date.now(),
+      windowStart: order.windowStart,
+      side: "buy",
+      direction: order.direction,
+      amount: 0,
+      price: null,
+      avgPrice: null,
+      worstPrice: order.price,
+      status: "SIM_MAKER_EXPIRED_REJECTED",
+      source: order.source,
+      exitReason: appendMakerReason(order.reason, "maker_expired_no_fill"),
+      requestedAmount: order.shares * order.price,
+      requestedShares: order.shares,
+      filledShares: 0,
+      filledNotional: 0,
+      fee: 0,
+      feeMode: "maker",
+      simLatencyMs: Math.max(0, order.activeAt - order.createdAt),
+      simLatencyMode: "maker",
+      totalLatencyMs: Date.now() - startedAt,
+      partial: false,
+      rejectReason: "maker_expired_no_fill",
+      makerOrderId: order.id,
+      makerLimitPrice: order.price,
+      makerTrigger: "expired",
+      makerQueueFillRatio: 0,
+      makerActiveMs: Math.max(0, Date.now() - order.activeAt),
+      makerQueueAheadShares: order.queueAheadShares ?? null,
+      makerFillModel: PAPER_MAKER_REALISTIC_FILL_ENABLED
+        ? "realistic_queue"
+        : "legacy_touch",
+      makerMaxSeenBid: order.maxSeenBid ?? null,
+      makerMinSeenAsk: order.minSeenAsk ?? null,
+      bookTokenId: getDirectionTokenId(order.direction),
+      bookWindowStart: order.windowStart,
+      bookFetchedAt: state.bookUpdatedAt || Date.now(),
+      bookLatencyMs: expireQuote?.ageMs ?? null,
+      paperBookExpectedBid: expireQuote?.bid ?? null,
+      paperBookExpectedAsk: expireQuote?.ask ?? null,
+      paperBookCheckStatus: "maker_expired",
+      paperBookCheckReason: "no_fill",
+    });
+  }
+  paperMakerOrders = paperMakerOrders.filter(
+    (candidate) =>
+      candidate.id !== order.id &&
+      candidate.remainingShares > 0.01 &&
+      candidate.expiresAt > Date.now(),
+  );
+  broadcastState();
+  return filledShares > 0.01;
+}
+
+async function placePaperS10BidMakerOrder(
+  input: PlaceOrderInput,
+): Promise<OrderExecutionResult> {
+  const tokenId = getDirectionTokenId(input.direction);
+  if (!tokenId) {
+    return {
+      success: false,
+      statusCode: 400,
+      body: { error: "missing_token", executionMode: "paper" },
+      errorMessage: "missing_token",
+    };
+  }
+  const checkedBook = await fetchCheckedPaperBookSnapshot(
+    tokenId,
+    input.direction,
+    "buy",
+  );
+  if (!checkedBook.ok) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: {
+        error: checkedBook.reason || "paper_book_check_failed",
+        executionMode: "paper",
+      },
+      errorMessage: checkedBook.reason || "paper_book_check_failed",
+    };
+  }
+  const top = {
+    bid: checkedBook.book.topBid,
+    ask: checkedBook.book.topAsk,
+    ageMs: checkedBook.book.latencyMs,
+  };
+  let quote = buildS10BidMakerQuote(input, checkedBook.book.topBid);
+  if (!quote) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: "no_bid1_liquidity", executionMode: "paper" },
+      errorMessage: "no_bid1_liquidity",
+    };
+  }
+  const normalized = normalizePaperMakerQuoteForLiveParity(quote, top);
+  if (!normalized) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: "paper_maker_parity_rejected", executionMode: "paper" },
+      errorMessage: "paper_maker_parity_rejected",
+    };
+  }
+  quote = normalized;
+  const makerSource = getS10BidMakerSource(input);
+  const usedWindowNotional = getPaperMakerWindowNotional(state.windowStart);
+  const quoteNotional = quote.price * quote.shares;
+  const windowCap = getS10MakerWindowNotionalCap("paper");
+  if (usedWindowNotional + quoteNotional > windowCap) {
+    const reason = `maker_window_cap:${usedWindowNotional.toFixed(2)}/${windowCap.toFixed(2)}`;
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: reason, executionMode: "paper" },
+      errorMessage: reason,
+    };
+  }
+  const activeSameSide = paperMakerOrders.filter(
+    (order) =>
+      order.windowStart === state.windowStart &&
+      order.direction === quote.direction &&
+      order.remainingShares > 0.01 &&
+      order.expiresAt > Date.now(),
+  );
+  if (activeSameSide.length >= S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE) {
+    const reason = `maker_active_cap:${activeSameSide.length}/${S10_MAKER_MAX_ACTIVE_ORDERS_PER_SIDE}`;
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: reason, executionMode: "paper" },
+      errorMessage: reason,
+    };
+  }
+  const now = Date.now();
+  const latency = samplePaperLatency();
+  const activeAt = now + latency.delayMs;
+  const price = clampNumber(quote.price, 0.01, 0.99);
+  const order: PaperMakerOrder = {
+    id: `pmk-entry-${state.windowStart}-${quote.direction}-${now}-${Math.random().toString(36).slice(2, 7)}`,
+    strategy: 10,
+    source: makerSource,
+    windowStart: state.windowStart,
+    direction: quote.direction,
+    price,
+    shares: quote.shares,
+    remainingShares: quote.shares,
+    createdAt: now,
+    activeAt,
+    expiresAt: activeAt + S10_MAKER_ORDER_TTL_MS,
+    reason: quote.reason || "",
+    lastSeenBid: top.bid,
+    lastSeenAsk: top.ask,
+    maxSeenBid: null,
+    minSeenAsk: null,
+    lastTouchAt: 0,
+    touchStartedAt: 0,
+    touchCount: 0,
+    queueAheadShares: estimateMakerQueueAheadShares(quote.direction, price),
+    minActiveMs: S10_ENTRY_MAKER_MIN_ACTIVE_MS,
+    queueFullFillMs: S10_MAKER_QUEUE_FULL_FILL_MS,
+  };
+  paperMakerOrders.push(order);
+  paperMakerLastReason = `entry maker posted ${quote.direction} ${(order.price * 100).toFixed(1)}%/${order.shares.toFixed(2)}`;
+  broadcastState();
+  const filled = await waitForPaperMakerOrder(order, now);
+  return {
+    success: filled,
+    statusCode: filled ? 200 : 409,
+    body: {
+      success: filled,
+      executionMode: "paper",
+      result: {
+        status: filled ? "SIM_MAKER_FILLED" : "SIM_MAKER_EXPIRED_REJECTED",
+        orderId: order.id,
+        filledShares: order.shares - order.remainingShares,
+        remainingShares: order.remainingShares,
+        makerLimitPrice: order.price,
+      },
+      bestBid: top.bid,
+      bestAsk: top.ask,
+      worstPrice: order.price,
+    },
+    errorMessage: filled ? undefined : "maker_expired_no_fill",
+  };
+}
+
+async function placeLiveS10BidMakerOrder(
+  input: PlaceOrderInput,
+): Promise<OrderExecutionResult> {
+  const tokenId = getDirectionTokenId(input.direction);
+  if (!tokenId) {
+    return {
+      success: false,
+      statusCode: 400,
+      body: { error: "missing_token", executionMode: "live" },
+      errorMessage: "missing_token",
+    };
+  }
+  const checkedBook = await fetchCheckedLiveBookSnapshot(
+    tokenId,
+    input.direction,
+    "buy",
+  );
+  if (!checkedBook.ok) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: {
+        error: checkedBook.reason || "live_book_check_failed",
+        executionMode: "live",
+      },
+      errorMessage: checkedBook.reason || "live_book_check_failed",
+    };
+  }
+  const quote = buildS10BidMakerQuote(input, checkedBook.book.topBid);
+  if (!quote) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: "no_bid1_liquidity", executionMode: "live" },
+      errorMessage: "no_bid1_liquidity",
+    };
+  }
+  const makerSource = getS10BidMakerSource(input);
+  const order = await placeLiveMakerQuote(quote, {
+    source: makerSource,
+    ttlMs: S10_MAKER_ORDER_TTL_MS,
+  });
+  if (!order) {
+    return {
+      success: false,
+      statusCode: 409,
+      body: { error: liveMakerLastReason || "live_maker_post_failed", executionMode: "live" },
+      errorMessage: liveMakerLastReason || "live_maker_post_failed",
+    };
+  }
+  const deadline = order.expiresAt;
+  while (
+    Date.now() < deadline &&
+    order.remainingShares > 0.01 &&
+    !isOrderWindowStale()
+  ) {
+    await delay(Math.max(250, Math.min(1000, S10_ENTRY_MAKER_POLL_MS)));
+    await syncLiveMakerOrdersFromRest();
+  }
+  const filledShares = Math.max(0, order.shares - order.remainingShares);
+  if (order.remainingShares > 0.01) {
+    await cancelLiveMakerOrder(order, "entry maker ttl");
+  }
+  broadcastState();
+  return {
+    success: filledShares > 0.01,
+    statusCode: filledShares > 0.01 ? 200 : 409,
+    body: {
+      success: filledShares > 0.01,
+      executionMode: "live",
+      result: {
+        status: filledShares > 0.01 ? "MAKER_PARTIAL_OR_FILLED" : "MAKER_EXPIRED_NO_FILL",
+        orderId: order.orderId,
+        makerOrderId: order.id,
+        filledShares,
+        remainingShares: order.remainingShares,
+        makerLimitPrice: order.price,
+      },
+      bestBid: checkedBook.book.topBid,
+      bestAsk: checkedBook.book.topAsk,
+      worstPrice: order.price,
+      liveBookCheckStatus: checkedBook.status,
+      liveBookCheckReason: checkedBook.reason,
+    },
+    errorMessage: filledShares > 0.01 ? undefined : "maker_expired_no_fill",
+  };
+}
+
+async function placeS10BidMakerOrder(
+  input: PlaceOrderInput,
+): Promise<OrderExecutionResult> {
+  return strategyConfig.executionMode === "paper"
+    ? placePaperS10BidMakerOrder(input)
+    : placeLiveS10BidMakerOrder(input);
 }
 
 async function placePaperOrder(
@@ -10380,6 +15353,9 @@ async function executeOrder(
       },
       errorMessage: liveGuardReason,
     };
+  }
+  if (shouldUseS10BidMakerEntry(input)) {
+    return placeS10BidMakerOrder(input);
   }
   return strategyConfig.executionMode === "paper"
     ? placePaperOrder(input)
